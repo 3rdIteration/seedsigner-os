@@ -53,23 +53,27 @@ genimage \
 
 cd ../
 
-mv ./tmp/images/diy-tools.squashfs ./buildroot/output/images/diy-tools.squashfs
+mv ./tmp/images/diy-tools.squashfs ${BINARIES_DIR}
 
 wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi0.img
 
-cp seedsigner_os.0.7.0.pi0.img ./buildroot/output/images/
+mv seedsigner_os.0.7.0.pi0.img ${BINARIES_DIR}
 
 wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi02w.img
 
-cp seedsigner_os.0.7.0.pi02w.img ./buildroot/output/images/
+mv seedsigner_os.0.7.0.pi02w.img ${BINARIES_DIR}
 
 wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi2.img
 
-cp seedsigner_os.0.7.0.pi2.img ./buildroot/output/images/
+mv seedsigner_os.0.7.0.pi2.img ${BINARIES_DIR}
 
 wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi4.img
 
-cp seedsigner_os.0.7.0.pi4.img ./buildroot/output/images/
+mv seedsigner_os.0.7.0.pi4.img ${BINARIES_DIR}
+
+wget https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.1/SeedKeeper-0.1-0.1.cap
+
+mv SeedKeeper-0.1-0.1.cap ${BINARIES_DIR}
 
 rm -R -f ./tmp/
 

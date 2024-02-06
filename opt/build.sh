@@ -15,11 +15,13 @@ help()
       --pi0         Build for pi0 and pi0w
       --pi2         Build for pi2
       --pi02w       Build for pi02w and pi3
+	  --pi02w-smartcard
       --pi4         Build for pi4 and pi4cmio
   
   Options:
   -h, --help           Display a help screen and quit 
       --dev            Builds developer version of images
+	  --smartcard      Builds with smartcard support
       --no-clean       Leave previous build, target, and output files
       --skip-repo      Skip pulling repo, assume rootfs-overlay/opt is populated with app code
       --app-repo       Build image with not official seedsigner github repo
@@ -167,6 +169,9 @@ while (( "$#" )); do
   --dev)
     DEVBUILD=0; shift
     ;;
+  --smartcard)
+    SMARTCARD=0; shift
+    ;;
   --app-repo=*)
     APP_REPO=$(echo "${1}" | cut -d "=" -f2-); shift
     ;;
@@ -228,6 +233,12 @@ if ! [ -z $DEVBUILD ]; then
   DEVARG="-dev"
 fi
 
+# Check for --dev argument to pass to build_image function
+SMARTCARDARG=""
+if ! [ -z $SMARTCARD ]; then
+  SMARTCARDARG="-smartcard"
+fi
+
 # check for custom app repo
 if ! [ -z ${APP_REPO} ]; then
   seedsigner_app_repo="${APP_REPO}"
@@ -257,22 +268,22 @@ fi
 
 # Build only for pi0, pi0w, and pi1
 if ! [ -z ${PI0_FLAG} ]; then
-  build_image "pi0${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi0${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # Build only for pi2
 if ! [ -z ${PI2_FLAG} ]; then
-  build_image "pi2${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi2${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # build for pi02w
 if ! [ -z ${PI02W_FLAG} ]; then
-  build_image "pi02w${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi02w${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # build for pi4
 if ! [ -z ${PI4_FLAG} ]; then
-  build_image "pi4${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi4$${SMARTCARDARG}{DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 exit 0
