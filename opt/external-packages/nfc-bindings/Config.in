@@ -1,0 +1,9 @@
+config BR2_PACKAGE_NFC_BINDINGS
+	bool "nfc_bindings"
+	select BR2_PACKAGE_LIBNFC
+	select BR2_PACKAGE_LIBUSB
+	select BR2_PACKAGE_LIBUSB_COMPAT
+	
+	help
+	  scripting language bindings for libnfc
+
