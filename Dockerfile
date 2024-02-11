@@ -27,7 +27,9 @@ build-essential \
 libncurses-dev \
 mtools \
 fdisk \
-dosfstools
+dosfstools \
+swig \
+squashfs-tools
 
 # Locale
 RUN locale-gen en_US.UTF-8  
