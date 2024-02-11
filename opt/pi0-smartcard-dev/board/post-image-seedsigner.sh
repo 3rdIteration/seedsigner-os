@@ -49,7 +49,7 @@ mv ./Satochip-DIY ./diy/Satochip-DIY
 
 genimage \
 	--rootpath ./diy   \
-	--config "../pi02w-smartcard-dev/board/genimage-diy-tools.cfg"
+	--config "../pi0-smartcard-dev/board/genimage-diy-tools.cfg"
 
 cd ../
 

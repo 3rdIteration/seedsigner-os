@@ -7,14 +7,16 @@ start() {
 }
 
 stop () {    
-	killall pcscd &
+    killall pcscd &
     echo "PCSC Service shutting down"
 }
 
 restart () {    
-	killall pcscd &
+    killall pcscd &
     echo "PCSC Service shutting down" &
-	pcscd
+    sleep 1 &
+    pcscd &
+    echo "PCSC Service starting up"
 }
 
 reload () {
