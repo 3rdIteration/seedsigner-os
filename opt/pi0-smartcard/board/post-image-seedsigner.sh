@@ -141,11 +141,11 @@ cp ${BASE_DIR}/images/zImage boot/zImage
 cp ${BINARIES_DIR}/diy-tools.squashfs boot/diy-tools.squashfs
 
 # Copy Seedsigner Images
-mkdir -p boot/seedsigner-images
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi0.img boot/seedsigner-images/seedsigner_os.0.7.0.pi0.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi02w.img boot/seedsigner-images/seedsigner_os.0.7.0.pi02w.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi2.img boot/seedsigner-images/seedsigner_os.0.7.0.pi2.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi4.img boot/seedsigner-images/seedsigner_os.0.7.0.pi4.img
+mkdir -p boot/microsd-images
+cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi0.img boot/microsd-images/seedsigner_os.0.7.0.pi0.img
+cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi02w.img boot/microsd-images/seedsigner_os.0.7.0.pi02w.img
+cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi2.img boot/microsd-images/seedsigner_os.0.7.0.pi2.img
+cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi4.img boot/microsd-images/seedsigner_os.0.7.0.pi4.img
 
 # Copy Pre-Compiled CAP files
 mkdir -p boot/javacard-cap

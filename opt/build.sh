@@ -67,7 +67,7 @@ download_app_repo() {
   rm -rf ${rootfs_overlay}/opt/seedsigner_pubkey.gpg
   rm -rf ${rootfs_overlay}/opt/setup.py
   rm -rf ${rootfs_overlay}/opt/tests
-  rm -rf ${rootfs_overlay}/opt/tools
+  #rm -rf ${rootfs_overlay}/opt/tools
   rm -rf ${rootfs_overlay}/opt/pytest.ini
 }
 
