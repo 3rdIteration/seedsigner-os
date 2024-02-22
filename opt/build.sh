@@ -260,10 +260,10 @@ fi
 
 # Build All Architectures
 if ! [ -z ${ALL_FLAG} ]; then
-  build_image "pi0${DEVARG}" "clean" "${SKIPREPO_ARG}"
-  build_image "pi02w${DEVARG}" "clean" "skip-repo"
-  build_image "pi2${DEVARG}" "clean" "skip-repo"
-  build_image "pi4${DEVARG}" "clean" "skip-repo"
+  build_image "pi0${SMARTCARDARG}${DEVARG}" "clean" "${SKIPREPO_ARG}"
+  build_image "pi02w${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  build_image "pi2${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  build_image "pi4${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
 fi
 
 # Build only for pi0, pi0w, and pi1
@@ -283,7 +283,7 @@ fi
 
 # build for pi4
 if ! [ -z ${PI4_FLAG} ]; then
-  build_image "pi4$${SMARTCARDARG}{DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi4${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 exit 0
