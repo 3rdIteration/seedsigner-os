@@ -41,7 +41,7 @@ export BOARD_TYPE=pi0
 Start the build!
 
 ```bash
-SS_ARGS="--$BOARD_TYPE --app-repo=https://github.com/3rdIteration/seedsigner --app-branch=0.7.0+Satochip-Beta1" docker compose up --force-recreate --build
+SS_ARGS="--$BOARD_TYPE --app-repo=https://github.com/3rdIteration/seedsigner --app-branch=0.7.0+Satochip-Beta1 --smartcard" docker compose up --force-recreate --build
 ```
 
 Building can take 25min to 2.5hrs+ depending on your cpu and will require 20-30 GB of disk space.
