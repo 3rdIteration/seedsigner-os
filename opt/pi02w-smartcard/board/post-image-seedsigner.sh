@@ -141,24 +141,26 @@ cp ${BASE_DIR}/images/zImage boot/zImage
 cp ${BINARIES_DIR}/diy-tools.squashfs boot/diy-tools.squashfs
 
 # Copy Seedsigner Images
-mkdir -p boot/microsd-images
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi0.img boot/microsd-images/seedsigner_os.0.7.0.pi0.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi02w.img boot/microsd-images/seedsigner_os.0.7.0.pi02w.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi2.img boot/microsd-images/seedsigner_os.0.7.0.pi2.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi4.img boot/microsd-images/seedsigner_os.0.7.0.pi4.img
+mkdir -p boot/microsd-images microsd-images
+cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi0.img microsd-images/seedsigner_os.0.7.0.pi0.img
+cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi02w.img microsd-images/seedsigner_os.0.7.0.pi02w.img
+cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi2.img microsd-images/seedsigner_os.0.7.0.pi2.img
+cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi4.img microsd-images/seedsigner_os.0.7.0.pi4.img
 
 # Copy Pre-Compiled CAP files
-mkdir -p boot/javacard-cap
-cp ${BINARIES_DIR}/SeedKeeper-0.1-0.1.cap boot/javacard-cap/SeedKeeper-0.1-official.cap
-cp ${BINARIES_DIR}/SatoChip-0.12-05.cap boot/javacard-cap/SatoChip-0.12-official.cap
-cp ${BINARIES_DIR}/Satodime-0.1-0.2.cap boot/javacard-cap/SatoDime-0.1.2-official.cap
+mkdir -p boot/javacard-cap javacard-cap
+cp ${BINARIES_DIR}/SeedKeeper-0.1-0.1.cap javacard-cap/SeedKeeper-0.1-official.cap
+cp ${BINARIES_DIR}/SatoChip-0.12-05.cap javacard-cap/SatoChip-0.12-official.cap
+cp ${BINARIES_DIR}/Satodime-0.1-0.2.cap javacard-cap/SatoDime-0.1.2-official.cap
 
-chmod 0755 `find boot overlays`
-touch -d "${disk_timestamp}" `find boot overlays`
+chmod 0755 `find boot overlays microsd-images javacard-cap`
+touch -d "${disk_timestamp}" `find boot overlays microsd-images javacard-cap`
 ### needed: apt install mtools
 mcopy -bpm -i "disk.img@@$OFFSET" boot/* ::
 # mcopy doesn't copy directories deterministically, so rely on sorted shell globbing instead.
 mcopy -bpm -i "disk.img@@$OFFSET" overlays/* ::overlays
+mcopy -bpm -i "disk.img@@$OFFSET" microsd-images/* ::microsd-images
+mcopy -bpm -i "disk.img@@$OFFSET" javacard-cap/* ::javacard-cap
 mv disk.img ${BASE_DIR}/images/seedsigner_os.img
 
 cd -
