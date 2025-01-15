@@ -57,33 +57,35 @@ sha256sum ./tmp/images/diy-tools.squashfs
 
 mv ./tmp/images/diy-tools.squashfs ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi0.img
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi0.img
+mv seedsigner_os.0.8.0.pi0.img ${BINARIES_DIR}
 
-mv seedsigner_os.0.7.0.pi0.img ${BINARIES_DIR}
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi02w.img
+mv seedsigner_os.0.8.0.pi02w.img ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi02w.img
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi2.img
+mv seedsigner_os.0.8.0.pi2.img ${BINARIES_DIR}
 
-mv seedsigner_os.0.7.0.pi02w.img ${BINARIES_DIR}
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi4.img
+mv seedsigner_os.0.8.0.pi4.img ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi2.img
-
-mv seedsigner_os.0.7.0.pi2.img ${BINARIES_DIR}
-
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi4.img
-
-mv seedsigner_os.0.7.0.pi4.img ${BINARIES_DIR}
-
-wget https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.1/SeedKeeper-0.1-0.1.cap
-
-mv SeedKeeper-0.1-0.1.cap ${BINARIES_DIR}
+wget https://github.com/Toporin/Seedkeeper-Applet/raw/refs/heads/seedkeeper-v2/SeedKeeper-3.0.4.cap
+mv SeedKeeper-3.0.4.cap ${BINARIES_DIR}
 
 wget https://github.com/Toporin/SatochipApplet/releases/download/v0.12/SatoChip-0.12-05.cap
-
 mv SatoChip-0.12-05.cap ${BINARIES_DIR}
 
 wget https://github.com/Toporin/Satodime-Applet/releases/download/v0.1-0.2/Satodime-0.1-0.2.cap
-
 mv Satodime-0.1-0.2.cap ${BINARIES_DIR}
+
+wget https://github.com/cryptoadvance/specter-javacard/releases/download/v0.1.0/MemoryCardApplet.cap
+mv MemoryCardApplet.cap ${BINARIES_DIR}
+
+wget https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/vivokey-otp.cap
+mv vivokey-otp.cap ${BINARIES_DIR}
+
+wget https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/SmartPGPApplet-default.cap
+mv SmartPGPApplet-default.cap ${BINARIES_DIR}
 
 rm -R -f ./tmp/
 
