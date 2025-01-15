@@ -57,33 +57,35 @@ sha256sum ./tmp/images/diy-tools.squashfs
 
 mv ./tmp/images/diy-tools.squashfs ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi0.img
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi0.img
+mv seedsigner_os.0.8.0.pi0.img ${BINARIES_DIR}
 
-mv seedsigner_os.0.7.0.pi0.img ${BINARIES_DIR}
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi02w.img
+mv seedsigner_os.0.8.0.pi02w.img ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi02w.img
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi2.img
+mv seedsigner_os.0.8.0.pi2.img ${BINARIES_DIR}
 
-mv seedsigner_os.0.7.0.pi02w.img ${BINARIES_DIR}
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi4.img
+mv seedsigner_os.0.8.0.pi4.img ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi2.img
-
-mv seedsigner_os.0.7.0.pi2.img ${BINARIES_DIR}
-
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.7.0/seedsigner_os.0.7.0.pi4.img
-
-mv seedsigner_os.0.7.0.pi4.img ${BINARIES_DIR}
-
-wget https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.1/SeedKeeper-0.1-0.1.cap
-
-mv SeedKeeper-0.1-0.1.cap ${BINARIES_DIR}
+wget https://github.com/Toporin/Seedkeeper-Applet/raw/refs/heads/seedkeeper-v2/SeedKeeper-3.0.4.cap
+mv SeedKeeper-3.0.4.cap ${BINARIES_DIR}
 
 wget https://github.com/Toporin/SatochipApplet/releases/download/v0.12/SatoChip-0.12-05.cap
-
 mv SatoChip-0.12-05.cap ${BINARIES_DIR}
 
 wget https://github.com/Toporin/Satodime-Applet/releases/download/v0.1-0.2/Satodime-0.1-0.2.cap
-
 mv Satodime-0.1-0.2.cap ${BINARIES_DIR}
+
+wget https://github.com/cryptoadvance/specter-javacard/releases/download/v0.1.0/MemoryCardApplet.cap
+mv MemoryCardApplet.cap ${BINARIES_DIR}
+
+wget https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/vivokey-otp.cap
+mv vivokey-otp.cap ${BINARIES_DIR}
+
+wget https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/SmartPGPApplet-default.cap
+mv SmartPGPApplet-default.cap ${BINARIES_DIR}
 
 rm -R -f ./tmp/
 
@@ -142,16 +144,19 @@ cp ${BINARIES_DIR}/diy-tools.squashfs boot/diy-tools.squashfs
 
 # Copy Seedsigner Images
 mkdir -p boot/microsd-images microsd-images
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi0.img microsd-images/seedsigner_os.0.7.0.pi0.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi02w.img microsd-images/seedsigner_os.0.7.0.pi02w.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi2.img microsd-images/seedsigner_os.0.7.0.pi2.img
-cp ${BINARIES_DIR}/seedsigner_os.0.7.0.pi4.img microsd-images/seedsigner_os.0.7.0.pi4.img
+cp ${BINARIES_DIR}/seedsigner_os.0.8.0.pi0.img microsd-images/seedsigner_os.0.8.0.pi0.img
+cp ${BINARIES_DIR}/seedsigner_os.0.8.0.pi02w.img microsd-images/seedsigner_os.0.8.0.pi02w.img
+cp ${BINARIES_DIR}/seedsigner_os.0.8.0.pi2.img microsd-images/seedsigner_os.0.8.0.pi2.img
+cp ${BINARIES_DIR}/seedsigner_os.0.8.0.pi4.img microsd-images/seedsigner_os.0.8.0.pi4.img
 
 # Copy Pre-Compiled CAP files
 mkdir -p boot/javacard-cap javacard-cap
-cp ${BINARIES_DIR}/SeedKeeper-0.1-0.1.cap javacard-cap/SeedKeeper-0.1-official.cap
+cp ${BINARIES_DIR}/SeedKeeper-3.0.4.cap javacard-cap/SeedKeeper-0.2-official.cap
 cp ${BINARIES_DIR}/SatoChip-0.12-05.cap javacard-cap/SatoChip-0.12-official.cap
 cp ${BINARIES_DIR}/Satodime-0.1-0.2.cap javacard-cap/SatoDime-0.1.2-official.cap
+cp ${BINARIES_DIR}/MemoryCardApplet.cap javacard-cap/SpecterDIY.cap
+cp ${BINARIES_DIR}/vivokey-otp.cap javacard-cap/vivokey-otp.cap
+cp ${BINARIES_DIR}/SmartPGPApplet-default.cap javacard-cap/SmartPGPApplet-default.cap
 
 chmod 0755 `find boot overlays microsd-images javacard-cap`
 touch -d "${disk_timestamp}" `find boot overlays microsd-images javacard-cap`
