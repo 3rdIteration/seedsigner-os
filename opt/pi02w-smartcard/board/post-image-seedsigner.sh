@@ -151,7 +151,7 @@ cp ${BINARIES_DIR}/seedsigner_os.0.8.0.pi4.img microsd-images/seedsigner_os.0.8.
 
 # Copy Pre-Compiled CAP files
 mkdir -p boot/javacard-cap javacard-cap
-cp ${BINARIES_DIR}/SeedKeeper-3.0.4.cap javacard-cap/SeedKeeper-0.1-official.cap
+cp ${BINARIES_DIR}/SeedKeeper-3.0.4.cap javacard-cap/SeedKeeper-0.2-official.cap
 cp ${BINARIES_DIR}/SatoChip-0.12-05.cap javacard-cap/SatoChip-0.12-official.cap
 cp ${BINARIES_DIR}/Satodime-0.1-0.2.cap javacard-cap/SatoDime-0.1.2-official.cap
 cp ${BINARIES_DIR}/MemoryCardApplet.cap javacard-cap/SpecterDIY.cap
