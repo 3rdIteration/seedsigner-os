@@ -69,8 +69,8 @@ mv seedsigner_os.0.8.0.pi2.img ${BINARIES_DIR}
 wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.0/seedsigner_os.0.8.0.pi4.img
 mv seedsigner_os.0.8.0.pi4.img ${BINARIES_DIR}
 
-wget https://github.com/Toporin/Seedkeeper-Applet/raw/refs/heads/seedkeeper-v2/SeedKeeper-3.0.4.cap
-mv SeedKeeper-3.0.4.cap ${BINARIES_DIR}
+wget https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-Ndef-v0.2-0.1.cap
+mv SeedKeeper-Ndef-v0.2-0.1.cap ${BINARIES_DIR}
 
 wget https://github.com/Toporin/SatochipApplet/releases/download/v0.12/SatoChip-0.12-05.cap
 mv SatoChip-0.12-05.cap ${BINARIES_DIR}
