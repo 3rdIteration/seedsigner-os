@@ -4,7 +4,7 @@
 /bin/date -s "2025-02-28 12:00"
 
 # Import the bundle of keys 
-/usr/bin/gpg --import pubkeys.asc
+/usr/bin/gpg --import /gpg/*.asc
 
 cd /opt/src/
 
