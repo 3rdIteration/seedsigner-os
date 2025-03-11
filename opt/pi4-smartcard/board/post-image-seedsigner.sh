@@ -24,7 +24,7 @@ tar -xvzf apache-ant-1.9.16-bin.tar.gz
 mv ./apache-ant-1.9.16 ./diy/ant
 
 # Get Satochip Source
-git clone --depth 1 --recursive https://github.com/3rdIteration/Satochip-DIY.git
+git clone --depth 1 --recursive --branch 20250310 https://github.com/3rdIteration/Satochip-DIY.git
 rm -R -f ./Satochip-DIY/.git
 rm -R ./Satochip-DIY/applets/seedkeeper-thd89/sdks
 rm -R ./Satochip-DIY/applets/satodime-thd89/sdks
@@ -69,8 +69,8 @@ mv seedsigner_os.0.8.5.pi2.img ${BINARIES_DIR}
 wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.5/seedsigner_os.0.8.5.pi4.img
 mv seedsigner_os.0.8.5.pi4.img ${BINARIES_DIR}
 
-wget https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-Ndef-v0.2-0.1.cap
-mv SeedKeeper-Ndef-v0.2-0.1.cap ${BINARIES_DIR}
+wget https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-v0.2-0.1.cap
+mv SeedKeeper-v0.2-0.1.cap ${BINARIES_DIR}
 
 wget https://github.com/Toporin/SatochipApplet/releases/download/v0.12/SatoChip-0.12-05.cap
 mv SatoChip-0.12-05.cap ${BINARIES_DIR}
@@ -151,7 +151,7 @@ cp ${BINARIES_DIR}/seedsigner_os.0.8.5.pi4.img microsd-images/seedsigner_os.0.8.
 
 # Copy Pre-Compiled CAP files
 mkdir -p boot/javacard-cap javacard-cap
-cp ${BINARIES_DIR}/SeedKeeper-Ndef-v0.2-0.1.cap javacard-cap/SeedKeeper-0.2-official.cap
+cp ${BINARIES_DIR}/SeedKeeper-v0.2-0.1.cap javacard-cap/SeedKeeper-0.2-official.cap
 cp ${BINARIES_DIR}/SatoChip-0.12-05.cap javacard-cap/SatoChip-0.12-official.cap
 cp ${BINARIES_DIR}/Satodime-0.1-0.2.cap javacard-cap/SatoDime-0.1.2-official.cap
 cp ${BINARIES_DIR}/MemoryCardApplet.cap javacard-cap/SpecterDIY.cap
