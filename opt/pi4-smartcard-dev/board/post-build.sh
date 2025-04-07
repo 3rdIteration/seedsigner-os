@@ -9,8 +9,7 @@ if [ -e ${TARGET_DIR}/etc/inittab ]; then
 	# 'console::respawn:-/bin/sh' + 'tty1::respawn:-/bin/sh'
 	grep -qE '^tty1::' ${TARGET_DIR}/etc/inittab || \
 	sed -i '/GENERIC_SERIAL/c\
-console::respawn:-/bin/sh\
-tty1::respawn:-/bin/sh' ${TARGET_DIR}/etc/inittab
+console::respawn:-/bin/sh' ${TARGET_DIR}/etc/inittab
 fi
 
 # Clean up files included in skeleton not needed
