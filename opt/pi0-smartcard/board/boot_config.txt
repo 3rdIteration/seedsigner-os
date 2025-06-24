@@ -20,3 +20,6 @@ force_turbo=1
 
 # Enable I2C
 dtparam=i2c1=on
+
+# Use bcm2835_mmc rather than sdhost for MicroSD driver (Doesn't abusively poll when MicroSD removed)
+dtoverlay=mmc
