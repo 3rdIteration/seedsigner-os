@@ -29,7 +29,8 @@ mtools \
 fdisk \
 dosfstools \
 swig \
-squashfs-tools
+squashfs-tools \
+ccache
 
 # Locale
 RUN locale-gen en_US.UTF-8  
