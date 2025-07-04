@@ -18,6 +18,11 @@ boot_delay=0
 disable_splash=1
 force_turbo=1
 
+# raspberry firmware config to disable wifi and bluetooth (Needed or Pi0w)
+# https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README
+dtoverlay=disable-wifi
+dtoverlay=disable-bt
+
 # Enable I2C
 dtparam=i2c1=on
 
