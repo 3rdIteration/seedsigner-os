@@ -132,7 +132,9 @@ build_image() {
   
   if [ -f "${build_dir}/images/seedsigner_os.img" ] && [ -d "${image_dir}" ]; then
     mv -f "${build_dir}/images/seedsigner_os.img" "${seedsigner_os_image_output}"
-    sha256sum "${seedsigner_os_image_output}"
+	zip -j "${seedsigner_os_image_output}.zip" "${seedsigner_os_image_output}"  # -j removes path
+    sha256sum "${seedsigner_os_image_output}.zip"
+	rm -f "${seedsigner_os_image_output}"  # Optionally remove unzipped .img
   fi
   
   cd - > /dev/null # return to previous working directory quietly

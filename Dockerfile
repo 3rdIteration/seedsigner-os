@@ -18,6 +18,7 @@ perl \
 tar \
 cpio \
 unzip \
+zip \
 rsync \
 file \
 bc \
