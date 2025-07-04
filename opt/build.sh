@@ -2,7 +2,7 @@
 
 set -o errexit -o pipefail
 
-# global variables
+# global variables 
 cur_dir_name=${PWD##*/}
 cur_dir=$(pwd)
 seedsigner_app_repo="https://github.com/3rditeration/seedsigner.git"
