@@ -53,7 +53,7 @@ export RELEASE_TAG=x.y.z
 
 ```
 
-Checkout the branch associated to the target release version of the SeedSigner code (e.g. 0.8.5, 0.8.0, etc)
+Checkout the branch associated to the target release version of the SeedSigner code (e.g. 0.8.6, 0.8.0, etc)
 ```bash
 git checkout $RELEASE_TAG
 ```
@@ -98,7 +98,7 @@ Set your target release version of the SeedSigner code (see: https://github.com/
 $env:RELEASE_TAG = "x.y.z"  
 ```
 
-Checkout the branch associated to the target release version of the SeedSigner code (e.g. 0.8.5, 0.8.0, etc)
+Checkout the branch associated to the target release version of the SeedSigner code (e.g. 0.8.6, 0.8.0, etc)
 ```powershell
 git checkout $env:RELEASE_TAG
 ```

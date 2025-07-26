@@ -57,17 +57,17 @@ sha256sum ./tmp/images/diy-tools.squashfs
 
 mv ./tmp/images/diy-tools.squashfs ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.5/seedsigner_os.0.8.5.pi0.img
-mv seedsigner_os.0.8.5.pi0.img ${BINARIES_DIR}
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi0.img
+mv seedsigner_os.0.8.6.pi0.img ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.5/seedsigner_os.0.8.5.pi02w.img
-mv seedsigner_os.0.8.5.pi02w.img ${BINARIES_DIR}
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi02w.img
+mv seedsigner_os.0.8.6.pi02w.img ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.5/seedsigner_os.0.8.5.pi2.img
-mv seedsigner_os.0.8.5.pi2.img ${BINARIES_DIR}
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi2.img
+mv seedsigner_os.0.8.6.pi2.img ${BINARIES_DIR}
 
-wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.5/seedsigner_os.0.8.5.pi4.img
-mv seedsigner_os.0.8.5.pi4.img ${BINARIES_DIR}
+wget https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi4.img
+mv seedsigner_os.0.8.6.pi4.img ${BINARIES_DIR}
 
 wget https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-v0.2-0.1.cap
 mv SeedKeeper-v0.2-0.1.cap ${BINARIES_DIR}
@@ -144,10 +144,10 @@ cp ${BINARIES_DIR}/diy-tools.squashfs boot/diy-tools.squashfs
 
 # Copy Seedsigner Images
 mkdir -p boot/microsd-images microsd-images
-cp ${BINARIES_DIR}/seedsigner_os.0.8.5.pi0.img microsd-images/seedsigner_os.0.8.5.pi0.img
-cp ${BINARIES_DIR}/seedsigner_os.0.8.5.pi02w.img microsd-images/seedsigner_os.0.8.5.pi02w.img
-cp ${BINARIES_DIR}/seedsigner_os.0.8.5.pi2.img microsd-images/seedsigner_os.0.8.5.pi2.img
-cp ${BINARIES_DIR}/seedsigner_os.0.8.5.pi4.img microsd-images/seedsigner_os.0.8.5.pi4.img
+cp ${BINARIES_DIR}/seedsigner_os.0.8.6.pi0.img microsd-images/seedsigner_os.0.8.6.pi0.img
+cp ${BINARIES_DIR}/seedsigner_os.0.8.6.pi02w.img microsd-images/seedsigner_os.0.8.6.pi02w.img
+cp ${BINARIES_DIR}/seedsigner_os.0.8.6.pi2.img microsd-images/seedsigner_os.0.8.6.pi2.img
+cp ${BINARIES_DIR}/seedsigner_os.0.8.6.pi4.img microsd-images/seedsigner_os.0.8.6.pi4.img
 
 # Copy Pre-Compiled CAP files
 mkdir -p boot/javacard-cap javacard-cap
