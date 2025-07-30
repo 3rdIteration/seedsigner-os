@@ -9,16 +9,15 @@ Ensure wordlist.txt is packaged when building with setuptools.
  1 file changed, 3 insertions(+)
 
 diff --git a/pyproject.toml b/pyproject.toml
-index 6d30b74..94394bc 100644
+index 6d30b74..1d535ad 100644
 --- a/pyproject.toml
 +++ b/pyproject.toml
-@@ -25,6 +25,9 @@
+@@ -25,6 +25,8 @@
  [tool.poetry.scripts]
  shamir = "shamir_mnemonic.cli:cli"
 +[tool.setuptools.package-data]
 +shamir_mnemonic = ["wordlist.txt"]
-+
+ 
  [build-system]
  requires = ["poetry-core"]
  build-backend = "poetry.core.masonry.api"
-
