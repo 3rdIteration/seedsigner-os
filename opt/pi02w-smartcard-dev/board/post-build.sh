@@ -45,6 +45,9 @@ rm -rf ${TARGET_DIR}/usr/lib/python3.10/zipfile.pyc
 rm -rf ${TARGET_DIR}/usr/lib/python3.10/tarfile.pyc
 rm -rf ${TARGET_DIR}/usr/lib/python3.10/pickletools.pyc
 
+# Workaround for building Shamir-mnemonic with setuptools instead of Poetry
+# TODO: remove once Buildroot supports Poetry natively.
+wget -q -O ${TARGET_DIR}/usr/lib/python3.10/site-packages/shamir_mnemonic/wordlist.txt https://raw.githubusercontent.com/trezor/python-shamir-mnemonic/master/shamir_mnemonic/wordlist.txt
 # ### Reproducibility experimentation
 # ### Remove all pyc files I can seem to make reproducible and keep the py versions
 
