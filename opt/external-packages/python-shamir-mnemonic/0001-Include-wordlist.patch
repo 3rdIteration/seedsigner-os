@@ -1,0 +1,21 @@
+From 278739c7cb0de123456789abcdefabcdef0000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] Include wordlist.txt in installed package
+
+Ensure wordlist.txt is packaged when building with setuptools.
+---
+ pyproject.toml | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/pyproject.toml b/pyproject.toml
+index 6d30b74..1d535ad 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@
+ [tool.poetry.scripts]
+ shamir = "shamir_mnemonic.cli:cli"
++[tool.setuptools.package-data]
++shamir_mnemonic = ["wordlist.txt"]
++
+ [build-system]
+ requires = ["poetry-core"]
+ build-backend = "poetry.core.masonry.api"
