@@ -12,9 +12,8 @@ PYTHON_SHAMIR_MNEMONIC_SITE = $(call github,trezor,python-shamir-mnemonic,v$(PYT
 PYTHON_SHAMIR_MNEMONIC_SETUP_TYPE = pep517
 PYTHON_SHAMIR_MNEMONIC_LICENSE = MIT
 # python-build requires tomli to parse pyproject.toml when running
-# under Python <3.11. Add it as both target and host dependency so the
-# pep517 workflow works correctly.
-PYTHON_SHAMIR_MNEMONIC_DEPENDENCIES = host-python-tomli
-HOST_PYTHON_SHAMIR_MNEMONIC_DEPENDENCIES = host-python-tomli
+# under Python <3.11. Add it as a dependency so the pep517 workflow
+# works correctly.
+PYTHON_SHAMIR_MNEMONIC_DEPENDENCIES = python-tomli
 
 $(eval $(python-package))
