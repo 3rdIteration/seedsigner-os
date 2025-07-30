@@ -1,6 +1,7 @@
 config BR2_PACKAGE_PYTHON_SHAMIR_MNEMONIC
-        bool "python-shamir-mnemonic"
-        help
+       bool "python-shamir-mnemonic"
+       select BR2_PACKAGE_PYTHON_TOMLI # build dependency for pep517
+       help
           SLIP-0039 Shamir's Secret-Sharing for mnemonic phrases
 
           https://github.com/trezor/python-shamir-mnemonic
