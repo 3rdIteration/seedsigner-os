@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PYTHON_TOMLI
+    bool "python-tomli"
+    help
+      A fast TOML parser.
+
+      https://github.com/hukkinj1/tomli
