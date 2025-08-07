@@ -6,8 +6,7 @@
 # Import the bundle of keys 
 /usr/bin/gpg --import /gpg/*.asc
 
-if grep -qE '^tty1::' /etc/inittab 2>/dev/null \
-   && [ -d /mnt/microsd/seedsigner-dev ]; then
+if [ -d /mnt/microsd/seedsigner-dev ]; then
     cd /mnt/microsd/seedsigner-dev
     /usr/bin/python3 /usr/bin/microsd_notice.py || true
 else
