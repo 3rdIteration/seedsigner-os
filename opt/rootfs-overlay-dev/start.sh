@@ -7,9 +7,11 @@
 /usr/bin/gpg --import /gpg/*.asc
 
 if [ -d /mnt/microsd/seedsigner-dev ]; then
+    echo "Running SeedSigner from external MicroSD source"
     cd /mnt/microsd/seedsigner-dev
     /usr/bin/python3 /usr/bin/microsd_notice.py || true
 else
+    echo "Running SeedSigner from embedded source"
     cd /opt/src/
 fi
 

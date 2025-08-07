@@ -7,7 +7,14 @@ SeedSigner's own display modules and configuration to render a simple centered
 text message for five seconds and then clears the screen.
 """
 
+import os
+import sys
 import time
+
+# SeedSigner isn't installed as a system module, so search common source paths
+for path in ("/mnt/microsd/seedsigner-dev/src", "/opt/src/src"):
+    if os.path.isdir(path) and path not in sys.path:
+        sys.path.insert(0, path)
 
 try:
     from PIL import ImageFont
