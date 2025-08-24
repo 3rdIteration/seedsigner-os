@@ -31,7 +31,6 @@ if [ -f "$WIFI_CONF" ]; then
     WIFI_SSID=$(sed -n '1p' "$WIFI_CONF" | tr -d '\r\n')
     WIFI_PSK=$(sed -n '2p' "$WIFI_CONF" | tr -d '\r\n')
     cat > /etc/wpa_supplicant.conf <<EOF2
-ctrl_interface=/var/run/wpa_supplicant
 network={
     ssid="$WIFI_SSID"
     psk="$WIFI_PSK"
