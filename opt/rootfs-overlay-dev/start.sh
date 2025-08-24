@@ -18,6 +18,30 @@ done
 
 kill "$NOTICE_PID" 2>/dev/null
 
+WIFI_CONF="$MICROSD_MOUNTPOINT/wifi.txt"
+
+# Bring up wired networking with DHCP if available
+if ip link show eth0 >/dev/null 2>&1; then
+    ifconfig eth0 up 2>/dev/null || true
+    udhcpc -i eth0 -n -q &
+fi
+
+# Configure Wi-Fi from MicroSD credentials if present
+if [ -f "$WIFI_CONF" ]; then
+    WIFI_SSID=$(sed -n '1p' "$WIFI_CONF" | tr -d '\r\n')
+    WIFI_PSK=$(sed -n '2p' "$WIFI_CONF" | tr -d '\r\n')
+    cat > /etc/wpa_supplicant.conf <<EOF2
+ctrl_interface=/var/run/wpa_supplicant
+network={
+    ssid="$WIFI_SSID"
+    psk="$WIFI_PSK"
+}
+EOF2
+    ifconfig wlan0 up 2>/dev/null || true
+    wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
+    udhcpc -i wlan0 -n -q &
+fi
+
 if mountpoint -q "$MICROSD_MOUNTPOINT" && [ -d "$MICROSD_DEV_DIR" ]; then
     echo "Running SeedSigner from external MicroSD source"
     cd "$MICROSD_DEV_DIR" || exit 1

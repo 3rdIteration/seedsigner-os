@@ -69,3 +69,18 @@ Example name for a `pi0` built off the 0.5.2 branch would be named:
 Each board also has a developer configuration (dev config). Inside the `/opt` folder are all the build configs for each board matching the name of the build script option. The dev configs are built to work on each board but enable many of the kernel and OS features needed for development. This also makes the built image less secure, so please do not use those with real funds. Dev configs are only used when the `--dev` option is passed in to the build.sh script.
 
 Dev images can also run the SeedSigner Python source directly from a MicroSD card. To enable this override, copy the contents of the SeedSigner repository's `src/` directory to `/seedsigner-dev/` on the card (mounted at `/mnt/microsd` at runtime). On boot, a development build will display a brief notice and launch the application from that location if it exists.
+
+## Networking and SSH
+
+Development images automatically bring up networking to enable remote access and file transfer.
+
+- **Ethernet:** if a cable is connected, the interface requests an IP address via DHCP at boot.
+- **Wi-Fi:** place a `wifi.txt` file on the root of the external MicroSD card with the network's SSID on the first line and the password on the second line. The boot script uses these credentials to connect and obtain an address via DHCP.
+
+Once networked, you can connect using the Dropbear SSH server that runs by default:
+
+```bash
+ssh root@<device-ip>
+```
+
+The root account has no password, so ensure the device is only exposed on trusted networks. The images also include `git` and `rsync` for convenient remote development and file transfer.
