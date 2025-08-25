@@ -1,2 +1,3 @@
 DROPBEAR_PORT=22
-DROPBEAR_EXTRA_ARGS=""
+# Disable password logins; use the bundled SSH key instead
+DROPBEAR_EXTRA_ARGS="-s"
