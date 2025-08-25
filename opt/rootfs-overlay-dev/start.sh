@@ -26,8 +26,8 @@ for i in $(seq 1 5); do
     if [ -n "$ETH_IFACES" ]; then
         for IFACE in $ETH_IFACES; do
             ifconfig "$IFACE" up 2>/dev/null || true
-            # Run udhcpc in the background so it keeps trying even if no link yet
-            udhcpc -i "$IFACE" -b -t 0 >/dev/null 2>&1 &
+            # Run udhcpc with a default script in the background so it keeps trying even if no link yet
+            udhcpc -i "$IFACE" -s /usr/share/udhcpc/default.script -b -t 0 >/dev/null 2>&1 &
         done
         break
     fi
@@ -49,8 +49,8 @@ EOF2
         if ip link show wlan0 >/dev/null 2>&1; then
             ifconfig wlan0 up 2>/dev/null || true
             wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
-            # Launch udhcpc in persistent background mode for Wi-Fi
-            udhcpc -i wlan0 -b -t 0 >/dev/null 2>&1 &
+            # Launch udhcpc in persistent background mode for Wi-Fi using the default script
+            udhcpc -i wlan0 -s /usr/share/udhcpc/default.script -b -t 0 >/dev/null 2>&1 &
             break
         fi
         sleep 1
