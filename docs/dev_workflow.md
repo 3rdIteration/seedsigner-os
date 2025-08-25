@@ -76,6 +76,7 @@ Development images automatically bring up networking to enable remote access and
 
 - **Ethernet:** if a cable is connected, the interface requests an IP address via DHCP at boot.
 - **Wi-Fi:** place a `wifi.txt` file on the root of the external MicroSD card with the network's SSID on the first line and the password on the second line. The boot script uses these credentials to connect and obtain an address via DHCP.
+Both interfaces obtain their default gateway and DNS servers from DHCP so Internet hosts can be reached and names resolved automatically.
 
 Once networked, you can connect using the Dropbear SSH server that runs by default:
 
@@ -83,7 +84,7 @@ Once networked, you can connect using the Dropbear SSH server that runs by defau
 ssh root@<device-ip>
 ```
 
-The root account has no password, so ensure the device is only exposed on trusted networks. The images also include `git` and `rsync` for convenient remote development and file transfer.
+The development images set the root password to `passworDT`. Change it or disable SSH when connecting to untrusted networks. The images also include `git` and `rsync` for convenient remote development and file transfer.
 
 For basic diagnostics, development builds provide the `ping` utility as well as a `network-info` page on the device's Tools screen. The page displays the unit's hostname, assigned IP address, default gateway and DNS servers. The classic `ifconfig` tool is also available for inspecting or manually bringing interfaces up and down if networking does not come up automatically.
 
