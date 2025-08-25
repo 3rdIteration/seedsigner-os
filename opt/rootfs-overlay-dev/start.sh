@@ -2,7 +2,7 @@
 
 # Wait for the external MicroSD to mount before checking for a dev build.
 MICROSD_MOUNTPOINT="/mnt/microsd"
-MICROSD_DEV_DIR="$MICROSD_MOUNTPOINT/seedsigner-dev"
+MICROSD_DEV_DIR="$MICROSD_MOUNTPOINT/seedsigner/src"
 MAX_WAIT=10
 COUNT=0
 WAIT_MSG="Waiting for external MicroSD to mount..."

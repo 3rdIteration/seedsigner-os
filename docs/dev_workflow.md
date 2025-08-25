@@ -68,7 +68,7 @@ Example name for a `pi0` built off the 0.5.2 branch would be named:
 ## Development Configs
 Each board also has a developer configuration (dev config). Inside the `/opt` folder are all the build configs for each board matching the name of the build script option. The dev configs are built to work on each board but enable many of the kernel and OS features needed for development. This also makes the built image less secure, so please do not use those with real funds. Dev configs are only used when the `--dev` option is passed in to the build.sh script.
 
-Dev images can also run the SeedSigner Python source directly from a MicroSD card. To enable this override, copy the contents of the SeedSigner repository's `src/` directory to `/seedsigner-dev/` on the card (mounted at `/mnt/microsd` at runtime). On boot, a development build will display a brief notice and launch the application from that location if it exists.
+Dev images can also run the SeedSigner Python source directly from a MicroSD card. To enable this override, clone the SeedSigner repository to `/seedsigner` on the card (mounted at `/mnt/microsd` at runtime). On boot, a development build will display a brief notice and launch the application from the repository's `src/` directory if it exists.
 
 ## Networking and SSH
 
@@ -80,7 +80,8 @@ Both interfaces obtain their default gateway and DNS servers from DHCP so Intern
 
 Once networked, you can connect using the Dropbear SSH server that runs by default. Development images ship with a fixed SSH key pair for the `root` user:
 
-- Private key: `docs/ssh/seedsigner_dev_ed25519`
+- Private key (OpenSSH): `docs/ssh/seedsigner_dev_ed25519`
+- PuTTY key: `docs/ssh/seedsigner_dev_ed25519.ppk`
 - Public key:
 
 ```text
