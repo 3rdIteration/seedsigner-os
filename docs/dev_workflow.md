@@ -85,7 +85,7 @@ ssh root@<device-ip>
 
 The root account has no password, so ensure the device is only exposed on trusted networks. The images also include `git` and `rsync` for convenient remote development and file transfer.
 
-For basic diagnostics, development builds provide the `ping` utility as well as a `network-info` page on the device's Tools screen. The page displays the unit's hostname, assigned IP address, default gateway and DNS servers.
+For basic diagnostics, development builds provide the `ping` utility as well as a `network-info` page on the device's Tools screen. The page displays the unit's hostname, assigned IP address, default gateway and DNS servers. The classic `ifconfig` tool is also available for inspecting or manually bringing interfaces up and down if networking does not come up automatically.
 
 Development kernels bundle drivers for many USB-to-Ethernet adapters, so most USB network dongles work out of the box.
 
