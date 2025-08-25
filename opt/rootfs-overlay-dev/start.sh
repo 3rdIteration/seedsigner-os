@@ -44,7 +44,6 @@ network={
     psk="$WIFI_PSK"
 }
 EOF2
-    modprobe brcmfmac 2>/dev/null || true
     for i in $(seq 1 5); do
         if ip link show wlan0 >/dev/null 2>&1; then
             ifconfig wlan0 up 2>/dev/null || true
