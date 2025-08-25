@@ -39,11 +39,13 @@ if [ -f "$WIFI_CONF" ]; then
     WIFI_SSID=$(sed -n '1p' "$WIFI_CONF" | tr -d '\r\n')
     WIFI_PSK=$(sed -n '2p' "$WIFI_CONF" | tr -d '\r\n')
     cat > /etc/wpa_supplicant.conf <<EOF2
+country=CA
 network={
     ssid="$WIFI_SSID"
     psk="$WIFI_PSK"
 }
 EOF2
+    modprobe brcmfmac 2>/dev/null || true
     for i in $(seq 1 5); do
         if ip link show wlan0 >/dev/null 2>&1; then
             ifconfig wlan0 up 2>/dev/null || true
