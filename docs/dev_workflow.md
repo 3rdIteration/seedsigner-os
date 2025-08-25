@@ -95,7 +95,7 @@ ssh -i seedsigner_dev_ed25519 root@<device-ip>
 ```
 
 Password logins are disabled for SSH, but the console still auto‑logs in as root with the default `passworDT` password.
-The images also include `git` and `rsync` for convenient remote development and file transfer.
+The images also include `git` (with HTTPS support so repositories can be cloned directly from sites like GitHub) and `rsync` for convenient remote development and file transfer.
 
 For basic diagnostics, development builds provide the `ping` utility as well as a `network-info` page on the device's Tools screen. The page displays the unit's hostname, assigned IP address(es), default gateway and DNS servers. The classic `ifconfig` tool is also available for inspecting or manually bringing interfaces up and down if networking does not come up automatically.
 
