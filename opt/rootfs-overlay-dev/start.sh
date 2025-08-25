@@ -20,11 +20,15 @@ kill "$NOTICE_PID" 2>/dev/null
 
 WIFI_CONF="$MICROSD_MOUNTPOINT/wifi.txt"
 
-# Bring up wired networking with DHCP if available
+# Bring up any wired interfaces with a persistent DHCP client
 for i in $(seq 1 5); do
-    if ip link show eth0 >/dev/null 2>&1; then
-        ifconfig eth0 up 2>/dev/null || true
-        udhcpc -i eth0 -n -q &
+    ETH_IFACES=$(ls /sys/class/net 2>/dev/null | grep '^eth' || true)
+    if [ -n "$ETH_IFACES" ]; then
+        for IFACE in $ETH_IFACES; do
+            ifconfig "$IFACE" up 2>/dev/null || true
+            # Run udhcpc in the background so it keeps trying even if no link yet
+            udhcpc -i "$IFACE" -b -t 0 >/dev/null 2>&1 &
+        done
         break
     fi
     sleep 1
@@ -45,7 +49,8 @@ EOF2
         if ip link show wlan0 >/dev/null 2>&1; then
             ifconfig wlan0 up 2>/dev/null || true
             wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
-            udhcpc -i wlan0 -n -q &
+            # Launch udhcpc in persistent background mode for Wi-Fi
+            udhcpc -i wlan0 -b -t 0 >/dev/null 2>&1 &
             break
         fi
         sleep 1
