@@ -1,0 +1,15 @@
+#!/bin/sh
+HOSTNAME=$(hostname 2>/dev/null)
+IP_ADDR=$(ip -o -4 addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+GATEWAY=$(ip route | awk '/default/ {print $3}')
+DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd ' ' -)
+[ -n "$HOSTNAME" ] || HOSTNAME="N/A"
+[ -n "$IP_ADDR" ] || IP_ADDR="N/A"
+[ -n "$GATEWAY" ] || GATEWAY="N/A"
+[ -n "$DNS" ] || DNS="N/A"
+cat <<INFO
+Hostname: $HOSTNAME
+IP Address: $IP_ADDR
+Gateway: $GATEWAY
+DNS: $DNS
+INFO
