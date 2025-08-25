@@ -83,7 +83,7 @@ Once networked, you can connect using the Dropbear SSH server that runs by defau
 ssh root@<device-ip>
 ```
 
-The root account has no password, so ensure the device is only exposed on trusted networks. The images also include `git` and `rsync` for convenient remote development and file transfer.
+The root account uses the default Buildroot password `passworDT`, so change or disable SSH before exposing the device on untrusted networks. The images also include `git` and `rsync` for convenient remote development and file transfer.
 
 For basic diagnostics, development builds provide the `ping` utility as well as a `network-info` page on the device's Tools screen. The page displays the unit's hostname, assigned IP address, default gateway and DNS servers. The classic `ifconfig` tool is also available for inspecting or manually bringing interfaces up and down if networking does not come up automatically.
 
