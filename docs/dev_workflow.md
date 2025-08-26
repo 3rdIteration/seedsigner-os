@@ -74,9 +74,11 @@ Dev images can also run the SeedSigner Python source directly from a MicroSD car
 
 Development images automatically bring up networking to enable remote access and file transfer.
 
-- **Ethernet:** if a cable is connected, the interface requests an IP address via DHCP at boot. (Tested with Pi2 & Pi4 integrated ethernet, also on a number of Pi models with USB-Ethernet adapters which generally work well)
+**Note: "Smartcard" build profiles are the ones I most thoroughly test... So use these if in doubt... (Even if just developing normal seedsigner releases)**
+
+- **Ethernet:** if a cable is connected, the interface requests an IP address via DHCP at boot. (Tested with Pi2 and Pi4 integrated ethernet, also on a number of Pi models with USB-Ethernet adapters which generally work well)
 - **Wi-Fi:** place a `wifi.txt` file on the root of the external MicroSD card with the network's SSID on the first line and the password on the second line. The boot script uses these credentials to connect and obtain an address via DHCP.
-Both interfaces obtain their default gateway and DNS servers from DHCP so Internet hosts can be reached and names resolved automatically. (Tested on Pi0w, and Pi4)
+Both interfaces obtain their default gateway and DNS servers from DHCP so Internet hosts can be reached and names resolved automatically. (Tested on Pi0w, Pi02w and Pi4)
 
 Once networked, you can connect using the Dropbear SSH server that runs by default. Development images ship with a fixed SSH key pair for the `root` user:
 
