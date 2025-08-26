@@ -11,7 +11,7 @@ FIRMWARE_URL_BASE="https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree
 FIRMWARE_DIR="${TARGET_DIR}/lib/firmware/brcm"
 mkdir -p "${FIRMWARE_DIR}"
 for f in brcmfmac43430-sdio.bin brcmfmac43430-sdio.clm_blob brcmfmac43430-sdio.raspberrypi,model-zero-w.txt; do
-    curl -fsSL "${FIRMWARE_URL_BASE}/${f}" -o "${FIRMWARE_DIR}/${f}"
+    wget -q -O "${FIRMWARE_DIR}/${f}" "${FIRMWARE_URL_BASE}/${f}"
 done
 ln -sf brcmfmac43430-sdio.bin "${FIRMWARE_DIR}/brcmfmac43430-sdio.raspberrypi,model-zero-w.bin"
 
