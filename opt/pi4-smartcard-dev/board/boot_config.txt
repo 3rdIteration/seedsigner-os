@@ -24,3 +24,9 @@ dtoverlay=disable-bt
 
 # Enable I2C
 dtparam=i2c1=on
+
+# ***********************
+# Note regarding Wifi
+# ***********************
+# If you intend to to use wifi, you will need to comment out a line above.
+# dtoverlay=disable-wifi
