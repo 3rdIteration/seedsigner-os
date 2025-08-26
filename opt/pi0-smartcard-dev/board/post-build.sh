@@ -6,30 +6,6 @@ set -e
 # Overlay dev-specific startup script for MicroSD override
 cp -a "${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../rootfs-overlay-dev/." "${TARGET_DIR}/"
 
-# Fetch Pi Zero W Wi-Fi firmware blobs using host curl for robustness
-FMW_COMMIT="c9d3ae6584ab79d19a4f94ccf701e888f9f87a53"
-BASE_URL="https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/${FMW_COMMIT}/debian/config/brcm80211/brcm"
-FMW_DIR="${TARGET_DIR}/lib/firmware/brcm"
-HOST_CURL="${HOST_DIR}/bin/curl"
-
-log() {
-    echo "[post-build] $*"
-}
-
-set -e
-mkdir -p "${FMW_DIR}"
-log "Fetching Pi Zero W firmware from ${BASE_URL}"
-fetch() {
-    f="$1"
-    log "Downloading ${f}"
-    "${HOST_CURL}" -fL --retry 5 --retry-delay 2 -o "${FMW_DIR}/${f}" "${BASE_URL}/${f}"
-}
-
-fetch brcmfmac43430-sdio.bin
-fetch brcmfmac43430-sdio.clm_blob
-fetch brcmfmac43430-sdio.raspberrypi,model-zero-w.txt
-fetch brcmfmac43430-sdio.txt
-ln -sf brcmfmac43430-sdio.bin "${FMW_DIR}/brcmfmac43430-sdio.raspberrypi,model-zero-w.bin"
 
 # Add a console on tty1
 if [ -e ${TARGET_DIR}/etc/inittab ]; then
