@@ -27,3 +27,14 @@ dtparam=i2c1=on
 
 # Use bcm2835_mmc rather than sdhost for MicroSD driver (Doesn't abusively poll when MicroSD removed)
 dtoverlay=mmc
+
+# ***********************
+# Note regarding Wifi
+# ***********************
+# If you intend to to use wifi, you will need to comment out (or delete) two lines above.
+# dtoverlay=disable-wifi
+# dtoverlay=mmc
+# The first needs to be removed so that wifi isn't disabled.
+# The second needs to be removed so that the system defaults to the normal SDIO driver.
+# This means that if you are using Wifi and the smartcard hat, the smartcard hat will probably stop working while the MicroSD card is removed.
+
