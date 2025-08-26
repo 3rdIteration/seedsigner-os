@@ -36,6 +36,6 @@ dtoverlay=mmc
 # dtoverlay=disable-wifi
 # dtoverlay=mmc
 # The first needs to be removed so that wifi isn't disabled.
-The second needs to be removed so that the system defaults to the normal SDIO driver.
-This means that if you are using Wifi and the smartcard hat, the smartcard hat will probably stop working while the MicroSD card is removed.
+# The second needs to be removed so that the system defaults to the normal SDIO driver.
+# This means that if you are using Wifi and the smartcard hat, the smartcard hat will probably stop working while the MicroSD card is removed.
 
