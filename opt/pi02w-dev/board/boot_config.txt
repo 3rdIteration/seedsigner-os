@@ -22,3 +22,9 @@ disable_splash=1
 # Comment out the lines below to enable onboard WiFi and Bluetooth
 dtoverlay=disable-wifi
 dtoverlay=disable-bt
+
+# ***********************
+# Note regarding Wifi
+# ***********************
+# If you intend to to use wifi, you will need to comment out a line above.
+# dtoverlay=disable-wifi
