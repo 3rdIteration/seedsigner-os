@@ -6,6 +6,15 @@ set -e
 # Overlay dev-specific startup script for MicroSD override
 cp -a "${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../rootfs-overlay-dev/." "${TARGET_DIR}/"
 
+# Fetch Pi Zero W Wi-Fi firmware blobs
+FIRMWARE_URL_BASE="https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bookworm/debian/config/brcm80211/brcm"
+FIRMWARE_DIR="${TARGET_DIR}/lib/firmware/brcm"
+mkdir -p "${FIRMWARE_DIR}"
+for f in brcmfmac43430-sdio.bin brcmfmac43430-sdio.clm_blob brcmfmac43430-sdio.raspberrypi,model-zero-w.txt; do
+    curl -fsSL "${FIRMWARE_URL_BASE}/${f}" -o "${FIRMWARE_DIR}/${f}"
+done
+ln -sf brcmfmac43430-sdio.bin "${FIRMWARE_DIR}/brcmfmac43430-sdio.raspberrypi,model-zero-w.bin"
+
 # Add a console on tty1
 if [ -e ${TARGET_DIR}/etc/inittab ]; then
 	# if 'tty1::' is not found in inittab, then replace the line containing GENERIC_SERIAL with
