@@ -16,8 +16,10 @@ diff --git a/pyproject.toml b/pyproject.toml
 index 1111111..2222222 100644
 --- a/pyproject.toml
 +++ b/pyproject.toml
-@@
+@@ -1,3 +1,3 @@
+ [build-system]
 -requires = ["setuptools","swig"]
 +requires = ["setuptools"]
  build-backend = "setuptools.build_meta"
-*** End Patch
+-- 
+2.34.1
