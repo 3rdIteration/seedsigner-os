@@ -9,7 +9,7 @@ PYTHON_PYSCARD_SITE = $(call github,LudovicRousseau,pyscard,$(PYTHON_PYSCARD_VER
 PYTHON_PYSCARD_SETUP_TYPE = setuptools
 PYTHON_PYSCARD_LICENSE = LGPL
 # Ensure the swig host tool is available for wrapper generation
-PYTHON_PYSCARD_DEPENDENCIES += host-swig
+PYTHON_PYSCARD_DEPENDENCIES += host-python-swig-pypi
 # Explicitly point setup.py to the host-provided swig binary
 PYTHON_PYSCARD_ENV += SWIG="$(HOST_DIR)/bin/swig"
 
