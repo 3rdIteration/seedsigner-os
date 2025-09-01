@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PYTHON_PGPY
+    bool "python-pgpy"
+    help
+      Pretty Good Privacy (PGP) implementation in Python
+
+      https://github.com/SecurityInnovation/PGPy
