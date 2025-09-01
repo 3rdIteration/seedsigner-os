@@ -5,9 +5,10 @@
  ################################################################################
 
 PYTHON_PYSCARD_VERSION = 2.3.0
- PYTHON_PYSCARD_SITE = $(call github,LudovicRousseau,pyscard,$(PYTHON_PYSCARD_VERSION))
- PYTHON_PYSCARD_SETUP_TYPE = setuptools
- PYTHON_PYSCARD_LICENSE = LGPL
+PYTHON_PYSCARD_SITE = $(call github,LudovicRousseau,pyscard,$(PYTHON_PYSCARD_VERSION))
+PYTHON_PYSCARD_SETUP_TYPE = setuptools
+PYTHON_PYSCARD_LICENSE = LGPL
+PYTHON_PYSCARD_DEPENDENCIES = host-swig
 
  
  $(eval $(python-package))
