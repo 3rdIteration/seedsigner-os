@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PYTHON_SHAMIR_MNEMONIC
+        bool "python-shamir-mnemonic"
+        help
+          SLIP-0039 Shamir's Secret-Sharing for mnemonic phrases
+
+          https://github.com/3rdIteration/python-shamir-mnemonic

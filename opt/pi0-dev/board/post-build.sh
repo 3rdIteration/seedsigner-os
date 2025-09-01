@@ -3,6 +3,10 @@
 set -u
 set -e
 
+# Overlay dev-specific startup script for MicroSD override
+cp -a "${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../rootfs-overlay-dev/." "${TARGET_DIR}/"
+
+
 # Add a console on tty1
 if [ -e ${TARGET_DIR}/etc/inittab ]; then
 	# if 'tty1::' is not found in inittab, then replace the line containing GENERIC_SERIAL with

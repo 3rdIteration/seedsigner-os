@@ -1,0 +1,4 @@
+FRIENDLYNAME     "OpenCT"
+DEVICENAME       /dev/null
+LIBPATH          /usr/lib/openct-ifd.so
+CHANNELID        0
