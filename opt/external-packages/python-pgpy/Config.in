@@ -1,0 +1,9 @@
+config BR2_PACKAGE_PYTHON_PGPY
+    bool "python-pgpy"
+    select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY
+    select BR2_PACKAGE_PYTHON_PYASN1
+    help
+      Pure-Python OpenPGP implementation.
+
+      https://pypi.org/project/PGPy/
+
