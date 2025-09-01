@@ -1,0 +1,27 @@
+From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Mon, 1 Sep 2025 03:05:00 +0000
+Subject: [PATCH] python-pyasn1: drop pyproject.toml to avoid typing-extensions
+
+The pyasn1 source tarball ships a minimal ``pyproject.toml`` which triggers
+Buildroot's PEP517 build path and pulls in the ``python-build`` tooling along
+with its ``typing-extensions`` dependency for the host. Since the package is
+pure Python and metadata is already provided via ``setup.cfg``, the file is
+unnecessary. Removing it lets Buildroot fall back to setuptools and avoids the
+extra host dependency.
+
+Signed-off-by: Codex <codex@openai.com>
+---
+ pyproject.toml | 6 ------
+ 1 file changed, 6 deletions(-)
+ delete mode 100644 pyproject.toml
+
+--- a/pyproject.toml
++++ /dev/null
+@@ -1,6 +0,0 @@
+-[build-system]
+-requires = [
+-    "setuptools"
+-]
+-build-backend = "setuptools.build_meta"
+-
