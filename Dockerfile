@@ -1,4 +1,4 @@
-FROM debian:11
+FROM debian:12
 
 # buildroot dependencies
 RUN apt-get -qq update
@@ -29,9 +29,12 @@ libncurses-dev \
 mtools \
 fdisk \
 dosfstools \
+ccache \
+python3 \
+python3-pip \
+python3-virtualenv
 swig \
 squashfs-tools \
-ccache
 
 # Locale
 RUN locale-gen en_US.UTF-8  
