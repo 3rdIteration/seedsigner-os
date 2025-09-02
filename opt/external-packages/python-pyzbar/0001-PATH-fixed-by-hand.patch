@@ -17,7 +17,7 @@ index b63108c..1b7ebc6 100644
      else:
          # Assume a shared library on the path
 -        path = find_library('zbar')
-+        path = "/usr/lib/python3.10/site-packages/zbar.so"
++        path = "/usr/lib/python3.12/site-packages/zbar.so"
          if not path:
              raise ImportError('Unable to find zbar shared library')
          libzbar = cdll.LoadLibrary(path)
