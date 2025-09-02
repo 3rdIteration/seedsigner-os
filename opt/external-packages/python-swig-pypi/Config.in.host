@@ -1,4 +1,0 @@
-config BR2_PACKAGE_HOST_PYTHON_SWIG_PYPI
-bool "host python-swig (prebuilt)"
-help
-  Install the SWIG tool from the swig-pypi project on PyPI for host builds.
