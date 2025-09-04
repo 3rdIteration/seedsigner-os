@@ -84,8 +84,11 @@ mv MemoryCardApplet.cap ${BINARIES_DIR}
 wget https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/vivokey-otp.cap
 mv vivokey-otp.cap ${BINARIES_DIR}
 
-wget https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/SmartPGPApplet-default.cap
-mv SmartPGPApplet-default.cap ${BINARIES_DIR}
+wget https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap
+mv SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap ${BINARIES_DIR}/SmartPGP-RSA2048.cap
+
+wget https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap
+mv SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap ${BINARIES_DIR}/SmartPGP-RSA4096.cap
 
 rm -R -f ./tmp/
 
@@ -156,7 +159,8 @@ cp ${BINARIES_DIR}/SatoChip-0.12-05.cap javacard-cap/SatoChip-0.12-official.cap
 cp ${BINARIES_DIR}/Satodime-0.1-0.2.cap javacard-cap/SatoDime-0.1.2-official.cap
 cp ${BINARIES_DIR}/MemoryCardApplet.cap javacard-cap/SpecterDIY.cap
 cp ${BINARIES_DIR}/vivokey-otp.cap javacard-cap/vivokey-otp.cap
-cp ${BINARIES_DIR}/SmartPGPApplet-default.cap javacard-cap/SmartPGPApplet-default.cap
+cp ${BINARIES_DIR}/SmartPGP-RSA2048.cap javacard-cap/SmartPGP-RSA2048.cap
+cp ${BINARIES_DIR}/SmartPGP-RSA4096.cap javacard-cap/SmartPGP-RSA4096.cap
 
 chmod 0755 `find boot overlays microsd-images javacard-cap`
 touch -d "${disk_timestamp}" `find boot overlays microsd-images javacard-cap`

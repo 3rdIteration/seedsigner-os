@@ -84,8 +84,11 @@ mv MemoryCardApplet.cap ${BINARIES_DIR}
 wget https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/vivokey-otp.cap
 mv vivokey-otp.cap ${BINARIES_DIR}
 
-wget https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/SmartPGPApplet-default.cap
-mv SmartPGPApplet-default.cap ${BINARIES_DIR}
+wget https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap
+mv SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap ${BINARIES_DIR}/SmartPGP-RSA2048.cap
+
+wget https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap
+mv SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap ${BINARIES_DIR}/SmartPGP-RSA4096.cap
 
 rm -R -f ./tmp/
 
