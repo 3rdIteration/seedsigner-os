@@ -12,10 +12,8 @@ rm -f ${TARGET_DIR}/etc/init.d/S20seedrng
 rm -f ${TARGET_DIR}/etc/init.d/S40network
 rm -f ${TARGET_DIR}/etc/init.d/S50pigpio
 
-# Adding symlink to support upgrade of buildroot python3.10 to python3.12
-ln -srf ${TARGET_DIR}/usr/lib/python3.12 ${TARGET_DIR}/usr/lib/python3.10
+# Ensure python3 points to python3.12
 ln -srf ${TARGET_DIR}/usr/lib/python3.12 ${TARGET_DIR}/usr/lib/python3
-ln -srf ${BUILD_DIR}/python3-3.12.10 ${BUILD_DIR}/python3-3.10.10
 ln -srf ${BUILD_DIR}/python3-3.12.10 ${BUILD_DIR}/python3
 
 # Clean up test files included with numpy
