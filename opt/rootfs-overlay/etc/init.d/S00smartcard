@@ -1,0 +1,46 @@
+#!/bin/sh
+# Provides: smartcard-init
+# Starts OpenCT and IFD-NFC services on boot if available.
+
+start() {
+    if command -v openct-control >/dev/null 2>&1; then
+        echo "Starting OpenCT"
+        if ! openct-control init; then
+            echo "OpenCT initialization failed"
+        fi
+        sleep 3
+    fi
+    if command -v ifdnfc-activate >/dev/null 2>&1; then
+        echo "Activating IFD-NFC"
+        ifdnfc-activate yes
+    fi
+}
+
+stop() {
+    if command -v openct-control >/dev/null 2>&1; then
+        openct-control shutdown
+    fi
+    if command -v ifdnfc-activate >/dev/null 2>&1; then
+        ifdnfc-activate no
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 5
+        ;;
+esac
+
+exit $?
