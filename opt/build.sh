@@ -150,9 +150,12 @@ build_image() {
     # Set a fixed timestamp to ensure deterministic zip
     touch -d '2025-07-01 00:00:00' "${seedsigner_os_image_output}"
 
+    # Output checksum for the raw image before packaging
+    sha256sum "${seedsigner_os_image_output}"
+
     # Create a deterministic zip: -X strips extra metadata, -j flattens paths
     zip -X -j "${seedsigner_os_image_output}.zip" "${seedsigner_os_image_output}"
-	
+
     sha256sum "${seedsigner_os_image_output}.zip"
 	rm -f "${seedsigner_os_image_output}"  # Optionally remove unzipped .img
   fi
