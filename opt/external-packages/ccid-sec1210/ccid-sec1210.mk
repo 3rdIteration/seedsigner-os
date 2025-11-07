@@ -4,8 +4,8 @@
 #
 ################################################################################
 
-CCID_SEC1210_VERSION = 1.6.2-sec1210-rebase
-CCID_SEC1210_SITE = $(call github,3rdIteration,CCID,$(CCID_SEC1210_VERSION))
+CCID_SEC1210_VERSION = 1.7.0
+CCID_SEC1210_SITE = $(call github,LudovicRousseau,CCID,$(CCID_SEC1210_VERSION))
 CCID_SEC1210_LICENSE = LGPL-2.1+
 CCID_SEC1210_LICENSE_FILES = COPYING
 CCID_SEC1210_INSTALL_STAGING = YES
