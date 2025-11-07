@@ -1,0 +1,22 @@
+#!/bin/sh
+RESOLV_CONF="/etc/resolv.conf"
+
+case "$1" in
+    deconfig)
+        ip addr flush dev $interface
+        ;;
+    renew|bound)
+        ip addr flush dev $interface
+        ip addr add $ip/$mask dev $interface
+        if [ -n "$router" ]; then
+            ip route add default via $router dev $interface
+        fi
+        echo -n > $RESOLV_CONF
+        for ns in $dns; do
+            echo "nameserver $ns" >> $RESOLV_CONF
+        done
+        ;;
+    *)
+        echo "unknown udhcpc action: $1" >&2
+        ;;
+esac
