@@ -3,19 +3,13 @@ RESOLV_CONF="/etc/resolv.conf"
 
 case "$1" in
     deconfig)
-        ifconfig $interface 0.0.0.0 2>/dev/null
-        route del default dev $interface 2>/dev/null
+        ip addr flush dev $interface
         ;;
     renew|bound)
-        ifconfig $interface 0.0.0.0 2>/dev/null
-        if [ -n "$mask" ]; then
-            ifconfig $interface $ip netmask $mask ${broadcast:+broadcast $broadcast}
-        else
-            ifconfig $interface $ip
-        fi
+        ip addr flush dev $interface
+        ip addr add $ip/$mask dev $interface
         if [ -n "$router" ]; then
-            route del default dev $interface 2>/dev/null
-            route add default gw $router dev $interface
+            ip route add default via $router dev $interface
         fi
         echo -n > $RESOLV_CONF
         for ns in $dns; do
@@ -25,4 +19,4 @@ case "$1" in
     *)
         echo "unknown udhcpc action: $1" >&2
         ;;
-esac
+ esac
