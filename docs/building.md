@@ -144,6 +144,23 @@ total 26628
 
 That image can be burned to an SD card and run in your SeedSigner.
 
+### Determinism checklist
+
+The build container and scripts export a fixed `SOURCE_DATE_EPOCH=1713811000` (2025-04-22 18:36:40 UTC) and normalize filesystem metadata so every run converges to the same bytes. To self-verify:
+
+1. Remove any existing `output/` directory to guarantee a clean slate.
+2. Run the build twice.
+3. Compare artifacts:
+
+```bash
+sha256sum output/images/* > build1.sha256
+# clean the tree, run the build again
+sha256sum output/images/* > build2.sha256
+diff -u build1.sha256 build2.sha256
+```
+
+The hashes should be identical; any difference indicates a regression in the reproducible toolchain.
+
 
 
 

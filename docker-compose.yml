@@ -3,9 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        SOURCE_DATE_EPOCH: "1713811000"
     volumes:
       - ./opt:/opt
       - ./images:/images
       - ./.ccache:/root/.cache/ccache
       - ./.buildroot-ccache:/root/.buildroot-ccache
+    environment:
+      SOURCE_DATE_EPOCH: "1713811000"
+      TZ: UTC
     command: "${SS_ARGS:---no-op}"

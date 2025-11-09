@@ -3,6 +3,13 @@
 set -o errexit -o pipefail
 export FORCE_UNSAFE_CONFIGURE=1 # Allows buildroot/tar to run as root user in docker container
 
+: "${SOURCE_DATE_EPOCH:=1713811000}"
+export SOURCE_DATE_EPOCH
+export TZ=UTC
+export CARGO_HOME="${CARGO_HOME:-/build/.cargo}"
+export RUSTFLAGS="--remap-path-prefix=${PWD}=. -C linker-plugin-lto=no"
+export RUSTC_WRAPPER=
+
 # global variables 
 cur_dir_name=${PWD##*/}
 cur_dir=$(pwd)
@@ -130,9 +137,9 @@ build_image() {
   # Setup external tree
   #make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ #2> /dev/null > /dev/null
 
-  PATH="/usr/lib/ccache:${PATH}" make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ ${config_name}_defconfig
+  make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ ${config_name}_defconfig
   cd "${build_dir}"
-  PATH="/usr/lib/ccache:${PATH}" make
+  make
   
   # if successful, mv seedsigner_os.img image to /images
   # rename to image to include branch name and config name, then compress
@@ -148,13 +155,15 @@ build_image() {
   if [ -f "${build_dir}/images/seedsigner_os.img" ] && [ -d "${image_dir}" ]; then
     mv -f "${build_dir}/images/seedsigner_os.img" "${seedsigner_os_image_output}"
     # Set a fixed timestamp to ensure deterministic zip
-    touch -d '2025-07-01 00:00:00' "${seedsigner_os_image_output}"
+    touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}"
 
     # Output checksum for the raw image before packaging
     sha256sum "${seedsigner_os_image_output}"
 
     # Create a deterministic zip: -X strips extra metadata, -j flattens paths
     zip -X -j "${seedsigner_os_image_output}.zip" "${seedsigner_os_image_output}"
+
+    touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}.zip"
 
     sha256sum "${seedsigner_os_image_output}.zip"
 	rm -f "${seedsigner_os_image_output}"  # Optionally remove unzipped .img
