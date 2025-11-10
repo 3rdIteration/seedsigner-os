@@ -85,4 +85,6 @@ find "${TARGET_DIR}" -name '.DS_Store' -print0 | xargs -0 --no-run-if-empty rm -
 # Add python byte code (aka __pycache__ directories) to increase boot and import module speed
 SOURCE_DATE_EPOCH=1 PYTHONHASHSEED=0 ${HOST_DIR}/bin/python3.12 \
   "${BUILD_DIR}/python3-3.12.10/Lib/compileall.py" \
-  -f --invalidation-mode=checked-hash "${TARGET_DIR}/opt/src"
+  -f --invalidation-mode=checked-hash \
+  -d /opt/src \
+  "${TARGET_DIR}/opt/src"
