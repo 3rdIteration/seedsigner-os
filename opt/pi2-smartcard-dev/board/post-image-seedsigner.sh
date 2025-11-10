@@ -1,5 +1,9 @@
 #!/bin/bash
 
+set -e
+
+readonly diy_timestamp="2023/01/01T12:15:05"
+
 echo *****Generating DIY-Tools Image*****
 
 # Download DIY tools and package them into an image file for easy mounting
@@ -46,6 +50,9 @@ rm -R -f ./Satochip-DIY/sdks/jc305u4_kit
 rm -R -f ./Satochip-DIY/sdks/jc310b43_kit
 rm -R -f ./Satochip-DIY/sdks/jc310r20210706_kit
 mv ./Satochip-DIY ./diy/Satochip-DIY
+
+# Normalize timestamps so the squashfs image is reproducible across builds.
+find ./diy -exec touch -d "${diy_timestamp}" {} +
 
 genimage \
 	--rootpath ./diy   \
