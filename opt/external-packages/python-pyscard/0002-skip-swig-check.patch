@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 18 Mar 2025 00:00:00 +0000
+Subject: [PATCH] setup: skip swig presence check
+
+Buildroot guarantees that the swig host tool is available when building
+this package. The upstream setup script aborts early if swig cannot be
+located on PATH. Remove the explicit check so the build proceeds and
+relies on Buildroot's dependency handling.
+
+---
+ setup.py | 10 +++-------
+ 1 file changed, 3 insertions(+), 7 deletions(-)
+
+diff --git a/setup.py b/setup.py
+index 1111111..2222222 100644
+--- a/setup.py
++++ b/setup.py
+@@
+ class BuildPyBuildExtFirst(build_py):
+@@
+-        if which("swig") is None:
+-            print("Install swig and try again")
+-            print("")
+-            exit(1)
+-        # Run build_ext first so that SWIG generated files are included
+-        self.run_command("build_ext")
+-        return build_py.run(self)
++        # Buildroot provides swig; skip explicit presence check and run
++        # the extension build directly.
++        self.run_command("build_ext")
++        return build_py.run(self)
+--
+2.34.1

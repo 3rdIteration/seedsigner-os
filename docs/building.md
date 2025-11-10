@@ -16,7 +16,7 @@ In a terminal window:
 
 ```bash
 # Copy the SeedSigner OS repo to your local machine
-git clone --recursive https://github.com/SeedSigner/seedsigner-os.git
+git clone --recursive https://github.com/3rdIteration/seedsigner-os.git
 
 # Move into the repo directory
 cd seedsigner-os
@@ -47,11 +47,13 @@ export BOARD_TYPE=pi0
 Set your target release version of the SeedSigner code (see: https://github.com/SeedSigner/seedsigner/releases):
 
 ```bash
+
 # e.g. 0.8.0, 0.7.0, etc
 export RELEASE_TAG=x.y.z
+
 ```
 
-Checkout the branch associated to the target release version of the SeedSigner code (e.g. 0.8.5, 0.8.0, etc)
+Checkout the branch associated to the target release version of the SeedSigner code (e.g. 0.8.6, 0.8.0, etc)
 ```bash
 git checkout $RELEASE_TAG
 ```
@@ -64,7 +66,7 @@ git submodule update
 
 #### Start the build!
 ```bash
-SS_ARGS="--$BOARD_TYPE --app-branch=$RELEASE_TAG" docker compose up --force-recreate --build
+SS_ARGS="--$BOARD_TYPE --app-repo=https://github.com/3rdIteration/seedsigner --smartcard" docker compose up --force-recreate --build
 ```
 </p>
 </details>
@@ -96,7 +98,7 @@ Set your target release version of the SeedSigner code (see: https://github.com/
 $env:RELEASE_TAG = "x.y.z"  
 ```
 
-Checkout the branch associated to the target release version of the SeedSigner code (e.g. 0.8.5, 0.8.0, etc)
+Checkout the branch associated to the target release version of the SeedSigner code (e.g. 0.8.6, 0.8.0, etc)
 ```powershell
 git checkout $env:RELEASE_TAG
 ```

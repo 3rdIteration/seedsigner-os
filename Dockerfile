@@ -18,6 +18,7 @@ perl \
 tar \
 cpio \
 unzip \
+zip \
 rsync \
 file \
 bc \
@@ -31,7 +32,9 @@ dosfstools \
 ccache \
 python3 \
 python3-pip \
-python3-virtualenv
+python3-virtualenv \
+swig \
+squashfs-tools
 
 # Locale
 RUN locale-gen en_US.UTF-8  

@@ -17,7 +17,8 @@ dtparam=spi=on
 boot_delay=0
 disable_splash=1
 
-# raspberry firmware config to disable wifi and bluetooth 
-# https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README
-dtoverlay=disable-wifi
-dtoverlay=disable-bt
+# The following overlays disable the on-board WiFi and Bluetooth.
+# They are commented out to enable integrated WiFi.
+# Uncomment to disable either interface if required.
+#dtoverlay=disable-wifi
+#dtoverlay=disable-bt

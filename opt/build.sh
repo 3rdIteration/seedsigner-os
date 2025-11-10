@@ -3,10 +3,10 @@
 set -o errexit -o pipefail
 export FORCE_UNSAFE_CONFIGURE=1 # Allows buildroot/tar to run as root user in docker container
 
-# global variables
+# global variables 
 cur_dir_name=${PWD##*/}
 cur_dir=$(pwd)
-seedsigner_app_repo="https://github.com/SeedSigner/seedsigner.git"
+seedsigner_app_repo="https://github.com/3rditeration/seedsigner.git"
 seedsigner_app_repo_branch="dev"
 
 help()
@@ -18,11 +18,13 @@ help()
       --pi0         Build for pi0 and pi0w
       --pi2         Build for pi2
       --pi02w       Build for pi02w and pi3
+	  --pi02w-smartcard
       --pi4         Build for pi4 and pi4cmio
   
   Options:
   -h, --help           Display a help screen and quit 
       --dev            Builds developer version of images
+	  --smartcard      Builds with smartcard support
       --no-clean       Leave previous build, target, and output files
       --skip-repo      Skip pulling repo, assume rootfs-overlay/opt is populated with app code
       --app-repo       Build image with not official seedsigner github repo
@@ -78,8 +80,7 @@ download_app_repo() {
   rm -rf ${rootfs_overlay}/opt/seedsigner-screenshots
   rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/.git*
   rm -rf ${rootfs_overlay}/opt/tests
-  rm -rf ${rootfs_overlay}/opt/tools
-  # files
+  #rm -rf ${rootfs_overlay}/opt/tools
   rm -rf ${rootfs_overlay}/opt/.git*
   rm -rf ${rootfs_overlay}/opt/docker-compose.yml
   rm -rf ${rootfs_overlay}/opt/LICENSE.md
@@ -136,7 +137,9 @@ build_image() {
   # if successful, mv seedsigner_os.img image to /images
   # rename to image to include branch name and config name, then compress
   
-  seedsigner_os_image_output="${image_dir}/seedsigner_os.${seedsigner_app_repo_branch}.${config_name}.img"
+  # Sanitize branch name so that it is safe for filenames
+  sanitized_branch=$(echo "${seedsigner_app_repo_branch}" | tr -c 'A-Za-z0-9_.-' '_')
+  seedsigner_os_image_output="${image_dir}/seedsigner_os.${sanitized_branch}.${config_name}.img"
   if ! [ -z ${seedsigner_app_repo_commit_id} ]; then
     # use commit id instead of branch name if it is set
     seedsigner_os_image_output="${image_dir}/seedsigner_os.${seedsigner_app_repo_commit_id}.${config_name}.img"
@@ -144,7 +147,17 @@ build_image() {
   
   if [ -f "${build_dir}/images/seedsigner_os.img" ] && [ -d "${image_dir}" ]; then
     mv -f "${build_dir}/images/seedsigner_os.img" "${seedsigner_os_image_output}"
+    # Set a fixed timestamp to ensure deterministic zip
+    touch -d '2025-07-01 00:00:00' "${seedsigner_os_image_output}"
+
+    # Output checksum for the raw image before packaging
     sha256sum "${seedsigner_os_image_output}"
+
+    # Create a deterministic zip: -X strips extra metadata, -j flattens paths
+    zip -X -j "${seedsigner_os_image_output}.zip" "${seedsigner_os_image_output}"
+
+    sha256sum "${seedsigner_os_image_output}.zip"
+	rm -f "${seedsigner_os_image_output}"  # Optionally remove unzipped .img
   fi
   
   cd - > /dev/null # return to previous working directory quietly
@@ -193,6 +206,9 @@ while (( "$#" )); do
     ;;
   --dev)
     DEVBUILD=0; shift
+    ;;
+  --smartcard)
+    SMARTCARD=0; shift
     ;;
   --app-repo=*)
     APP_REPO=$(echo "${1}" | cut -d "=" -f2-); shift
@@ -255,6 +271,12 @@ if ! [ -z $DEVBUILD ]; then
   DEVARG="-dev"
 fi
 
+# Check for --dev argument to pass to build_image function
+SMARTCARDARG=""
+if ! [ -z $SMARTCARD ]; then
+  SMARTCARDARG="-smartcard"
+fi
+
 # check for custom app repo
 if ! [ -z ${APP_REPO} ]; then
   seedsigner_app_repo="${APP_REPO}"
@@ -276,30 +298,30 @@ fi
 
 # Build All Architectures
 if ! [ -z ${ALL_FLAG} ]; then
-  build_image "pi0${DEVARG}" "clean" "${SKIPREPO_ARG}"
-  build_image "pi02w${DEVARG}" "clean" "skip-repo"
-  build_image "pi2${DEVARG}" "clean" "skip-repo"
-  build_image "pi4${DEVARG}" "clean" "skip-repo"
+  build_image "pi0${SMARTCARDARG}${DEVARG}" "clean" "${SKIPREPO_ARG}"
+  build_image "pi02w${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  build_image "pi2${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  build_image "pi4${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
 fi
 
 # Build only for pi0, pi0w, and pi1
 if ! [ -z ${PI0_FLAG} ]; then
-  build_image "pi0${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi0${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # Build only for pi2
 if ! [ -z ${PI2_FLAG} ]; then
-  build_image "pi2${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi2${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # build for pi02w
 if ! [ -z ${PI02W_FLAG} ]; then
-  build_image "pi02w${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi02w${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # build for pi4
 if ! [ -z ${PI4_FLAG} ]; then
-  build_image "pi4${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi4${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 exit 0
