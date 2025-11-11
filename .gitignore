@@ -2,3 +2,4 @@
 .idea/
 .buildroot-ccache/
 .ccache/
+/output/
