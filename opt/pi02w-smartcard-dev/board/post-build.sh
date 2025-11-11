@@ -49,6 +49,9 @@ rm -rf ${TARGET_DIR}/usr/lib/python3.12/zipfile.pyc
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/tarfile.pyc
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/pickletools.pyc
 
+# Remove cryptography metadata that still builds non-deterministically as of 2025-11-11
+rm -f ${TARGET_DIR}/usr/lib/python3.12/site-packages/cryptography-43.0.3.dist-info/RECORD
+
 # ### Reproducibility experimentation
 # ### Remove all pyc files I can seem to make reproducible and keep the py versions
 
