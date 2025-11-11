@@ -12,6 +12,7 @@ PYTHON_PYSCARD_LICENSE = LGPL
 PYTHON_PYSCARD_DEPENDENCIES += host-swig
 # Explicitly point setup.py to the host-provided swig binary
 PYTHON_PYSCARD_ENV += SWIG="$(HOST_DIR)/bin/swig"
+PYTHON_PYSCARD_ENV += $(SEEDSIGNER_NO_DEBUG_ENV)
 
  
  $(eval $(python-package))
