@@ -116,11 +116,13 @@ build_image() {
   fi
   
   if [ "${2}" != "no-clean" ]; then
-  
+
     # remove previous build dir
-    rm -rf "${build_dir}"
+    if [ -d "${build_dir}" ]; then
+      find "${build_dir}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    fi
     mkdir -p "${build_dir}"
-    
+
   fi
   
   if [ "${3}" != "skip-repo" ]; then
