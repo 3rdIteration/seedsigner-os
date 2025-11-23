@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PYTHON_INFLATE64
+bool "python-inflate64"
+help
+  Deflate64 compression/decompression library
+
+  https://pypi.org/project/inflate64/

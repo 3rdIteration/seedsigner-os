@@ -1,0 +1,7 @@
+config BR2_PACKAGE_PYTHON_PYZSTD
+bool "python-pyzstd"
+select BR2_PACKAGE_PYTHON_TYPING_EXTENSIONS
+help
+  Python bindings to Zstandard (zstd) compression library.
+
+  https://pypi.org/project/pyzstd/

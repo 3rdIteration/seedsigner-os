@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PYTHON_MULTIVOLUMEFILE
+bool "python-multivolumefile"
+help
+  Multi volume file wrapper library
+
+  https://pypi.org/project/multivolumefile/
