@@ -56,7 +56,8 @@ download_app_repo() {
     cd -
   else
     echo "cloning repo ${seedsigner_app_repo} with branch ${seedsigner_app_repo_branch}"
-    git clone --recurse-submodules --depth 1 -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
+    git clone --recurse-submodules -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
+    git -C "${rootfs_overlay}/opt/" submodule sync --recursive
     git -C "${rootfs_overlay}/opt/" submodule update --init --recursive
   fi
 
@@ -66,9 +67,28 @@ download_app_repo() {
   cd ${rootfs_overlay}/opt
   pip install babel || exit
   pip install -e . || exit
+
+  translations_root="${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations"
+  catalog_root="${translations_root}/l10n"
+
+  if [ ! -d "${catalog_root}" ]; then
+    echo "Translation catalog directory missing at ${catalog_root}"
+    exit 1
+  fi
+
+  if ! find "${catalog_root}" -name "*.po" -print -quit | grep -q .; then
+    echo "No source translation files (.po) were found; aborting build"
+    exit 1
+  fi
+
   # remove any existing binary mo files if they exist
   rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.mo
   python3 setup.py compile_catalog || exit
+  compiled_locales=$(find "${catalog_root}" -name "*.mo" | wc -l)
+  if [ "${compiled_locales}" -lt 2 ]; then
+    echo "Expected multiple compiled locale files but found ${compiled_locales}"
+    exit 1
+  fi
   cd -
   deactivate
 
