@@ -147,17 +147,20 @@ build_image() {
   
   if [ -f "${build_dir}/images/seedsigner_os.img" ] && [ -d "${image_dir}" ]; then
     mv -f "${build_dir}/images/seedsigner_os.img" "${seedsigner_os_image_output}"
-    # Set a fixed timestamp to ensure deterministic zip
-    touch -d '2025-07-01 00:00:00' "${seedsigner_os_image_output}"
+
+    # Normalize timestamps for reproducible artifacts (2025-07-01 00:00:00 UTC)
+    SOURCE_DATE_EPOCH=1751328000
+    TZ=UTC touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}"
 
     # Output checksum for the raw image before packaging
     sha256sum "${seedsigner_os_image_output}"
 
-    # Create a deterministic zip: -X strips extra metadata, -j flattens paths
-    zip -X -j "${seedsigner_os_image_output}.zip" "${seedsigner_os_image_output}"
+    # Create a normalized zip to avoid host-specific metadata
+    TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} zip -X -j "${seedsigner_os_image_output}.zip" "${seedsigner_os_image_output}"
+    TZ=UTC touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}.zip"
 
     sha256sum "${seedsigner_os_image_output}.zip"
-	rm -f "${seedsigner_os_image_output}"  # Optionally remove unzipped .img
+    rm -f "${seedsigner_os_image_output}"  # Optionally remove unzipped .img
   fi
   
   cd - > /dev/null # return to previous working directory quietly
