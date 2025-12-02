@@ -155,13 +155,14 @@ build_image() {
     # Output checksum for the raw image before packaging
     sha256sum "${seedsigner_os_image_output}"
 
-    # Create a deterministic zip archive using bsdtar
+    # Create a deterministic zip archive using deterministic-zip
     image_dirname=$(dirname "${seedsigner_os_image_output}")
     image_basename=$(basename "${seedsigner_os_image_output}")
-    TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} bsdtar --uid 0 --gid 0 --uname root --gname root \
-      --format zip \
-      -cf "${seedsigner_os_image_output}.zip" -C "${image_dirname}" "${image_basename}"
-    TZ=UTC touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}.zip"
+    (
+      cd "${image_dirname}"
+      TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} deterministic-zip "${image_basename}.zip" "${image_basename}"
+      TZ=UTC touch -d "@${SOURCE_DATE_EPOCH}" "${image_basename}.zip"
+    )
 
     sha256sum "${seedsigner_os_image_output}.zip"
     rm -f "${seedsigner_os_image_output}"  # Optionally remove unzipped .img
