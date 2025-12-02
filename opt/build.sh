@@ -159,7 +159,7 @@ build_image() {
     image_dirname=$(dirname "${seedsigner_os_image_output}")
     image_basename=$(basename "${seedsigner_os_image_output}")
     TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} bsdtar --uid 0 --gid 0 --uname root --gname root \
-      --format zip --mtime "@${SOURCE_DATE_EPOCH}" \
+      --format zip \
       -cf "${seedsigner_os_image_output}.zip" -C "${image_dirname}" "${image_basename}"
     TZ=UTC touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}.zip"
 
