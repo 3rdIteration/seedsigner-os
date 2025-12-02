@@ -51,7 +51,7 @@ RUN echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
 RUN echo "LANG=en_US.UTF-8" > /etc/locale.conf
 RUN locale-gen en_US.UTF-8
 
-COPY --from=deterministic_zip /deterministic-zip /usr/local/bin/deterministic-zip
+COPY --from=deterministic_zip /bin/deterministic-zip /usr/local/bin/deterministic-zip
 
 WORKDIR /opt
 ENTRYPOINT ["./build.sh"]
