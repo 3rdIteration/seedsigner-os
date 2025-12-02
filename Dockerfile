@@ -1,3 +1,5 @@
+FROM timoreymann/deterministic-zip:5.2.0 as deterministic_zip
+
 FROM debian:12
 
 # buildroot dependencies
@@ -19,6 +21,7 @@ tar \
 cpio \
 unzip \
 zip \
+libarchive-tools \
 rsync \
 file \
 bc \
@@ -34,7 +37,8 @@ python3 \
 python3-pip \
 python3-virtualenv \
 swig \
-squashfs-tools
+squashfs-tools \
+strip-nondeterminism
 
 # Locale
 RUN locale-gen en_US.UTF-8  
@@ -46,6 +50,8 @@ RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
 RUN echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
 RUN echo "LANG=en_US.UTF-8" > /etc/locale.conf
 RUN locale-gen en_US.UTF-8
+
+COPY --from=deterministic_zip /deterministic-zip /usr/local/bin/deterministic-zip
 
 WORKDIR /opt
 ENTRYPOINT ["./build.sh"]
