@@ -148,18 +148,19 @@ build_image() {
   if [ -f "${build_dir}/images/seedsigner_os.img" ] && [ -d "${image_dir}" ]; then
     mv -f "${build_dir}/images/seedsigner_os.img" "${seedsigner_os_image_output}"
 
-    # Normalize timestamps for reproducible artifacts (2025-07-01 00:00:00 UTC)
-    SOURCE_DATE_EPOCH=1751328000
+    # Normalize timestamps for reproducible artifacts (2023-11-14 22:13:20 UTC)
+    SOURCE_DATE_EPOCH=1700000000
     TZ=UTC touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}"
 
     # Output checksum for the raw image before packaging
     sha256sum "${seedsigner_os_image_output}"
 
-    # Create a normalized zip to avoid host-specific metadata
-    TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} zip -X -j "${seedsigner_os_image_output}.zip" "${seedsigner_os_image_output}"
-
-    # Strip any remaining nondeterministic metadata from the archive
-    TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} strip-nondeterminism --type zip "${seedsigner_os_image_output}.zip"
+    # Create a deterministic zip archive using bsdtar
+    image_dirname=$(dirname "${seedsigner_os_image_output}")
+    image_basename=$(basename "${seedsigner_os_image_output}")
+    TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} bsdtar --uid 0 --gid 0 --uname root --gname root \
+      --format zip --mtime "@${SOURCE_DATE_EPOCH}" \
+      -cf "${seedsigner_os_image_output}.zip" -C "${image_dirname}" "${image_basename}"
     TZ=UTC touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}.zip"
 
     sha256sum "${seedsigner_os_image_output}.zip"

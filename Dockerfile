@@ -19,6 +19,7 @@ tar \
 cpio \
 unzip \
 zip \
+libarchive-tools \
 rsync \
 file \
 bc \
