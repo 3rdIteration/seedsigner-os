@@ -34,7 +34,8 @@ python3 \
 python3-pip \
 python3-virtualenv \
 swig \
-squashfs-tools
+squashfs-tools \
+strip-nondeterminism
 
 # Locale
 RUN locale-gen en_US.UTF-8  

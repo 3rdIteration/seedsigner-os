@@ -157,6 +157,9 @@ build_image() {
 
     # Create a normalized zip to avoid host-specific metadata
     TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} zip -X -j "${seedsigner_os_image_output}.zip" "${seedsigner_os_image_output}"
+
+    # Strip any remaining nondeterministic metadata from the archive
+    TZ=UTC SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} strip-nondeterminism --type zip "${seedsigner_os_image_output}.zip"
     TZ=UTC touch -d "@${SOURCE_DATE_EPOCH}" "${seedsigner_os_image_output}.zip"
 
     sha256sum "${seedsigner_os_image_output}.zip"
