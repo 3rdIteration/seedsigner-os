@@ -22,10 +22,11 @@ help()
       --pi4         Build for pi4 and pi4cmio
   
   Options:
-  -h, --help           Display a help screen and quit 
+  -h, --help           Display a help screen and quit
       --dev            Builds developer version of images
-	  --smartcard      Builds with smartcard support
+          --smartcard      Builds with smartcard support
       --no-clean       Leave previous build, target, and output files
+      --debug-rootfs   Compress the built root filesystem into a tar.gz archive
       --skip-repo      Skip pulling repo, assume rootfs-overlay/opt is populated with app code
       --app-repo       Build image with not official seedsigner github repo
       --app-branch     Build image with repo branch other than default
@@ -153,6 +154,20 @@ build_image() {
     # Output checksum for the raw image
     sha256sum "${seedsigner_os_image_output}"
   fi
+
+  if [ -n "${DEBUG_ROOTFS}" ] && [ -d "${build_dir}/target" ]; then
+    rootfs_tar_output="${image_dir}/seedsigner_os_rootfs.${sanitized_branch}.${config_name}.tar.gz"
+    if ! [ -z ${seedsigner_app_repo_commit_id} ]; then
+      rootfs_tar_output="${image_dir}/seedsigner_os_rootfs.${seedsigner_app_repo_commit_id}.${config_name}.tar.gz"
+    fi
+
+    reproducible_mtime='2025-07-01 00:00:00'
+    GZIP='-n' tar --sort=name --mtime="${reproducible_mtime}" --owner=0 --group=0 --numeric-owner \
+      --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime \
+      -C "${build_dir}" -czf "${rootfs_tar_output}" target
+    touch -d "${reproducible_mtime}" "${rootfs_tar_output}"
+    sha256sum "${rootfs_tar_output}"
+  fi
   
   cd - > /dev/null # return to previous working directory quietly
 }
@@ -203,6 +218,9 @@ while (( "$#" )); do
     ;;
   --smartcard)
     SMARTCARD=0; shift
+    ;;
+  --debug-rootfs)
+    DEBUG_ROOTFS=0; shift
     ;;
   --app-repo=*)
     APP_REPO=$(echo "${1}" | cut -d "=" -f2-); shift
