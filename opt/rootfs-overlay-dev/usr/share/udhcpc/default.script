@@ -19,4 +19,4 @@ case "$1" in
     *)
         echo "unknown udhcpc action: $1" >&2
         ;;
-esac
+ esac
