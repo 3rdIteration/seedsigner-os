@@ -46,9 +46,6 @@ rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/embit/util/prebuilt/libsecp25
 rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/pyzbar/tests
 rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/qrcode/tests
 
-rm -rf ${TARGET_DIR}/usr/lib/python3/turtledemo
-rm -rf ${TARGET_DIR}/usr/lib/python3/unittest
-rm -rf ${TARGET_DIR}/usr/lib/python3/ensurepip
 
 # ### Reproducibility experimentation
 # ### Remove all pyc files I can seem to make reproducible and keep the py versions
