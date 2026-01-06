@@ -6,4 +6,15 @@ cd /opt/src/
 /usr/bin/python3 main.py &
 
 # Set the date to release so that GPG can work
-/bin/date -s "2025-02-28 12:00"
+TIME_FALLBACK="2025-02-28 12:00"
+TIME_FILE="/mnt/microsd/time.txt"
+TIME_VALUE="$TIME_FALLBACK"
+
+if [ -f "$TIME_FILE" ]; then
+    TIME_FROM_FILE=$(tr -d '\r\n' < "$TIME_FILE")
+    if [ -n "$TIME_FROM_FILE" ]; then
+        TIME_VALUE="$TIME_FROM_FILE"
+    fi
+fi
+
+/bin/date -s "$TIME_VALUE" || /bin/date -s "$TIME_FALLBACK"
