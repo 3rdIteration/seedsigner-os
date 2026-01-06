@@ -46,14 +46,6 @@ rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/embit/util/prebuilt/libsecp25
 rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/pyzbar/tests
 rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/qrcode/tests
 
-# Clean up bigger python modules we don't need
-rm -rf ${TARGET_DIR}/usr/lib/python3/turtle.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3/pydoc.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3/doctest.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3/mailbox.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3/zipfile.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3/tarfile.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3/pickletools.pyc
 rm -rf ${TARGET_DIR}/usr/lib/python3/turtledemo
 rm -rf ${TARGET_DIR}/usr/lib/python3/unittest
 rm -rf ${TARGET_DIR}/usr/lib/python3/ensurepip

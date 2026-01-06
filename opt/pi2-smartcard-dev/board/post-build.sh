@@ -40,14 +40,6 @@ rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/embit/liquid
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/pyzbar/tests
 rm -rf ${TARGET_DIR}/usr/lib/python3.12/site-packages/qrcode/tests
 
-# Clean up bigger python modules we don't need
-rm -rf ${TARGET_DIR}/usr/lib/python3.12/turtle.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3.12/pydoc.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3.12/doctest.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3.12/mailbox.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3.12/zipfile.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3.12/tarfile.pyc
-rm -rf ${TARGET_DIR}/usr/lib/python3.12/pickletools.pyc
 
 # Remove cryptography metadata that still builds non-deterministically as of 2025-11-11
 rm -f ${TARGET_DIR}/usr/lib/python3.12/site-packages/cryptography-43.0.3.dist-info/RECORD
