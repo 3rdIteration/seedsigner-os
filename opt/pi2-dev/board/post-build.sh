@@ -68,26 +68,6 @@ rm -f ${TARGET_DIR}/usr/lib/python3/site-packages/numpy/lib/stride_tricks.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/traceback.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/_sysconfigdata__linux_arm-linux-gnueabihf.pyc
 
-find ${TARGET_DIR}/usr/lib/python3.12 -name '*.py' \
-	-not -path "*/python3.12/multiprocessing/connection.py" \
-	-not -path "*/python3.12/json/decoder.py" \
-	-not -path "*/python3.12/site-packages/numpy/core/_string_helpers.py" \
-	-not -path "*/python3.12/site-packages/numpy/distutils/ccompiler.py" \
-	-not -path "*/python3.12/site-packages/numpy/distutils/command/build_py.py" \
-	-not -path "*/python3.12/site-packages/numpy/distutils/misc_util.py" \
-	-not -path "*/python3.12/site-packages/numpy/distutils/system_info.py" \
-	-not -path "*/python3.12/site-packages/numpy/f2py/auxfuncs.py" \
-	-not -path "*/python3.12/site-packages/numpy/f2py/crackfortran.py" \
-	-not -path "*/python3.12/site-packages/numpy/f2py/f2py2e.py" \
-	-not -path "*/python3.12/site-packages/numpy/lib/_iotools.py" \
-	-not -path "*/python3.12/site-packages/numpy/lib/npyio.py" \
-	-not -path "*/python3.12/site-packages/numpy/lib/recfunctions.py" \
-	-not -path "*/python3.12/site-packages/numpy/lib/stride_tricks.py" \
-	-not -path "*/python3.12/traceback.py" \
-	-not -path "*/python3.12/_sysconfigdata__linux_arm-linux-gnueabihf.py" \
-	-print0 | \
-	xargs -0 --no-run-if-empty rm -f
-
 find "${TARGET_DIR}" -name '.DS_Store' -print0 | xargs -0 --no-run-if-empty rm -f
 
 # Add python byte code (aka __pycache__ directories) to increase boot and import module speed
