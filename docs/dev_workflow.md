@@ -80,6 +80,7 @@ Development images automatically bring up networking to enable remote access and
 
 - **Ethernet:** if a cable is connected, the interface requests an IP address via DHCP at boot. (Tested with Pi2 and Pi4 integrated ethernet, also on a number of Pi models with USB-Ethernet adapters which generally work well)
 - **Wi-Fi:** place a `wifi.txt` file on the root of the external MicroSD card with the network's SSID on the first line and the password on the second line. Also, open `config.txt` on the MicroSD root folder and follow the instructions in there to comment out any overlays that will prevent wifi from working. The boot script uses these credentials to connect and obtain an address via DHCP.
+- **Time override:** place a `time.txt` file on the root of the external MicroSD card to override the boot clock. The file should contain a single line matching the format used by `start.sh`, for example: `2025-02-28 12:00`.
 Both interfaces obtain their default gateway and DNS servers from DHCP so Internet hosts can be reached and names resolved automatically. (Tested on Pi0w, Pi02w and Pi4)
 
 Once networked, you can connect using the Dropbear SSH server that runs by default. Development images ship with a fixed SSH key pair for the `root` user:
@@ -104,4 +105,3 @@ The images also include `git` (with HTTPS support so repositories can be cloned 
 For basic diagnostics, development builds provide the `ping` utility as well as a `network-info` page on the device's Tools screen. The page displays the unit's hostname, assigned IP address(es), default gateway and DNS servers. The classic `ifconfig` tool is also available for inspecting or manually bringing interfaces up and down if networking does not come up automatically.
 
 Development kernels bundle drivers for many USB-to-Ethernet adapters, so most USB network dongles work out of the box.
-
