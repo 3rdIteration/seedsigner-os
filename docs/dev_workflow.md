@@ -100,8 +100,8 @@ ssh -i seedsigner_dev_ed25519 root@<device-ip>
 
 Password logins are disabled for SSH, but the console still auto‑logs in as root with the default `passworDT` password.
 The images also include `git` (with HTTPS support so repositories can be cloned directly from sites like GitHub) and `rsync` for convenient remote development and file transfer.
+Python `pip` is available in dev images, but the rootfs does not include all build dependencies required to compile arbitrary packages from source. For best results, install prebuilt wheels targeting Python 3.12 on armv7l (for example from https://bjia56.github.io/armv7l-wheels/ or a wheel you compile yourself).
 
 For basic diagnostics, development builds provide the `ping` utility as well as a `network-info` page on the device's Tools screen. The page displays the unit's hostname, assigned IP address(es), default gateway and DNS servers. The classic `ifconfig` tool is also available for inspecting or manually bringing interfaces up and down if networking does not come up automatically.
 
 Development kernels bundle drivers for many USB-to-Ethernet adapters, so most USB network dongles work out of the box.
-
