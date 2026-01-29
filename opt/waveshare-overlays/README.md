@@ -10,3 +10,11 @@ smartcard-dev images so they are copied into the boot partition:
 The SeedSigner smartcard-dev post-build step will copy these files into the
 `/boot/overlays` directory if they are present. These overlays are typically
 available on Raspberry Pi OS installations or from the Waveshare wiki.
+
+Alternate boot configs are written to the boot partition as:
+
+- `config-dpi.txt` (DPI display enabled, UART smartcard pins unavailable)
+- `config-uart.txt` (UART smartcard enabled, no DPI display)
+
+To switch between them, rename the desired file to `config.txt` on the boot
+partition.

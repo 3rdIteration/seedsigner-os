@@ -6,6 +6,12 @@ set -e
 # Overlay dev-specific startup script for MicroSD override
 cp -a "${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../rootfs-overlay-dev/." "${TARGET_DIR}/"
 
+# Expose alternate boot configs on the boot partition for easy swapping
+BOARD_DIR="$(dirname "$0")"
+mkdir -p "${BINARIES_DIR}/rpi-firmware"
+cp "${BOARD_DIR}/boot_config.txt" "${BINARIES_DIR}/rpi-firmware/config-dpi.txt"
+cp "${BOARD_DIR}/boot_config-uart.txt" "${BINARIES_DIR}/rpi-firmware/config-uart.txt"
+
 # Copy Waveshare 2.8" DPI overlays into the boot partition if provided
 WAVESHARE_OVERLAYS_DIR="${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../waveshare-overlays"
 if [ -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
