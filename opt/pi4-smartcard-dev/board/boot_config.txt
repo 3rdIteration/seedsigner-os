@@ -37,6 +37,10 @@ dtparam=i2c_arm=on
 dtparam=spi=off
 dtparam=audio=off
 
+# Note: DPI uses GPIO14/15, which conflicts with the primary UART used by the
+# smartcard adapter. UART-based smartcards will not work when the DPI display
+# is enabled.
+
 # raspberry firmware config to disable wifi and bluetooth 
 # https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README
 dtoverlay=disable-wifi
