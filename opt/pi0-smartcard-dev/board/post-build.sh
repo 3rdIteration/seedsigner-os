@@ -14,6 +14,8 @@ cp "${BOARD_DIR}/boot_config-uart.txt" "${BINARIES_DIR}/rpi-firmware/config-uart
 
 # Copy Waveshare 2.8" DPI overlays into the boot partition if provided
 WAVESHARE_OVERLAYS_DIR="${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../waveshare-overlays"
+WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT="https://files.waveshare.com/wiki/2.8inc-DPI-LCD/28DPI-DTBO.zip"
+WAVESHARE_OVERLAYS_ZIP_URL="${WAVESHARE_OVERLAYS_ZIP_URL:-${WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT}}"
 if [ -n "${WAVESHARE_OVERLAYS_ZIP_URL:-}" ] && [ ! -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
 	mkdir -p "${WAVESHARE_OVERLAYS_DIR}"
 	tmp_zip="$(mktemp)"
