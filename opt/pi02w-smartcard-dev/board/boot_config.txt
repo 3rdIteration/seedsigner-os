@@ -28,6 +28,7 @@ dpi_mode=87
 dpi_output_format=0x7F206
 hdmi_timings=480 0 26 16 10 640 0 25 10 15 0 0 0 60 0 32000000 1
 extra_transpose_buffer=2
+enable_uart=0
 
 # Overlays
 dtoverlay=waveshare-28dpi-3b-4b
