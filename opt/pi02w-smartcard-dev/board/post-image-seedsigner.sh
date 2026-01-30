@@ -90,27 +90,14 @@ mv SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap ${BINARIES_DIR}/SmartPGP-RSA2048.ca
 wget https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap
 mv SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap ${BINARIES_DIR}/SmartPGP-RSA4096.cap
 
-rm -R -f ./tmp/
-
-cd buildroot
-
-# Create main system image 
-echo *****Generating Main System Image*****
-
-set -e
-
-BOARD_DIR="$(dirname $0)"
-BOARD_NAME="$(basename ${BOARD_DIR})"
-GENIMAGE_CFG="${BOARD_DIR}/genimage-rpi-seedsigner.cfg"
-GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
-
-# Ensure Waveshare overlays are present in the boot overlays directory
+# Get Waveshare 2.8" DPI overlays
 WAVESHARE_OVERLAYS_DIR="${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../waveshare-overlays"
 WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT="https://files.waveshare.com/wiki/2.8inc-DPI-LCD/28DPI-DTBO.zip"
 WAVESHARE_OVERLAYS_ZIP_URL="${WAVESHARE_OVERLAYS_ZIP_URL:-${WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT}}"
 if [ -n "${WAVESHARE_OVERLAYS_ZIP_URL:-}" ] && [ ! -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
 	mkdir -p "${WAVESHARE_OVERLAYS_DIR}"
 	tmp_zip="$(mktemp)"
+	echo "Downloading Waveshare overlays from ${WAVESHARE_OVERLAYS_ZIP_URL}"
 	wget -O "${tmp_zip}" "${WAVESHARE_OVERLAYS_ZIP_URL}"
 	python - <<'PY' "${tmp_zip}" "${WAVESHARE_OVERLAYS_DIR}"
 import sys
@@ -142,6 +129,20 @@ if [ -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
 		fi
 	done
 fi
+
+rm -R -f ./tmp/
+
+cd buildroot
+
+# Create main system image 
+echo *****Generating Main System Image*****
+
+set -e
+
+BOARD_DIR="$(dirname $0)"
+BOARD_NAME="$(basename ${BOARD_DIR})"
+GENIMAGE_CFG="${BOARD_DIR}/genimage-rpi-seedsigner.cfg"
+GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
 
 # Pass an empty rootpath. genimage makes a full copy of the given rootpath to
 # ${GENIMAGE_TMP}/root so passing TARGET_DIR would be a waste of time and disk
