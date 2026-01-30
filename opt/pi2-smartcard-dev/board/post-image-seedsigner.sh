@@ -111,7 +111,7 @@ WAVESHARE_OVERLAYS_ZIP_URL="${WAVESHARE_OVERLAYS_ZIP_URL:-${WAVESHARE_OVERLAYS_Z
 if [ -n "${WAVESHARE_OVERLAYS_ZIP_URL:-}" ] && [ ! -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
 	mkdir -p "${WAVESHARE_OVERLAYS_DIR}"
 	tmp_zip="$(mktemp)"
-	curl -fL "${WAVESHARE_OVERLAYS_ZIP_URL}" -o "${tmp_zip}"
+	wget -O "${tmp_zip}" "${WAVESHARE_OVERLAYS_ZIP_URL}"
 	python - <<'PY' "${tmp_zip}" "${WAVESHARE_OVERLAYS_DIR}"
 import sys
 import zipfile
