@@ -104,6 +104,45 @@ BOARD_NAME="$(basename ${BOARD_DIR})"
 GENIMAGE_CFG="${BOARD_DIR}/genimage-rpi-seedsigner.cfg"
 GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
 
+# Ensure Waveshare overlays are present in the boot overlays directory
+WAVESHARE_OVERLAYS_DIR="${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../waveshare-overlays"
+WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT="https://files.waveshare.com/wiki/2.8inc-DPI-LCD/28DPI-DTBO.zip"
+WAVESHARE_OVERLAYS_ZIP_URL="${WAVESHARE_OVERLAYS_ZIP_URL:-${WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT}}"
+if [ -n "${WAVESHARE_OVERLAYS_ZIP_URL:-}" ] && [ ! -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
+	mkdir -p "${WAVESHARE_OVERLAYS_DIR}"
+	tmp_zip="$(mktemp)"
+	curl -fL "${WAVESHARE_OVERLAYS_ZIP_URL}" -o "${tmp_zip}"
+	python - <<'PY' "${tmp_zip}" "${WAVESHARE_OVERLAYS_DIR}"
+import sys
+import zipfile
+zip_path = sys.argv[1]
+out_dir = sys.argv[2]
+targets = {
+    "waveshare-28dpi-3b-4b.dtbo",
+    "waveshare-28dpi-3b.dtbo",
+    "waveshare-touch-28dpi.dtbo",
+}
+with zipfile.ZipFile(zip_path) as zf:
+    for name in zf.namelist():
+        base = name.rsplit("/", 1)[-1]
+        if base in targets:
+            zf.extract(name, out_dir)
+PY
+	find "${WAVESHARE_OVERLAYS_DIR}" -name "waveshare-28dpi-*.dtbo" -o -name "waveshare-touch-28dpi.dtbo" | while read -r overlay; do
+		mv "${overlay}" "${WAVESHARE_OVERLAYS_DIR}/"
+	done
+	rm -f "${tmp_zip}"
+fi
+
+if [ -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
+	mkdir -p "${BINARIES_DIR}/rpi-firmware/overlays"
+	for overlay in waveshare-28dpi-3b-4b.dtbo waveshare-28dpi-3b.dtbo waveshare-touch-28dpi.dtbo; do
+		if [ -f "${WAVESHARE_OVERLAYS_DIR}/${overlay}" ]; then
+			cp "${WAVESHARE_OVERLAYS_DIR}/${overlay}" "${BINARIES_DIR}/rpi-firmware/overlays/${overlay}"
+		fi
+	done
+fi
+
 # Pass an empty rootpath. genimage makes a full copy of the given rootpath to
 # ${GENIMAGE_TMP}/root so passing TARGET_DIR would be a waste of time and disk
 # space. We don't rely on genimage to build the rootfs image, just to insert a
