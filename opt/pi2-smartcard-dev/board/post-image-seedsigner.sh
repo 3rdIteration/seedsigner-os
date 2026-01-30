@@ -99,29 +99,15 @@ if [ -n "${WAVESHARE_OVERLAYS_ZIP_URL:-}" ] && [ ! -d "${WAVESHARE_OVERLAYS_DIR}
 	tmp_zip="$(mktemp)"
 	echo "Downloading Waveshare overlays from ${WAVESHARE_OVERLAYS_ZIP_URL}"
 	wget -O "${tmp_zip}" "${WAVESHARE_OVERLAYS_ZIP_URL}"
-	python - <<'PY' "${tmp_zip}" "${WAVESHARE_OVERLAYS_DIR}"
-import sys
-import zipfile
-zip_path = sys.argv[1]
-out_dir = sys.argv[2]
-targets = {
-    "waveshare-28dpi-3b-4b.dtbo",
-    "waveshare-28dpi-3b.dtbo",
-    "waveshare-touch-28dpi.dtbo",
-}
-with zipfile.ZipFile(zip_path) as zf:
-    for name in zf.namelist():
-        base = name.rsplit("/", 1)[-1]
-        if base in targets:
-            zf.extract(name, out_dir)
-PY
-	find "${WAVESHARE_OVERLAYS_DIR}" -name "waveshare-28dpi-*.dtbo" -o -name "waveshare-touch-28dpi.dtbo" | while read -r overlay; do
-		mv "${overlay}" "${WAVESHARE_OVERLAYS_DIR}/"
-	done
+	echo "Extracting Waveshare overlays into ${WAVESHARE_OVERLAYS_DIR}"
+	unzip -j "${tmp_zip}" "*/waveshare-28dpi-3b-4b.dtbo" -d "${WAVESHARE_OVERLAYS_DIR}"
+	unzip -j "${tmp_zip}" "*/waveshare-28dpi-3b.dtbo" -d "${WAVESHARE_OVERLAYS_DIR}"
+	unzip -j "${tmp_zip}" "*/waveshare-touch-28dpi.dtbo" -d "${WAVESHARE_OVERLAYS_DIR}"
 	rm -f "${tmp_zip}"
 fi
 
 if [ -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
+	echo "Copying Waveshare overlays into ${BINARIES_DIR}/rpi-firmware/overlays"
 	mkdir -p "${BINARIES_DIR}/rpi-firmware/overlays"
 	for overlay in waveshare-28dpi-3b-4b.dtbo waveshare-28dpi-3b.dtbo waveshare-touch-28dpi.dtbo; do
 		if [ -f "${WAVESHARE_OVERLAYS_DIR}/${overlay}" ]; then
