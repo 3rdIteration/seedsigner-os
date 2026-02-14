@@ -36,7 +36,9 @@ A custom linux based operating system built to manage software running on airgap
 
 ## ⚙️ Under the Hood
 
-SeedSigner OS is built using [Buildroot](https://www.buildroot.org). Buildroot is a simple, efficient and easy-to-use tool to generate embedded Linux systems through cross-compilation. SeedSigner OS does not fork Buildroot, but uses Buildroot with custom configurations to build microSD card images tailor made for running SeedSigner.
+SeedSigner OS is built using [Buildroot](https://www.buildroot.org) (version 2024.11.x). Buildroot is a simple, efficient and easy-to-use tool to generate embedded Linux systems through cross-compilation. SeedSigner OS does not fork Buildroot, but uses Buildroot with custom configurations to build microSD card images tailor made for running SeedSigner.
+
+The build process uses **GCC 13.3.0** as the default compiler, along with glibc as the C library. For more technical build details, see the [Building documentation](docs/building.md#technical-build-information).
 
 
 ## 🛂 Security

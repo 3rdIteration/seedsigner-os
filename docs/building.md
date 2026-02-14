@@ -163,3 +163,21 @@ That image can be burned to an SD card and run in your SeedSigner.
 |Raspberry Pi 3 Model B |`seedsigner_os.<tag>.pi02w.img`    | --pi02w             |
 |Raspberry Pi 4 Model B |`seedsigner_os.<tag>.pi4.img`      | --pi4               |
 |Build all targets      |(all of the above)                 | --all               |
+
+
+<br/>
+<br/>
+
+---
+
+## Technical Build Information
+
+### Compiler and Toolchain
+The SeedSigner OS images are built using **GCC 13.3.0** by default. This version is determined by the Buildroot configuration (version 2024.11.x) used in the build process.
+
+The toolchain uses:
+- **GCC Version**: 13.3.0
+- **C Library**: glibc (GNU C Library)
+- **Kernel Headers**: Custom version 5.15
+
+The GCC version can be verified by examining the Buildroot submodule configuration at `opt/buildroot/package/gcc/Config.in.host`, where the default is set to `BR2_GCC_VERSION_13_X`.
