@@ -27,7 +27,7 @@ jobs:
     permissions:
       contents: read
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - config: pi0-smartcard-dev
