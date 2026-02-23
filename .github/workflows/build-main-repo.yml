@@ -21,21 +21,30 @@ jobs:
   build-main-repo:
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - name: pi0-smartcard
+            ss_args: --pi0 --smartcard --app-repo=https://github.com/3rdIteration/seedsigner --app-branch=main
+          - name: lafrite-smartcard-dev
+            ss_args: --lafrite --smartcard --dev --app-repo=https://github.com/3rdIteration/seedsigner --app-branch=main
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Build SeedSigner OS image against SeedSigner main
+      - name: Build SeedSigner OS image against SeedSigner main (${{ matrix.profile.name }})
         env:
-          SS_ARGS: "--pi0 --smartcard --app-repo=https://github.com/3rdIteration/seedsigner --app-branch=main"
+          SS_ARGS: ${{ matrix.profile.ss_args }}
         run: docker compose up --force-recreate --build
 
-      - name: Upload built image
+      - name: Upload built image (${{ matrix.profile.name }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: seedsigner-os-images
+          name: seedsigner-os-images-${{ matrix.profile.name }}
           path: images/*.img
           if-no-files-found: warn
