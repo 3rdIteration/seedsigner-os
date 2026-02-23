@@ -20,6 +20,7 @@ help()
       --pi02w       Build for pi02w and pi3
 	  --pi02w-smartcard
       --pi4         Build for pi4 and pi4cmio
+      --lafrite     Build for La Frite AML-S805X-AC
   
   Options:
   -h, --help           Display a help screen and quit
@@ -207,6 +208,9 @@ while (( "$#" )); do
   --pi4)
     PI4_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
     ;;
+  --lafrite)
+    LAFRITE_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
+    ;;
   --no-clean)
     NOCLEAN=0; shift
     ;;
@@ -337,6 +341,11 @@ fi
 # build for pi4
 if ! [ -z ${PI4_FLAG} ]; then
   build_image "pi4${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+fi
+
+# build for lafrite
+if ! [ -z ${LAFRITE_FLAG} ]; then
+  build_image "lafrite${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 exit 0
