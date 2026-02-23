@@ -39,7 +39,20 @@ jobs:
       - name: Build SeedSigner OS image against SeedSigner main (${{ matrix.profile.name }})
         env:
           SS_ARGS: ${{ matrix.profile.ss_args }}
-        run: docker compose up --force-recreate --build
+        run: |
+          set -euo pipefail
+          docker compose up --force-recreate --build --abort-on-container-exit --exit-code-from build-images
+
+      - name: Verify image output exists (${{ matrix.profile.name }})
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(images/*.img)
+          if [ ${#images[@]} -eq 0 ]; then
+            echo "No .img artifacts were produced for profile: ${{ matrix.profile.name }}" >&2
+            exit 1
+          fi
+          printf 'Built images:\n%s\n' "${images[*]}"
 
       - name: Upload built image (${{ matrix.profile.name }})
         if: always()
@@ -47,4 +60,8 @@ jobs:
         with:
           name: seedsigner-os-images-${{ matrix.profile.name }}
           path: images/*.img
-          if-no-files-found: warn
+          if-no-files-found: error
+
+      - name: Tear down docker compose (${{ matrix.profile.name }})
+        if: always()
+        run: docker compose down -v
