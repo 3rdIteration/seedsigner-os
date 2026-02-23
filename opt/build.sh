@@ -72,9 +72,14 @@ download_app_repo() {
   cd ${rootfs_overlay}/opt
   pip install babel || exit
   pip install -e . || exit
-  # remove any existing binary mo files if they exist
-  rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.mo
-  python3 setup.py compile_catalog || exit
+  # Only compile translations if the catalog directory exists (not all branches/repos configure this)
+  if [ -d "${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n" ]; then
+    # remove any existing binary mo files if they exist
+    rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.mo
+    python3 setup.py compile_catalog || exit
+  else
+    echo "Translation catalog directory not found, skipping compile_catalog"
+  fi
   cd -
   deactivate
 
