@@ -10,4 +10,10 @@ PYTHON_EMBIT_SITE = https://files.pythonhosted.org/packages/83/88/b054b00ade6d2a
 PYTHON_EMBIT_LICENSE = MIT
 PYTHON_EMBIT_SETUP_TYPE = setuptools
 
+ifeq ($(BR2_aarch64),y)
+PYTHON_EMBIT_PATCHES = $(PYTHON_EMBIT_PKGDIR)/0001-SeedSignerOS-AArch64-Arch.patch
+else
+PYTHON_EMBIT_PATCHES = $(PYTHON_EMBIT_PKGDIR)/0001-SeedSignerOS-RPi-Arch.patch
+endif
+
 $(eval $(python-package))
