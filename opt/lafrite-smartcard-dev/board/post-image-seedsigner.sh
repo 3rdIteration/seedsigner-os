@@ -43,7 +43,7 @@ mkdir diy
 # Get Java (aarch64 build for La Frite AML-S805X-AC)
 # NOTE: Verify the SHA256 hash before use by downloading and running:
 #   sha256sum zulu8.74.0.17-ca-jdk8.0.392-linux_aarch64.tar.gz
-download_and_verify "https://cdn.azul.com/zulu/bin/zulu8.74.0.17-ca-jdk8.0.392-linux_aarch64.tar.gz" "1e2f93ef67f2e1e4418b75e17ae9b80a2c5a1467e0dbf50f73ccfce56d35e08d"
+download_and_verify "https://cdn.azul.com/zulu/bin/zulu8.74.0.17-ca-jdk8.0.392-linux_aarch64.tar.gz" "c4449d28499f92213ae7b5ffc5c970b0947933e3fbd81a5612bb4071831c2b46"
 tar -xvzf zulu8.74.0.17-ca-jdk8.0.392-linux_aarch64.tar.gz
 rm ./zulu8.74.0.17-ca-jdk8.0.392-linux_aarch64/src.zip
 rm -R ./zulu8.74.0.17-ca-jdk8.0.392-linux_aarch64/demo
