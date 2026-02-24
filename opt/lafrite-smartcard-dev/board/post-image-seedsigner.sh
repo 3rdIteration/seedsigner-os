@@ -127,7 +127,7 @@ rm -R -f ./tmp/
 
 # Create extlinux directory and config in BINARIES_DIR
 mkdir -p ${BINARIES_DIR}/extlinux
-cp ../lafrite-smartcard-dev/board/extlinux.conf ${BINARIES_DIR}/extlinux/extlinux.conf
+cp ./lafrite-smartcard-dev/board/extlinux.conf ${BINARIES_DIR}/extlinux/extlinux.conf
 
 cd buildroot
 
