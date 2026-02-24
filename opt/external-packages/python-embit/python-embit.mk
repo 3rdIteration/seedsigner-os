@@ -10,10 +10,16 @@ PYTHON_EMBIT_SITE = https://files.pythonhosted.org/packages/83/88/b054b00ade6d2a
 PYTHON_EMBIT_LICENSE = MIT
 PYTHON_EMBIT_SETUP_TYPE = setuptools
 
+# For aarch64 targets, swap the ARM32 prebuilt selected by the RPi arch patch
+# with the aarch64 prebuilt. Both patches in the package dir are always applied
+# (Buildroot auto-discovers all *.patch files alphabetically), so the sed fixup
+# runs after both patches have been applied.
 ifeq ($(BR2_aarch64),y)
-PYTHON_EMBIT_PATCHES = $(PYTHON_EMBIT_PKGDIR)/0001-SeedSignerOS-AArch64-Arch.patch
-else
-PYTHON_EMBIT_PATCHES = $(PYTHON_EMBIT_PKGDIR)/0001-SeedSignerOS-RPi-Arch.patch
+define PYTHON_EMBIT_FIX_AARCH64_PREBUILT
+	$(SED) 's|libsecp256k1_linux_arm\*|libsecp256k1_linux_aarch64.so|g' \
+		$(@D)/pyproject.toml
+endef
+PYTHON_EMBIT_POST_PATCH_HOOKS += PYTHON_EMBIT_FIX_AARCH64_PREBUILT
 endif
 
 $(eval $(python-package))
