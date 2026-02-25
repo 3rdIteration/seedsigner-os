@@ -71,8 +71,8 @@ jobs:
             ${{ matrix.board_flag }}
             --smartcard
             --dev
-            --app-repo=${{ github.event.inputs.app_repo || 'https://github.com/3rdIteration/seedsigner' }}
-            --app-branch=${{ github.event.inputs.app_branch || 'dev' }}
+            --app-repo=${{ inputs.app_repo || 'https://github.com/3rdIteration/seedsigner' }}
+            --app-branch=${{ inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
 
       - name: Upload image artifact
