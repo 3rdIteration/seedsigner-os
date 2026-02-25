@@ -125,6 +125,17 @@ mv SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap ${BINARIES_DIR}/SmartPGP-RSA4096.ca
 
 rm -R -f ./tmp/
 
+# Download pre-built La Frite bootloader (BL2+BL31+BL33 combined, Amlogic GXL encrypted)
+# The Amlogic S805X bootrom requires a signed multi-stage image; a raw u-boot.bin alone won't boot.
+# Source: https://github.com/3rdIteration/libretech-buildroot (board/librecomputer/genimage/bootloader.sh)
+wget -nc -O "${BINARIES_DIR}/aml-s805x-ac" "https://boot.libre.computer/ci/aml-s805x-ac"
+# Sanity-check that the bootloader is at least 100KB (per libretech-flash-tool verification)
+BL_SIZE=$(stat -c %s "${BINARIES_DIR}/aml-s805x-ac")
+if [ "${BL_SIZE}" -lt $((100 * 1024)) ]; then
+  echo "ERROR: Downloaded bootloader is unexpectedly small (${BL_SIZE} bytes)" >&2
+  exit 1
+fi
+
 # Create extlinux directory and config in BINARIES_DIR
 mkdir -p ${BINARIES_DIR}/extlinux
 cp ./lafrite-smartcard-dev/board/extlinux.conf ${BINARIES_DIR}/extlinux/extlinux.conf
