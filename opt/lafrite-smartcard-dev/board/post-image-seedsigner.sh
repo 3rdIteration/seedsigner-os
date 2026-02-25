@@ -136,10 +136,6 @@ if [ "${BL_SIZE}" -lt $((100 * 1024)) ]; then
   exit 1
 fi
 
-# Create extlinux directory and config in BINARIES_DIR
-mkdir -p ${BINARIES_DIR}/extlinux
-cp ./lafrite-smartcard-dev/board/extlinux.conf ${BINARIES_DIR}/extlinux/extlinux.conf
-
 cd buildroot
 
 # Create main system image
