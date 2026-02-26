@@ -47,6 +47,21 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Free disk space
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+
+          sudo rm -rf \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android/sdk \
+            /usr/share/dotnet
+          sudo apt-get clean
+          docker system prune --all --force || true
+
+          echo "Disk usage after cleanup:"
+          df -h
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
