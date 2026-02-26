@@ -148,6 +148,9 @@ BOARD_NAME="$(basename ${BOARD_DIR})"
 GENIMAGE_CFG="${BOARD_DIR}/genimage-seedsigner.cfg"
 GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
 
+# Copy extlinux boot configuration into the binaries directory for genimage
+cp "${BOARD_DIR}/extlinux.conf" "${BINARIES_DIR}/extlinux.conf"
+
 trap 'rm -rf "${ROOTPATH_TMP}"' EXIT
 ROOTPATH_TMP="$(mktemp -d)"
 
