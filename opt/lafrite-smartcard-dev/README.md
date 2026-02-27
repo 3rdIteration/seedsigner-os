@@ -202,6 +202,13 @@ Rather than a hand-written `defconfig`, the La Frite build uses:
 This matches the approach in the upstream Buildroot `lafrite_defconfig`
 and avoids the risk of a hand-maintained config missing critical SoC drivers.
 
+One exception is the onboard Ethernet MAC: the La Frite uses the Meson
+DesignWare MAC path, which needs both the `stmmac` core and the Meson glue
+driver built in for an initramfs-only boot. The board fragment explicitly
+forces `CONFIG_STMMAC_ETH=y`, `CONFIG_DWMAC_MESON=y`, `CONFIG_PHYLIB=y`, and
+`CONFIG_MESON_GXL_PHY=y` so Linux registers `eth0` instead of booting with
+only `lo` present.
+
 **Relevant files:**
 - `board/kernel-fragment.config`
 - `configs/lafrite-smartcard-dev_defconfig`
