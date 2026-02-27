@@ -1,0 +1,52 @@
+#!/bin/sh
+#
+# Bind SPI0 CS0 (spi0.0) to spidev so that /dev/spidev0.0 is available.
+#
+# On La Frite (AML-S805X-AC) the kernel DTS defines the SPI NOR flash on the
+# SPI bus, so the spi-nor driver automatically claims spi0.0 at boot.  We
+# unbind it here and rebind to spidev so that SeedSigner can reach the camera
+# module over SPI.
+#
+
+SPI_DEV="spi0.0"
+SPI_NOR_DRIVER="/sys/bus/spi/drivers/spi-nor"
+SPIDEV_DRIVER="/sys/bus/spi/drivers/spidev"
+SPI_DEVICE="/sys/bus/spi/devices/${SPI_DEV}"
+
+start() {
+    if [ ! -e "${SPI_DEVICE}" ]; then
+        echo "S01spidev: ${SPI_DEV} not found, skipping"
+        return 0
+    fi
+
+    # Unbind from spi-nor if it currently owns the device
+    if [ -e "${SPI_NOR_DRIVER}/${SPI_DEV}" ]; then
+        echo "${SPI_DEV}" > "${SPI_NOR_DRIVER}/unbind"
+    fi
+
+    # Override driver selection so the kernel binds spidev
+    echo spidev > "${SPI_DEVICE}/driver_override"
+
+    # Bind to spidev
+    if [ -e "${SPIDEV_DRIVER}" ]; then
+        echo "${SPI_DEV}" > "${SPIDEV_DRIVER}/bind" 2>/dev/null || true
+    fi
+
+    echo "S01spidev: ${SPI_DEV} bound to spidev"
+}
+
+stop() {
+    :
+}
+
+case "$1" in
+    start|stop|restart)
+        "$1"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
