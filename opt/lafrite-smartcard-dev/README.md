@@ -96,35 +96,68 @@ reservation at 64 MB.
 
 ---
 
-### 5. SPI — `spi-nor` claims `spi0.0`, blocking `/dev/spidev0.0`
+### 5. SPI — `spicc` (40-pin header) disabled by default; `spifc` claims `spi0`
 
-**Problem:** The La Frite device tree (`meson-gxl-s805x-libretech-ac.dtsi`)
-defines a `flash@0` node (`compatible = "jedec,spi-nor"`) on the `spifc` bus.
-The `spi-nor` kernel driver probes and claims `spi0.0` at boot, so the
-`spidev` driver never binds and `/dev/spidev0.0` is never created — even
-though SPI is otherwise functional.
+**Problem:** The La Frite device tree has TWO SPI controllers:
 
-**Solution:** Two changes:
+| Controller | Linux name | Purpose |
+|------------|-----------|---------|
+| `spifc` | `spi0` (upstream alias) | Dedicated SPI NOR flash controller → on-board 16 MB W25Q32 flash |
+| `spicc` | `spi1` (upstream, disabled) | General-purpose SPI communication controller → 40-pin header |
 
-1. **`CONFIG_SPI_SPIDEV=y`** in `kernel-fragment.config` — the `spidev`
-   driver must be compiled in (not a module) because we use an initramfs with
-   no on-disk module tree; `modprobe spidev` would fail at runtime.
+SeedSigner's display and peripherals connect via the **40-pin header SPI pins**
+(Pin 19 MOSI/GPIOX_8, Pin 21 MISO/GPIOX_9, Pin 23 CLK/GPIOX_11, Pin 24 CE0/GPIOX_10),
+which map to `spicc`.
 
-2. **`board/rootfs-overlay/etc/init.d/S01spidev`** — a BusyBox init.d script
-   that runs before SeedSigner (`S02seedsigner`) and:
-   - Unbinds `spi0.0` from the `spi-nor` driver
-   - Sets `driver_override = spidev` on the sysfs device node
-   - Binds `spi0.0` to `spidev` → kernel creates `/dev/spidev0.0`
+The upstream `meson-gxl-s805x-libretech-ac.dts` has:
+- `spi0 = &spifc` — NOR flash controller aliased as spi0
+- `spicc` — **disabled** (status = "disabled" from parent DTSI)
 
-   ```sh
-   echo spi0.0 > /sys/bus/spi/drivers/spi-nor/unbind
-   echo spidev > /sys/bus/spi/devices/spi0.0/driver_override
-   echo spi0.0 > /sys/bus/spi/drivers/spidev/bind
-   ```
+So the upstream DTS gives `/dev/spidev0.0` to the NOR flash bus, and the
+40-pin header SPI does not exist in `/dev` at all.
+
+An earlier incorrect fix tried to unbind `spi-nor` from `spifc` and bind `spidev`
+— this would create `/dev/spidev0.0` on the wrong bus (the NOR flash controller),
+not the 40-pin header.
+
+**Solution:** A custom board DTS (`board/meson-gxl-s805x-libretech-ac.dts`) that:
+1. Overrides the `spi0` alias to point to `spicc` instead of `spifc`
+2. Enables `spicc` with `spi_pins` pinctrl (GPIOX_8/9/11 mux) and CS on GPIOX_10
+3. Adds a `spidev@0` child node (`compatible = "rohm,dh2228fv"`)
+
+```dts
+aliases {
+    spi0 = &spicc;  /* 40-pin header: pins 19/21/23/24 */
+};
+
+&spicc {
+    status = "okay";
+    pinctrl-0 = <&spi_pins>;
+    pinctrl-names = "default";
+    cs-gpios = <&gpio GPIOX_10 GPIO_ACTIVE_LOW>;
+
+    spidev@0 {
+        compatible = "rohm,dh2228fv";
+        reg = <0>;
+        spi-max-frequency = <41666666>;
+    };
+};
+```
+
+`spifc` (NOR flash controller) is kept enabled — it is still needed for the
+on-board flash used by the bootloader.
+
+`CONFIG_SPI_MESON_SPICC=y` and `CONFIG_SPI_SPIDEV=y` are added to the kernel
+fragment to ensure both drivers are compiled in (not as modules — initramfs has
+no on-disk module tree).
+
+Based on: `libre-computer-project/libretech-wiring-tool` overlays
+`spi-cc-1cs.dts` + `spi-cc-1cs-spidev.dts`.
 
 **Relevant files:**
-- `board/kernel-fragment.config` — `CONFIG_SPI_SPIDEV=y`
-- `board/rootfs-overlay/etc/init.d/S01spidev`
+- `board/meson-gxl-s805x-libretech-ac.dts` — custom DTS with SPICC enabled
+- `board/kernel-fragment.config` — `CONFIG_SPI_MESON_SPICC=y`, `CONFIG_SPI_SPIDEV=y`
+- `configs/lafrite-smartcard-dev_defconfig` — `BR2_LINUX_KERNEL_CUSTOM_DTS_PATH`
 
 ---
 
@@ -175,7 +208,31 @@ and avoids the risk of a hand-maintained config missing critical SoC drivers.
 
 ---
 
-### 8. `TE: 35043` / `opteed_fast` error at boot
+### 8. `efi_mgr` boot — EFI NVRAM boot variables override extlinux
+
+**Symptom:** U-Boot's `bootflow list` shows only:
+```
+  0  efi_mgr      ready   (none)       0
+```
+and the boot does not use `extlinux/extlinux.conf`. The `efi_mgr` bootmeth
+reads EFI boot variables from the SPI NOR flash (NVRAM emulation). If a
+previous experiment (e.g., testing EFI partition type `0xEF`) wrote an EFI
+boot entry to NVRAM, it persists and wins.
+
+**Solution:** A `boot.scr` (compiled from `board/boot.cmd` via `mkimage`) is
+placed in the root of the FAT boot partition. U-Boot's `script` bootmeth
+finds `boot.scr` and executes it before the NVRAM-backed `efi_mgr` boots.
+The script explicitly calls `sysboot` to load `extlinux/extlinux.conf`,
+ensuring the correct kernel, DTB, and cmdline are always used.
+
+**Relevant files:**
+- `board/boot.cmd` — source for boot.scr; compiled to `boot.scr` by Buildroot
+- `configs/lafrite-smartcard-dev_defconfig` — `BR2_PACKAGE_HOST_UBOOT_TOOLS=y` + `BR2_PACKAGE_HOST_UBOOT_TOOLS_BOOT_SCRIPT_SOURCE`
+- `board/genimage-seedsigner.cfg` — `boot.scr` added to the boot.vfat file list
+
+---
+
+### 9. `TE: 35043` / `opteed_fast` error at boot
 
 **Symptom:** The boot log shows:
 
