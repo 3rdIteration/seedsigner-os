@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# Cache and reuse Dropbear SSH host keys on the MicroSD card.
+# Cache and reuse Dropbear SSH host keys on the MicroSD card, and
+# optionally load additional authorized_keys from the card.
 #
 # This script runs before S50dropbear so that host keys are already
 # present when the SSH daemon starts, avoiding slow key generation
@@ -11,10 +12,15 @@
 # If the MicroSD is unavailable, the script exits silently and
 # S50dropbear will generate ephemeral keys as usual.
 #
+# If an authorized_keys file is found at <microsd>/dropbear/authorized_keys
+# its contents are appended to /root/.ssh/authorized_keys so that
+# user-supplied public keys are accepted alongside the built-in dev key.
+#
 
 MICROSD_MOUNTPOINT="/mnt/microsd"
 MICROSD_KEY_DIR="$MICROSD_MOUNTPOINT/dropbear"
 DROPBEAR_DIR="/etc/dropbear"
+AUTHORIZED_KEYS="/root/.ssh/authorized_keys"
 KEY_TYPES="rsa ecdsa ed25519"
 MAX_WAIT=10
 
@@ -48,19 +54,28 @@ start() {
 		done
 		if [ "$RESTORED" -gt 0 ]; then
 			echo "Restored $RESTORED cached host key(s) from MicroSD"
-			return
 		fi
 	fi
 
-	# No cached keys found — generate and save them
-	mkdir -p "$MICROSD_KEY_DIR"
-	for TYPE in $KEY_TYPES; do
-		DST="$DROPBEAR_DIR/dropbear_${TYPE}_host_key"
-		CACHE="$MICROSD_KEY_DIR/dropbear_${TYPE}_host_key"
-		dropbearkey -t "$TYPE" -f "$DST" > /dev/null 2>&1
-		cp "$DST" "$CACHE"
-	done
-	echo "Generated and cached new host keys on MicroSD"
+	if [ ! -d "$MICROSD_KEY_DIR" ] || [ "$RESTORED" -eq 0 ] 2>/dev/null; then
+		# No cached keys found — generate and save them
+		mkdir -p "$MICROSD_KEY_DIR"
+		for TYPE in $KEY_TYPES; do
+			DST="$DROPBEAR_DIR/dropbear_${TYPE}_host_key"
+			CACHE="$MICROSD_KEY_DIR/dropbear_${TYPE}_host_key"
+			dropbearkey -t "$TYPE" -f "$DST" > /dev/null 2>&1
+			cp "$DST" "$CACHE"
+		done
+		echo "Generated and cached new host keys on MicroSD"
+	fi
+
+	# Append user-supplied authorized_keys from MicroSD
+	MICROSD_AUTH_KEYS="$MICROSD_KEY_DIR/authorized_keys"
+	if [ -f "$MICROSD_AUTH_KEYS" ]; then
+		mkdir -p "$(dirname "$AUTHORIZED_KEYS")"
+		cat "$MICROSD_AUTH_KEYS" >> "$AUTHORIZED_KEYS"
+		echo "Appended authorized_keys from MicroSD"
+	fi
 }
 
 case "$1" in
