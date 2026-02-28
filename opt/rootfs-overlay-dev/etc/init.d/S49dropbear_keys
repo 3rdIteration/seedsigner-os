@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Cache and reuse Dropbear SSH host keys on the MicroSD card, and
-# optionally load additional authorized_keys from the card.
+# optionally load authorized_keys from the card.
 #
 # This script runs before S50dropbear so that host keys are already
 # present when the SSH daemon starts, avoiding slow key generation
@@ -13,8 +13,8 @@
 # S50dropbear will generate ephemeral keys as usual.
 #
 # If an authorized_keys file is found at <microsd>/dropbear/authorized_keys
-# its contents are appended to /root/.ssh/authorized_keys so that
-# user-supplied public keys are accepted alongside the built-in dev key.
+# it replaces /root/.ssh/authorized_keys so that user-supplied public keys
+# are used instead of the built-in dev key.
 #
 
 MICROSD_MOUNTPOINT="/mnt/microsd"
@@ -69,12 +69,12 @@ start() {
 		echo "Generated and cached new host keys on MicroSD"
 	fi
 
-	# Append user-supplied authorized_keys from MicroSD
+	# Replace authorized_keys with user-supplied file from MicroSD
 	MICROSD_AUTH_KEYS="$MICROSD_KEY_DIR/authorized_keys"
 	if [ -f "$MICROSD_AUTH_KEYS" ]; then
 		mkdir -p "$(dirname "$AUTHORIZED_KEYS")"
-		cat "$MICROSD_AUTH_KEYS" >> "$AUTHORIZED_KEYS"
-		echo "Appended authorized_keys from MicroSD"
+		cp "$MICROSD_AUTH_KEYS" "$AUTHORIZED_KEYS"
+		echo "Loaded authorized_keys from MicroSD"
 	fi
 }
 

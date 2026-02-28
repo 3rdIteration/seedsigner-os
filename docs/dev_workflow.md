@@ -101,7 +101,7 @@ ssh -i seedsigner_dev_ed25519 root@<device-ip>
 
 The Dropbear SSH host key is cached on the MicroSD card under `dropbear/` so that it is only generated once. On the first boot the init script creates the keys and stores them on the card; subsequent boots reuse the cached keys, which speeds up the SSH startup and avoids host-key warnings when reconnecting. If the MicroSD card is not mounted, ephemeral keys are generated as usual.
 
-To authorize your own SSH public key, place an `authorized_keys` file on the MicroSD card at `dropbear/authorized_keys`. Its contents are appended to the built-in dev key at boot, so both the bundled key and any keys you add will be accepted.
+To authorize your own SSH public key, place an `authorized_keys` file on the MicroSD card at `dropbear/authorized_keys`. At boot this file replaces the built-in dev key, so only the keys you provide will be accepted. If the file is absent, the default bundled dev key is used.
 
 Password logins are disabled for SSH, but the console still auto‑logs in as root with the default `passworDT` password.
 The images also include `git` (with HTTPS support so repositories can be cloned directly from sites like GitHub) and `rsync` for convenient remote development and file transfer.
