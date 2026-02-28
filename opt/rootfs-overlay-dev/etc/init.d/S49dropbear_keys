@@ -41,9 +41,9 @@ start() {
 
 	mkdir -p "$DROPBEAR_DIR"
 
+	RESTORED=0
 	if [ -d "$MICROSD_KEY_DIR" ]; then
 		# Try to restore cached keys from MicroSD
-		RESTORED=0
 		for TYPE in $KEY_TYPES; do
 			SRC="$MICROSD_KEY_DIR/dropbear_${TYPE}_host_key"
 			DST="$DROPBEAR_DIR/dropbear_${TYPE}_host_key"
@@ -57,7 +57,7 @@ start() {
 		fi
 	fi
 
-	if [ ! -d "$MICROSD_KEY_DIR" ] || [ "$RESTORED" -eq 0 ] 2>/dev/null; then
+	if [ "$RESTORED" -eq 0 ]; then
 		# No cached keys found — generate and save them
 		mkdir -p "$MICROSD_KEY_DIR"
 		for TYPE in $KEY_TYPES; do
