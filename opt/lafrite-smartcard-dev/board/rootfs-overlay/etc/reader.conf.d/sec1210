@@ -9,6 +9,6 @@
 #     GemPCTwin (default value)
 #     SEC1210 (Dual slot Reader)
 # example: /dev/ttyS0:GemPCPinPad
-DEVICENAME        /dev/ttyAML1:SEC1210URT
+DEVICENAME        /dev/ttyAML6:SEC1210URT
 FRIENDLYNAME      "SEC1210"
 LIBPATH           /usr/lib/pcsc/drivers/serial/libccidtwin.so
