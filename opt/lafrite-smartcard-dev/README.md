@@ -161,6 +161,24 @@ Based on: `libre-computer-project/libretech-wiring-tool` overlays
 
 ---
 
+### 5a. UART - keep debug console on pins 3/5, enable UART-A on pins 8/10
+
+The existing debug console remains on the board's current serial port and is
+unchanged by the custom DTS. Enabling `uart_A` adds a second UART on the 40-pin
+header:
+
+- Pin 8 - TX (`GPIOX_12`)
+- Pin 10 - RX (`GPIOX_13`)
+
+This mirrors the `libretech-wiring-tool` UART-A overlay for `aml-s805x-ac`.
+It only enables the hardware and pin mux. It does not move the kernel console
+or login shell away from the existing debug UART.
+
+**Relevant files:**
+- `board/meson-gxl-s805x-libretech-ac.dts` - enables `&uart_A` with `uart_a_pins`
+
+---
+
 ### 6. python-embit — AArch64 prebuilt `libsecp256k1`
 
 **Problem:** The `python-embit` package bundles prebuilt `libsecp256k1`

@@ -341,6 +341,18 @@
 	pinctrl-names = "default";
 };
 
+/*
+ * UART A on the 40-pin header (7J1)
+ * Pin 8 (TX/GPIOX_12), Pin 10 (RX/GPIOX_13)
+ *
+ * This matches the libretech-wiring-tool UART-A overlay for aml-s805x-ac.
+ */
+&uart_A {
+	status = "okay";
+	pinctrl-0 = <&uart_a_pins>;
+	pinctrl-names = "default";
+};
+
 &usb {
 	status = "okay";
 	dr_mode = "host";
