@@ -13,7 +13,7 @@ if [ -e ${TARGET_DIR}/etc/inittab ]; then
 	# early shell redirections can create plain files like /dev/null and break
 	# background daemons such as dropbear.
 	grep -qE '^::sysinit:/bin/mount -t devtmpfs devtmpfs /dev$' ${TARGET_DIR}/etc/inittab || \
-	sed -i '/^::sysinit:\/etc\/init\.d\/rcS$/i\
+	sed -i '/^::sysinit:\/bin\/mkdir -p \/dev\/pts \/dev\/shm$/i\
 ::sysinit:/bin/mount -t devtmpfs devtmpfs /dev' ${TARGET_DIR}/etc/inittab
 
 	# if 'ttyAML0::' is not found in inittab, then replace the line containing GENERIC_SERIAL with
