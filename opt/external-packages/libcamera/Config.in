@@ -1,0 +1,72 @@
+config BR2_PACKAGE_LIBCAMERA_ARCH_SUPPORTS
+	bool
+	default y
+	depends on !BR2_m68k
+
+menuconfig BR2_PACKAGE_LIBCAMERA
+	bool "libcamera"
+	depends on BR2_PACKAGE_LIBCAMERA_ARCH_SUPPORTS
+	depends on BR2_INSTALL_LIBSTDCPP
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	depends on BR2_TOOLCHAIN_GCC_AT_LEAST_9
+	depends on !BR2_STATIC_LIBS
+	depends on BR2_USE_WCHAR
+	depends on BR2_TOOLCHAIN_HEADERS_AT_LEAST_5_3
+	select BR2_PACKAGE_GNUTLS
+	select BR2_PACKAGE_LIBYAML
+	select BR2_PACKAGE_LIBCAMERA_PIPELINE_UVCVIDEO if !BR2_PACKAGE_LIBCAMERA_HAS_PIPELINE
+	help
+	  libcamera is a new Linux camera stack that provides a software
+	  API and hardware abstraction for cameras. It enables complex
+	  hardware image processing operations needed for modern cameras
+	  such as the Raspberry Pi Camera Module.
+
+	  This replaces the legacy Raspberry Pi firmware camera stack
+	  (used by python-picamera) with a modern, open-source solution.
+
+	  https://libcamera.org/
+
+if BR2_PACKAGE_LIBCAMERA
+
+config BR2_PACKAGE_LIBCAMERA_PYTHON
+	bool "python bindings"
+	depends on BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_PYBIND
+	help
+	  Enable libcamera Python bindings. Required for picamera2.
+
+config BR2_PACKAGE_LIBCAMERA_V4L2
+	bool "libcamera v4l2 compatibility layer"
+	help
+	  libcamera V4L2 compatibility layer for applications using the
+	  V4L2 API.
+
+config BR2_PACKAGE_LIBCAMERA_HAS_PIPELINE
+	bool
+
+config BR2_PACKAGE_LIBCAMERA_PIPELINE_RPI_VC4
+	bool "rpi/vc4 pipeline"
+	depends on BR2_arm || BR2_aarch64
+	select BR2_PACKAGE_LIBCAMERA_HAS_PIPELINE
+	help
+	  Pipeline for Raspberry Pi devices using the VideoCore 4 GPU.
+	  Enable this for Raspberry Pi Camera Module support.
+
+config BR2_PACKAGE_LIBCAMERA_PIPELINE_SIMPLE
+	bool "simple pipeline"
+	select BR2_PACKAGE_LIBCAMERA_HAS_PIPELINE
+	help
+	  Pipeline for simple camera pipelines.
+
+config BR2_PACKAGE_LIBCAMERA_PIPELINE_UVCVIDEO
+	bool "uvcvideo pipeline"
+	help
+	  Pipeline for UVC (USB Video Class) camera devices.
+
+endif # BR2_PACKAGE_LIBCAMERA
+
+comment "libcamera needs a toolchain w/ C++, threads, wchar, dynamic library, gcc >= 9, headers >= 5.3"
+	depends on BR2_PACKAGE_LIBCAMERA_ARCH_SUPPORTS
+	depends on !BR2_INSTALL_LIBSTDCPP || !BR2_TOOLCHAIN_HAS_THREADS || \
+		!BR2_TOOLCHAIN_GCC_AT_LEAST_9 || BR2_STATIC_LIBS || !BR2_USE_WCHAR || \
+		!BR2_TOOLCHAIN_HEADERS_AT_LEAST_5_3
