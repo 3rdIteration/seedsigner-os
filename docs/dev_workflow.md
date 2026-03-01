@@ -99,6 +99,10 @@ Copy the private key to your workstation and connect with:
 ssh -i seedsigner_dev_ed25519 root@<device-ip>
 ```
 
+The Dropbear SSH host key is cached on the MicroSD card under `dropbear/` so that it is only generated once. On the first boot the init script creates the keys and stores them on the card; subsequent boots reuse the cached keys, which speeds up the SSH startup and avoids host-key warnings when reconnecting. If the MicroSD card is not mounted, ephemeral keys are generated as usual.
+
+To authorize your own SSH public key, place an `authorized_keys` file on the MicroSD card at `dropbear/authorized_keys`. At boot this file replaces the built-in dev key, so only the keys you provide will be accepted. If the file is absent, the default bundled dev key is used.
+
 Password logins are disabled for SSH, but the console still auto‑logs in as root with the default `passworDT` password.
 The images also include `git` (with HTTPS support so repositories can be cloned directly from sites like GitHub) and `rsync` for convenient remote development and file transfer.
 Python `pip` is available in dev images, but the rootfs does not include all build dependencies required to compile arbitrary packages from source. For best results, install prebuilt wheels targeting Python 3.12 on armv7l (for example from https://bjia56.github.io/armv7l-wheels/ or a wheel you compile yourself).

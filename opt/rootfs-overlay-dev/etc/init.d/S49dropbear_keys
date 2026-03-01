@@ -1,0 +1,94 @@
+#!/bin/sh
+#
+# Cache and reuse Dropbear SSH host keys on the MicroSD card, and
+# optionally load authorized_keys from the card.
+#
+# This script runs before S50dropbear so that host keys are already
+# present when the SSH daemon starts, avoiding slow key generation
+# on every boot.
+#
+# On first boot the keys are generated once and saved to the MicroSD.
+# On subsequent boots the cached keys are copied into /etc/dropbear.
+# If the MicroSD is unavailable, the script exits silently and
+# S50dropbear will generate ephemeral keys as usual.
+#
+# If an authorized_keys file is found at <microsd>/dropbear/authorized_keys
+# it replaces /root/.ssh/authorized_keys so that user-supplied public keys
+# are used instead of the built-in dev key.
+#
+
+MICROSD_MOUNTPOINT="/mnt/microsd"
+MICROSD_KEY_DIR="$MICROSD_MOUNTPOINT/dropbear"
+DROPBEAR_DIR="/etc/dropbear"
+AUTHORIZED_KEYS="/root/.ssh/authorized_keys"
+KEY_TYPES="rsa ecdsa ed25519"
+MAX_WAIT=10
+
+wait_for_microsd() {
+	COUNT=0
+	while [ "$COUNT" -lt "$MAX_WAIT" ] && ! mountpoint -q "$MICROSD_MOUNTPOINT"; do
+		COUNT=$((COUNT + 1))
+		sleep 1
+	done
+	mountpoint -q "$MICROSD_MOUNTPOINT"
+}
+
+start() {
+	if ! wait_for_microsd; then
+		echo "MicroSD not mounted; skipping host-key cache"
+		return
+	fi
+
+	mkdir -p "$DROPBEAR_DIR"
+
+	RESTORED=0
+	if [ -d "$MICROSD_KEY_DIR" ]; then
+		# Try to restore cached keys from MicroSD
+		for TYPE in $KEY_TYPES; do
+			SRC="$MICROSD_KEY_DIR/dropbear_${TYPE}_host_key"
+			DST="$DROPBEAR_DIR/dropbear_${TYPE}_host_key"
+			if [ -f "$SRC" ]; then
+				cp "$SRC" "$DST"
+				RESTORED=$((RESTORED + 1))
+			fi
+		done
+		if [ "$RESTORED" -gt 0 ]; then
+			echo "Restored $RESTORED cached host key(s) from MicroSD"
+		fi
+	fi
+
+	if [ "$RESTORED" -eq 0 ]; then
+		# No cached keys found — generate and save them
+		mkdir -p "$MICROSD_KEY_DIR"
+		for TYPE in $KEY_TYPES; do
+			DST="$DROPBEAR_DIR/dropbear_${TYPE}_host_key"
+			CACHE="$MICROSD_KEY_DIR/dropbear_${TYPE}_host_key"
+			dropbearkey -t "$TYPE" -f "$DST" > /dev/null 2>&1
+			cp "$DST" "$CACHE"
+		done
+		echo "Generated and cached new host keys on MicroSD"
+	fi
+
+	# Replace authorized_keys with user-supplied file from MicroSD
+	MICROSD_AUTH_KEYS="$MICROSD_KEY_DIR/authorized_keys"
+	if [ -f "$MICROSD_AUTH_KEYS" ]; then
+		mkdir -p "$(dirname "$AUTHORIZED_KEYS")"
+		cp "$MICROSD_AUTH_KEYS" "$AUTHORIZED_KEYS"
+		echo "Loaded authorized_keys from MicroSD"
+	fi
+}
+
+case "$1" in
+	start)
+		start
+		;;
+	stop|restart)
+		# Nothing to do
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac
+
+exit $?
