@@ -9,6 +9,13 @@ cp -a "${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../rootfs-overlay-dev/." "${TARGET_DI
 
 # Add a console on tty1
 if [ -e ${TARGET_DIR}/etc/inittab ]; then
+	# Ensure /dev is backed by devtmpfs before any init scripts run. Without this,
+	# early shell redirections can create plain files like /dev/null and break
+	# background daemons such as dropbear.
+	grep -qE '^::sysinit:/bin/mount -t devtmpfs devtmpfs /dev$' ${TARGET_DIR}/etc/inittab || \
+	sed -i '/^::sysinit:\/etc\/init\.d\/rcS$/i\
+::sysinit:/bin/mount -t devtmpfs devtmpfs /dev' ${TARGET_DIR}/etc/inittab
+
 	# if 'ttyAML0::' is not found in inittab, then replace the line containing GENERIC_SERIAL with
 	# 'console::respawn:-/bin/sh' + 'ttyAML0::respawn:-/bin/sh'
 	grep -qE '^ttyAML0::' ${TARGET_DIR}/etc/inittab || \
@@ -21,6 +28,7 @@ rm -f ${TARGET_DIR}/etc/init.d/S01syslogd
 rm -f ${TARGET_DIR}/etc/init.d/S02klogd
 rm -f ${TARGET_DIR}/etc/init.d/S02sysctl
 rm -f ${TARGET_DIR}/etc/init.d/S02mdev
+rm -f ${TARGET_DIR}/etc/init.d/S10mdev
 rm -f ${TARGET_DIR}/etc/init.d/S20seedrng
 rm -f ${TARGET_DIR}/etc/init.d/S40network
 rm -f ${TARGET_DIR}/etc/init.d/S50pigpio
