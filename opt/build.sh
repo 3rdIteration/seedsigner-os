@@ -56,6 +56,12 @@ download_app_repo() {
     git clone --recurse-submodules --depth 1 -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
   fi
 
+  repo_commit_epoch=$(git -C "${rootfs_overlay}/opt" log -1 --format=%ct 2>/dev/null || true)
+  if [ -n "$repo_commit_epoch" ]; then
+    repo_commit_time=$(date -u -d "@${repo_commit_epoch}" "+%Y-%m-%d %H:%M")
+    echo "${repo_commit_time}" > "${rootfs_overlay}/opt/src/.build_commit_time"
+  fi
+
   # create virtual env to compile translation files
   virtualenv .translation-venv
   source .translation-venv/bin/activate
