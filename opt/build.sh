@@ -20,6 +20,7 @@ help()
       --pi02w       Build for pi02w and pi3
 	  --pi02w-smartcard
       --pi4         Build for pi4 and pi4cmio
+      --lafrite     Build for La Frite AML-S805X-AC
   
   Options:
   -h, --help           Display a help screen and quit
@@ -71,9 +72,14 @@ download_app_repo() {
   cd ${rootfs_overlay}/opt
   pip install babel || exit
   pip install -e . || exit
-  # remove any existing binary mo files if they exist
-  rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.mo
-  python3 setup.py compile_catalog || exit
+  # Only compile translations if the catalog directory exists (not all branches/repos configure this)
+  if [ -d "${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n" ]; then
+    # remove any existing binary mo files if they exist
+    rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.mo
+    python3 setup.py compile_catalog || exit
+  else
+    echo "Translation catalog directory not found, skipping compile_catalog"
+  fi
   cd -
   deactivate
 
@@ -207,6 +213,9 @@ while (( "$#" )); do
   --pi4)
     PI4_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
     ;;
+  --lafrite)
+    LAFRITE_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
+    ;;
   --no-clean)
     NOCLEAN=0; shift
     ;;
@@ -337,6 +346,11 @@ fi
 # build for pi4
 if ! [ -z ${PI4_FLAG} ]; then
   build_image "pi4${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+fi
+
+# build for La Frite AML-S805X-AC
+if ! [ -z ${LAFRITE_FLAG} ]; then
+  build_image "lafrite${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 exit 0
