@@ -1,0 +1,12 @@
+config BR2_PACKAGE_PYTHON_PICAMERA2
+	bool "python-picamera2"
+	depends on BR2_PACKAGE_PYTHON3
+	depends on BR2_PACKAGE_LIBCAMERA
+	select BR2_PACKAGE_PYTHON_NUMPY
+	select BR2_PACKAGE_LIBCAMERA_PYTHON
+	help
+	  Picamera2 is the libcamera-based replacement for Picamera.
+	  It provides an easy-to-use Python API for Raspberry Pi cameras
+	  using the modern libcamera camera stack.
+
+	  https://github.com/raspberrypi/picamera2
