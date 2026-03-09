@@ -1,7 +1,0 @@
-config BR2_PACKAGE_PYTHON_ECDSA
-	bool "python-ecdsa"
-	select BR2_PACKAGE_PYTHON_SIX
-	help
-	  ECDSA cryptographic signature library in Python
-
-	  https://pypi.org/project/ecdsa
