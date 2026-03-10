@@ -19,12 +19,16 @@ on:
         description: 'SeedSigner app branch'
         required: false
         default: 'dev'
-      release_tag:
-        description: 'Release tag to upload artifacts to (e.g. v1.0.0)'
+      seedsigner_release_tag:
+        description: 'SeedSigner app release tag (overrides app branch if set)'
+        required: false
+        default: ''
+      seedsigner_os_release_tag:
+        description: 'SeedSigner OS release tag to upload artifacts to (e.g. v1.0.0)'
         required: false
         default: ''
       upload_to_release:
-        description: 'Upload build artifacts to the release'
+        description: 'Upload build artifacts to the seedsigner-os release'
         required: false
         type: boolean
         default: false
@@ -96,7 +100,7 @@ jobs:
             --smartcard
             --dev
             --app-repo=${{ inputs.app_repo || 'https://github.com/3rdIteration/seedsigner' }}
-            --app-branch=${{ inputs.app_branch || 'dev' }}
+            --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
 
       - name: Upload image artifact
@@ -109,13 +113,13 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload to GitHub Release
-        if: success() && inputs.upload_to_release && inputs.release_tag != ''
+        if: success() && inputs.upload_to_release && inputs.seedsigner_os_release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           for img in images/seedsigner_os.*.img; do
             if [ -f "$img" ]; then
               new_name="seedsigner_os-${{ matrix.config }}.img"
-              gh release upload "${{ inputs.release_tag }}" "${img}#${new_name}" --clobber
+              gh release upload "${{ inputs.seedsigner_os_release_tag }}" "${img}#${new_name}" --clobber
             fi
           done
