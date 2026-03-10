@@ -19,13 +19,22 @@ on:
         description: 'SeedSigner app branch'
         required: false
         default: 'dev'
+      release_tag:
+        description: 'Release tag to upload artifacts to (e.g. v1.0.0)'
+        required: false
+        default: ''
+      upload_to_release:
+        description: 'Upload build artifacts to the release'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
     name: Build ${{ matrix.config }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     strategy:
       fail-fast: true
       matrix:
@@ -98,3 +107,15 @@ jobs:
           path: images/seedsigner_os.*.img
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Upload to GitHub Release
+        if: success() && inputs.upload_to_release && inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for img in images/seedsigner_os.*.img; do
+            if [ -f "$img" ]; then
+              new_name="seedsigner_os-${{ matrix.config }}.img"
+              gh release upload "${{ inputs.release_tag }}" "${img}#${new_name}" --clobber
+            fi
+          done
