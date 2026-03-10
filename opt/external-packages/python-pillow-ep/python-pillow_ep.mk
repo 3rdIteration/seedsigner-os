@@ -4,8 +4,8 @@
 #
 ################################################################################
 
-PYTHON_PILLOW_EP_VERSION = 10.3.0
-PYTHON_PILLOW_EP_SITE = https://files.pythonhosted.org/packages/ef/43/c50c17c5f7d438e836c169e343695534c38c77f60e7c90389bd77981bc21
+PYTHON_PILLOW_EP_VERSION = 12.1.1
+PYTHON_PILLOW_EP_SITE = https://files.pythonhosted.org/packages/1f/42/5c74462b4fd957fcd7b13b04fb3205ff8349236ea74c7c375766d6c82288
 PYTHON_PILLOW_EP_SOURCE = pillow-$(PYTHON_PILLOW_EP_VERSION).tar.gz
 PYTHON_PILLOW_EP_LICENSE = HPND
 PYTHON_PILLOW_EP_LICENSE_FILES = LICENSE
@@ -13,7 +13,7 @@ PYTHON_PILLOW_EP_CPE_ID_VENDOR = python
 PYTHON_PILLOW_EP_CPE_ID_PRODUCT = pillow
 PYTHON_PILLOW_EP_SETUP_TYPE = setuptools
 
-PYTHON_PILLOW_EP_DEPENDENCIES = host-pkgconf
+PYTHON_PILLOW_EP_DEPENDENCIES = host-pkgconf host-python-pybind
 PYTHON_PILLOW_EP_BUILD_OPTS = -C--build-option=build_ext -C--build-option=--disable-platform-guessing
 
 ifeq ($(BR2_PACKAGE_LIBRAQM),y)

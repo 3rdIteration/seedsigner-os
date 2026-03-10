@@ -2,7 +2,10 @@ config BR2_PACKAGE_PYTHON_PGPY
 	bool "python-pgpy"
 	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY
 	select BR2_PACKAGE_PYTHON_PYASN1
+	select BR2_PACKAGE_PYTHON_PYCRYPTODOMEX
+	select BR2_PACKAGE_PYTHON_ECDSA
+	select BR2_PACKAGE_PYTHON_EMBIT
 	help
       Pretty Good Privacy (PGP) implementation in Python
 
-	  https://github.com/SecurityInnovation/PGPy
+	  https://github.com/3rdIteration/PGPy
