@@ -62,7 +62,7 @@ download_app_repo() {
 
   repo_commit_epoch=$(git -C "${rootfs_overlay}/opt" log -1 --format=%ct 2>/dev/null || true)
   if [ -n "$repo_commit_epoch" ]; then
-    repo_commit_time=$(date -u -d "@${repo_commit_epoch}" "+%Y-%m-%d %H:%M")
+    repo_commit_time=$(LC_ALL=C date -u -d "@${repo_commit_epoch}" "+%Y-%m-%d %H:%M")
     echo "${repo_commit_time}" > "${rootfs_overlay}/opt/src/.build_commit_time"
   fi
 
