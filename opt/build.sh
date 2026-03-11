@@ -76,7 +76,7 @@ download_app_repo() {
   if [ -d "${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n" ]; then
     # remove any existing binary mo files if they exist
     rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.mo
-    python3 setup.py compile_catalog || exit
+    SOURCE_DATE_EPOCH=1 PYTHONHASHSEED=0 python3 setup.py compile_catalog || exit
   else
     echo "Translation catalog directory not found, skipping compile_catalog"
   fi
@@ -173,7 +173,7 @@ build_image() {
       rootfs_tar_output="${image_dir}/seedsigner_os_rootfs.${seedsigner_app_repo_commit_id}.${config_name}.tar.gz"
     fi
 
-    tar -C "${build_dir}" -czf "${rootfs_tar_output}" target
+    tar -C "${build_dir}" --sort=name --mtime='2025-07-01 00:00:00' -czf "${rootfs_tar_output}" target
     touch -d '2025-07-01 00:00:00' "${rootfs_tar_output}"
     sha256sum "${rootfs_tar_output}"
   fi
