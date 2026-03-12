@@ -2,6 +2,7 @@
 
 set -o errexit -o pipefail
 export FORCE_UNSAFE_CONFIGURE=1 # Allows buildroot/tar to run as root user in docker container
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}" # Reproducible builds: epoch used by compilers and build tools
 
 # global variables 
 cur_dir_name=${PWD##*/}
@@ -173,7 +174,8 @@ build_image() {
       rootfs_tar_output="${image_dir}/seedsigner_os_rootfs.${seedsigner_app_repo_commit_id}.${config_name}.tar.gz"
     fi
 
-    tar -C "${build_dir}" -czf "${rootfs_tar_output}" target
+    tar -C "${build_dir}" --sort=name --owner=root:0 --group=root:0 \
+        --mtime='2025-07-01 00:00:00' -czf "${rootfs_tar_output}" target
     touch -d '2025-07-01 00:00:00' "${rootfs_tar_output}"
     sha256sum "${rootfs_tar_output}"
   fi
