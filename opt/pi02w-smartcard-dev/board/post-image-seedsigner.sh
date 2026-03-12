@@ -121,6 +121,42 @@ mv SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap ${BINARIES_DIR}/SmartPGP-RSA2048.ca
 download_and_verify "https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap" "8df7523e24117e0d3a289f511179b25b82b1bc1df39c203f03b21c568ac2b6b8"
 mv SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap ${BINARIES_DIR}/SmartPGP-RSA4096.cap
 
+# Get Waveshare 2.8" DPI overlays
+WAVESHARE_OVERLAYS_DIR="${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../waveshare-overlays"
+WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT="https://files.waveshare.com/wiki/2.8inc-DPI-LCD/28DPI-DTBO.zip"
+WAVESHARE_OVERLAYS_ZIP_URL="${WAVESHARE_OVERLAYS_ZIP_URL:-${WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT}}"
+WAVESHARE_OVERLAYS_FILES="waveshare-28dpi-3b-4b.dtbo waveshare-28dpi-3b.dtbo waveshare-touch-28dpi.dtbo"
+missing_overlays=0
+for overlay in ${WAVESHARE_OVERLAYS_FILES}; do
+	if [ ! -f "${WAVESHARE_OVERLAYS_DIR}/${overlay}" ]; then
+		missing_overlays=1
+	fi
+done
+
+if [ -n "${WAVESHARE_OVERLAYS_ZIP_URL:-}" ] && [ "${missing_overlays}" -eq 1 ]; then
+	mkdir -p "${WAVESHARE_OVERLAYS_DIR}"
+	tmp_zip="$(mktemp)"
+	echo "Downloading Waveshare overlays from ${WAVESHARE_OVERLAYS_ZIP_URL}"
+	wget -O "${tmp_zip}" "${WAVESHARE_OVERLAYS_ZIP_URL}"
+	echo "Extracting Waveshare overlays into ${WAVESHARE_OVERLAYS_DIR}"
+	for overlay in ${WAVESHARE_OVERLAYS_FILES}; do
+		unzip -j "${tmp_zip}" "*/${overlay}" -d "${WAVESHARE_OVERLAYS_DIR}"
+	done
+	rm -f "${tmp_zip}"
+elif [ "${missing_overlays}" -eq 0 ]; then
+	echo "Waveshare overlays already present in ${WAVESHARE_OVERLAYS_DIR}"
+fi
+
+if [ -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
+	echo "Copying Waveshare overlays into ${BINARIES_DIR}/rpi-firmware/overlays"
+	mkdir -p "${BINARIES_DIR}/rpi-firmware/overlays"
+	for overlay in waveshare-28dpi-3b-4b.dtbo waveshare-28dpi-3b.dtbo waveshare-touch-28dpi.dtbo; do
+		if [ -f "${WAVESHARE_OVERLAYS_DIR}/${overlay}" ]; then
+			cp "${WAVESHARE_OVERLAYS_DIR}/${overlay}" "${BINARIES_DIR}/rpi-firmware/overlays/${overlay}"
+		fi
+	done
+fi
+
 rm -R -f ./tmp/
 
 cd buildroot

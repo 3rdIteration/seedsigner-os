@@ -6,6 +6,51 @@ set -e
 # Overlay dev-specific startup script for MicroSD override
 cp -a "${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../rootfs-overlay-dev/." "${TARGET_DIR}/"
 
+# Expose alternate boot configs on the boot partition for easy swapping
+BOARD_DIR="$(dirname "$0")"
+mkdir -p "${BINARIES_DIR}/rpi-firmware"
+cp "${BOARD_DIR}/boot_config.txt" "${BINARIES_DIR}/rpi-firmware/config-dpi.txt"
+cp "${BOARD_DIR}/boot_config-uart.txt" "${BINARIES_DIR}/rpi-firmware/config-uart.txt"
+
+# Copy Waveshare 2.8" DPI overlays into the boot partition if provided
+WAVESHARE_OVERLAYS_DIR="${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../waveshare-overlays"
+WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT="https://files.waveshare.com/wiki/2.8inc-DPI-LCD/28DPI-DTBO.zip"
+WAVESHARE_OVERLAYS_ZIP_URL="${WAVESHARE_OVERLAYS_ZIP_URL:-${WAVESHARE_OVERLAYS_ZIP_URL_DEFAULT}}"
+if [ -n "${WAVESHARE_OVERLAYS_ZIP_URL:-}" ] && [ ! -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
+	mkdir -p "${WAVESHARE_OVERLAYS_DIR}"
+	tmp_zip="$(mktemp)"
+	curl -fL "${WAVESHARE_OVERLAYS_ZIP_URL}" -o "${tmp_zip}"
+	python - <<'PY' "${tmp_zip}" "${WAVESHARE_OVERLAYS_DIR}"
+import sys
+import zipfile
+zip_path = sys.argv[1]
+out_dir = sys.argv[2]
+targets = {
+    "waveshare-28dpi-3b-4b.dtbo",
+    "waveshare-28dpi-3b.dtbo",
+    "waveshare-touch-28dpi.dtbo",
+}
+with zipfile.ZipFile(zip_path) as zf:
+    for name in zf.namelist():
+        base = name.rsplit("/", 1)[-1]
+        if base in targets:
+            zf.extract(name, out_dir)
+PY
+	find "${WAVESHARE_OVERLAYS_DIR}" -name "waveshare-28dpi-*.dtbo" -o -name "waveshare-touch-28dpi.dtbo" | while read -r overlay; do
+		mv "${overlay}" "${WAVESHARE_OVERLAYS_DIR}/"
+	done
+	rm -f "${tmp_zip}"
+fi
+
+if [ -d "${WAVESHARE_OVERLAYS_DIR}" ]; then
+	mkdir -p "${BINARIES_DIR}/rpi-firmware/overlays"
+	for overlay in waveshare-28dpi-3b-4b.dtbo waveshare-28dpi-3b.dtbo waveshare-touch-28dpi.dtbo; do
+		if [ -f "${WAVESHARE_OVERLAYS_DIR}/${overlay}" ]; then
+			cp "${WAVESHARE_OVERLAYS_DIR}/${overlay}" "${BINARIES_DIR}/rpi-firmware/overlays/${overlay}"
+		fi
+	done
+fi
+
 
 # Add a console on tty1
 if [ -e ${TARGET_DIR}/etc/inittab ]; then

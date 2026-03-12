@@ -5,43 +5,21 @@ fixup_file=fixup_x.dat
 kernel=zImage
 
 # How much memory in MB to assign to the GPU on Pi models having
-gpu_mem=128
+gpu_mem=64
 
 # Enable Camera module
 start_x=1
+
+# Enable SPI
+dtparam=spi=on
 
 # Set the bootloader delay to 0 seconds. The default is 1s if not specified
 boot_delay=0
 disable_splash=1
 force_turbo=1
 
-# DPI Display
-ignore_lcd=0
-hdmi_ignore_hotplug=1
-disable_hdmi=1
-gpio=0-9=a2
-gpio=12-17=a2
-gpio=20-25=a2
-enable_dpi_lcd=1
-display_default_lcd=1
-dpi_group=2
-dpi_mode=87
-dpi_output_format=0x7F206
-hdmi_timings=480 0 26 16 10 640 0 25 10 15 0 0 0 60 0 32000000 1
-extra_transpose_buffer=2
-enable_uart=0
-
-# Overlays
-dtoverlay=waveshare-28dpi-3b-4b
-dtoverlay=waveshare-28dpi-3b
-dtoverlay=waveshare-touch-28dpi
-dtparam=i2c_arm=on
-dtparam=spi=off
-dtparam=audio=off
-
-# Note: DPI uses GPIO14/15, which conflicts with the primary UART used by the
-# smartcard adapter. UART-based smartcards will not work when the DPI display
-# is enabled.
+# Enable I2C
+dtparam=i2c1=on
 
 # raspberry firmware config to disable wifi and bluetooth (Needed or Pi0w)
 # https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README
