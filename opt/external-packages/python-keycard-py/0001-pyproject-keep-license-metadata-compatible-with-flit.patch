@@ -17,11 +17,16 @@ Buildroot toolchain used by this repository.
  1 file changed, 1 insertion(+), 2 deletions(-)
 
 diff --git a/pyproject.toml b/pyproject.toml
-index 1111111..2222222 100644
+index 46d34a4..7a6ec31 100644
 --- a/pyproject.toml
 +++ b/pyproject.toml
-@@ -6,3 +6,2 @@ authors = [{name = "mmlado", email = "developer@mmlado.com"}]
+@@ -6,8 +6,7 @@
+ name = "keycard"
+ authors = [{name = "mmlado", email = "developer@mmlado.com"}]
  readme = "README.md"
 -license = "MIT"
 -license-files = ["LICENSE"]
 +license = {file = "LICENSE"}
+ dynamic = ["version", "description"]
+ 
+ dependencies = [
