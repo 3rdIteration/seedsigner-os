@@ -20,15 +20,8 @@ diff --git a/pyproject.toml b/pyproject.toml
 index 1111111..2222222 100644
 --- a/pyproject.toml
 +++ b/pyproject.toml
-@@ -5,8 +5,7 @@ build-backend = "flit_core.buildapi"
- name = "keycard"
- authors = [{name = "mmlado", email = "developer@mmlado.com"}]
+@@ -6,3 +6,2 @@ authors = [{name = "mmlado", email = "developer@mmlado.com"}]
  readme = "README.md"
 -license = "MIT"
 -license-files = ["LICENSE"]
 +license = {file = "LICENSE"}
- dynamic = ["version", "description"]
- 
- dependencies = [
---
-2.39.3
