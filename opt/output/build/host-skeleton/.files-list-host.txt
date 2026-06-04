@@ -1,0 +1,2 @@
+host-skeleton,./usr
+host-skeleton,./lib64

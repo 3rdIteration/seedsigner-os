@@ -1,0 +1,15 @@
+#
+# Automatically generated file; DO NOT EDIT.
+#
+
+config BR2_EXTERNAL_NAMES
+	string
+	default "RPI_SEEDSIGNER"
+
+config BR2_EXTERNAL_RPI_SEEDSIGNER_PATH
+	string
+	default "/opt/pi02w-smartcard-dev"
+config BR2_EXTERNAL_RPI_SEEDSIGNER_VERSION
+	string
+	default ""
+

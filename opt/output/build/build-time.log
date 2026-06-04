@@ -1,0 +1,25 @@
+1780579595.335192853:start:download            : host-skeleton
+1780579595.339997218:end  :download            : host-skeleton
+1780579595.352963550:start:extract             : host-skeleton
+1780579595.359046010:end  :extract             : host-skeleton
+1780579595.372088781:start:patch               : host-skeleton
+1780579595.383694024:end  :patch               : host-skeleton
+1780579595.396282262:start:configure           : host-skeleton
+1780579595.410528355:end  :configure           : host-skeleton
+1780579595.422916044:start:build               : host-skeleton
+1780579595.425796198:end  :build               : host-skeleton
+1780579595.438288557:start:install-host        : host-skeleton
+1780579595.450502588:end  :install-host        : host-skeleton
+1780579595.513490895:start:download            : host-fakedate
+1780579595.518120945:end  :download            : host-fakedate
+1780579595.530659059:start:extract             : host-fakedate
+1780579595.536870510:end  :extract             : host-fakedate
+1780579595.549387513:start:patch               : host-fakedate
+1780579595.560780895:end  :patch               : host-fakedate
+1780579595.573329529:start:configure           : host-fakedate
+1780579595.587528863:end  :configure           : host-fakedate
+1780579595.599971645:start:build               : host-fakedate
+1780579595.602937575:end  :build               : host-fakedate
+1780579595.616048052:start:install-host        : host-fakedate
+1780579595.622661354:end  :install-host        : host-fakedate
+1780579595.688755060:start:download            : host-cmake
