@@ -1,0 +1,8 @@
+config BR2_PACKAGE_PYTHON_SPECTER_CARD
+	bool "python-specter-card"
+	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY
+	select BR2_PACKAGE_PYTHON_PYSCARD
+	help
+	  Python library and CLI for Specter JavaCard applets.
+
+	  https://github.com/3rdIteration/specter-javacard
