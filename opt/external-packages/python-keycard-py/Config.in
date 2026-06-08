@@ -1,0 +1,9 @@
+config BR2_PACKAGE_PYTHON_KEYCARD_PY
+	bool "python-keycard-py"
+	select BR2_PACKAGE_PYTHON_ECDSA
+	select BR2_PACKAGE_PYTHON_PYAES
+	select BR2_PACKAGE_PYTHON_PYSCARD
+	help
+	  Python API for Java Card and Keycard operations.
+
+	  https://github.com/mmlado/keycard-py
