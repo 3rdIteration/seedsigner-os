@@ -1,0 +1,6 @@
+config BR2_PACKAGE_PYTHON_NDEFLIB
+	bool "python-ndeflib"
+	help
+	  Python library for parsing and generating NFC Data Exchange Format (NDEF) messages.
+
+	  https://github.com/nfcpy/ndeflib
