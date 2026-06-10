@@ -4,6 +4,11 @@ Each time the `docker compose up` command runs, a full build from scratch is per
 
 > **Note:** Development microSD images can also be generated on demand via a GitHub Actions build task. Visit [SeedSigner Actions](https://github.com/3rdIteration/seedsigner/actions/) to trigger a build and download the resulting image without setting up a local environment.
 
+First make sure that the submodules are in sync:
+```bash
+git submodule update --recursive
+```
+
 Using docker compose will start the container (create new container if one does not already exist) without building an image
 ```bash
 SS_ARGS="--no-op" docker compose up -d --no-recreate

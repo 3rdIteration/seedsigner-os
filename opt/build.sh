@@ -43,6 +43,60 @@ tail_endless() {
   exit 0
 }
 
+compile_translations_and_fonts() {
+
+  # create virtual env to compile translation files and slim down font files
+  virtualenv .translation-venv
+  source .translation-venv/bin/activate
+  cd ${rootfs_overlay}/opt
+
+  ss_translations_repo="./src/seedsigner/resources/seedsigner-translations"
+
+  # install depedencies for babel and fonttools(pyftsubset)
+  pip install babel || exit
+  pip install fonttools || exit
+  pip install -e . || exit
+
+  # remove any existing binary mo files if they exist
+  rm -rf ${ss_translations_repo}/l10n/**/**/*.mo
+
+  # generate messages.mo files for each translation
+  python3 setup.py compile_catalog || exit
+
+  # extract characters from all messages.mo translations into all_chars shell variable
+  all_chars=""
+  for f in ${ss_translations_repo}/l10n/*/LC_MESSAGES/messages.mo; do
+    # extract just the locale name from the path (e.g. "ca" from ".../l10n/ca/LC_MESSAGES/messages.mo")
+    locale=$(basename "$(dirname "$(dirname "$f")")")
+    output_chars=$(cd ${ss_translations_repo}/tools && python3 extract_characters_from_babel_mo.py "$locale") || echo "Warning: failed to extract chars for locale: $locale" >&2
+    all_chars="${all_chars}${output_chars}"
+  done
+
+  # add newline chars
+  all_chars="${all_chars}\n\r"
+
+  # rename source NotoSans*ttf files to include "Original" in the name
+  mv ${ss_translations_repo}/fonts/NotoSansAR-Regular.ttf ${ss_translations_repo}/fonts/NotoSansAR-Regular-Original.ttf
+  mv ${ss_translations_repo}/fonts/NotoSansJP-Regular.ttf ${ss_translations_repo}/fonts/NotoSansJP-Regular-Original.ttf
+  mv ${ss_translations_repo}/fonts/NotoSansKR-Regular.ttf ${ss_translations_repo}/fonts/NotoSansKR-Regular-Original.ttf
+  mv ${ss_translations_repo}/fonts/NotoSansSC-Regular.ttf ${ss_translations_repo}/fonts/NotoSansSC-Regular-Original.ttf
+  mv ${ss_translations_repo}/fonts/NotoSansTH-Regular.ttf ${ss_translations_repo}/fonts/NotoSansTH-Regular-Original.ttf
+
+  # slim down font files using characters in all_chars
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansAR-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansAR-Regular.ttf || exit
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansJP-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansJP-Regular.ttf || exit
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansKR-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansKR-Regular.ttf || exit
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansSC-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansSC-Regular.ttf || exit
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansTH-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansTH-Regular.ttf || exit
+
+  # remove original font files
+  rm -f ${ss_translations_repo}/fonts/NotoSans*Regular-Original*ttf
+
+  cd -
+  deactivate
+
+}
+
 download_app_repo() {
   # remove previous opt seedsigner app repo code if it already exists
   rm -fr ${rootfs_overlay}/opt/
@@ -54,35 +108,16 @@ download_app_repo() {
     echo "cloning repo ${seedsigner_app_repo} with commit id ${seedsigner_app_repo_commit_id}"
     git clone --recurse-submodules "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
     cd ${rootfs_overlay}/opt/
-    git reset --hard "${seedsigner_app_repo_commit_id}"
+    git reset --hard "${seedsigner_app_repo_commit_id}" || exit
+    git submodule update || exit
     cd -
   else
     echo "cloning repo ${seedsigner_app_repo} with branch ${seedsigner_app_repo_branch}"
     git clone --recurse-submodules --depth 1 -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
   fi
 
-  repo_commit_epoch=$(git -C "${rootfs_overlay}/opt" log -1 --format=%ct 2>/dev/null || true)
-  if [ -n "$repo_commit_epoch" ]; then
-    repo_commit_time=$(date -u -d "@${repo_commit_epoch}" "+%Y-%m-%d %H:%M")
-    echo "${repo_commit_time}" > "${rootfs_overlay}/opt/src/.build_commit_time"
-  fi
+  compile_translations_and_fonts
 
-  # create virtual env to compile translation files
-  virtualenv .translation-venv
-  source .translation-venv/bin/activate
-  cd ${rootfs_overlay}/opt
-  pip install babel || exit
-  pip install -e . || exit
-  # Only compile translations if the catalog directory exists (not all branches/repos configure this)
-  if [ -d "${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n" ]; then
-    # remove any existing binary mo files if they exist
-    rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.mo
-    python3 setup.py compile_catalog || exit
-  else
-    echo "Translation catalog directory not found, skipping compile_catalog"
-  fi
-  cd -
-  deactivate
 
   # Delete unnecessary files to save space
   # folders
