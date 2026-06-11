@@ -124,6 +124,9 @@ mv SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap ${BINARIES_DIR}/SmartPGP-RSA2048.ca
 download_and_verify "https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap" "8df7523e24117e0d3a289f511179b25b82b1bc1df39c203f03b21c568ac2b6b8"
 mv SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap ${BINARIES_DIR}/SmartPGP-RSA4096.cap
 
+download_and_verify "https://github.com/keycard-tech/status-keycard/releases/download/3.2/keycard_v3.2.cap" "9ed83c56e64cfb00d732cab4705e6f339fa1f039507ad86de7028bb3056675e8"
+mv keycard_v3.2.cap ${BINARIES_DIR}
+
 rm -R -f ./tmp/
 
 cd buildroot
