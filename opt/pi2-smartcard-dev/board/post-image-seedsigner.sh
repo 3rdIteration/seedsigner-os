@@ -103,6 +103,9 @@ mv seedsigner_os.0.8.6.pi4.img ${BINARIES_DIR}
 download_and_verify "https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-v0.2-0.1.cap" "28dbae3c7c130a6f7d0e6d05f41386ffd93976fd290eaa5d8db708b9903dabcd"
 mv SeedKeeper-v0.2-0.1.cap ${BINARIES_DIR}
 
+download_and_verify "https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-Ndef-v0.2-0.1.cap" "ef776360415ee0c64881b1e36339ffba815231aab2406014559d18fdaa632c9b"
+mv SeedKeeper-Ndef-v0.2-0.1.cap ${BINARIES_DIR}
+
 download_and_verify "https://github.com/Toporin/SatochipApplet/releases/download/v0.12/SatoChip-0.12-05.cap" "b608d1a1a53956d58e53e1aceb417a10d3492fa744528a08904eb0b068e293ce"
 mv SatoChip-0.12-05.cap ${BINARIES_DIR}
 

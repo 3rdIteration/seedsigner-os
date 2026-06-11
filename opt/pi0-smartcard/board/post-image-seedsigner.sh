@@ -103,6 +103,9 @@ mv seedsigner_os.0.8.6.pi4.img ${BINARIES_DIR}
 download_and_verify "https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-v0.2-0.1.cap" "28dbae3c7c130a6f7d0e6d05f41386ffd93976fd290eaa5d8db708b9903dabcd"
 mv SeedKeeper-v0.2-0.1.cap ${BINARIES_DIR}
 
+download_and_verify "https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-Ndef-v0.2-0.1.cap" "ef776360415ee0c64881b1e36339ffba815231aab2406014559d18fdaa632c9b"
+mv SeedKeeper-Ndef-v0.2-0.1.cap ${BINARIES_DIR}
+
 download_and_verify "https://github.com/Toporin/SatochipApplet/releases/download/v0.12/SatoChip-0.12-05.cap" "b608d1a1a53956d58e53e1aceb417a10d3492fa744528a08904eb0b068e293ce"
 mv SatoChip-0.12-05.cap ${BINARIES_DIR}
 
@@ -186,6 +189,7 @@ cp ${BINARIES_DIR}/seedsigner_os.0.8.6.pi4.img microsd-images/seedsigner_os.0.8.
 # Copy Pre-Compiled CAP files
 mkdir -p boot/javacard-cap javacard-cap
 cp ${BINARIES_DIR}/SeedKeeper-v0.2-0.1.cap javacard-cap/SeedKeeper-0.2-official.cap
+cp ${BINARIES_DIR}/SeedKeeper-Ndef-v0.2-0.1.cap javacard-cap/SeedKeeper-0.2-ndef.cap
 cp ${BINARIES_DIR}/SatoChip-0.12-05.cap javacard-cap/SatoChip-0.12-official.cap
 cp ${BINARIES_DIR}/Satodime-0.1-0.2.cap javacard-cap/SatoDime-0.1.2-official.cap
 cp ${BINARIES_DIR}/MemoryCardApplet.cap javacard-cap/SpecterDIY.cap
