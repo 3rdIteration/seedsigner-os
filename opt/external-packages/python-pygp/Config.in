@@ -1,0 +1,7 @@
+config BR2_PACKAGE_PYTHON_PYGP
+	bool "python-pygp"
+	help
+      Python API for GlobalPlatform smartcard communication
+
+	  https://github.com/3rdIteration/PyGP
+    
