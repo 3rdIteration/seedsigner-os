@@ -1,10 +1,10 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Copilot <Copilot@users.noreply.github.com>
-Date: Thu, 4 Jun 2026 00:00:00 +0000
+Date: Sat Jun 13 14:00:00 2026 +0000
 Subject: [PATCH] pyproject: keep flit metadata compatible with Buildroot
 
 Buildroot currently provides flit_core 3.10.1 for flit-based Python
-packages. keycard-py v0.3.0 now requires flit_core >= 3.11 and also uses
+packages. keycard-py requires flit_core >= 3.11 and also uses
 newer PEP 621 license metadata that the older backend rejects, causing the
 package build to abort before wheel generation.
 
@@ -35,5 +35,6 @@ index 46d34a4..fe28fd4 100644
 -license-files = ["LICENSE"]
 +license = {file = "LICENSE"}
  dynamic = ["version", "description"]
+ requires-python = ">=3.10"
  
- dependencies = [
+
