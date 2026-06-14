@@ -1,8 +1,19 @@
-# Development cycle using docker
+# SeedSigner OS Development
+
+## GitHub Actions Builds
+
+Development microSD images can be generated on demand via a GitHub Actions build task. Visit [SeedSigner Actions](https://github.com/3rdIteration/seedsigner/actions/) to trigger a build and download the resulting image without setting up a local environment.
+
+GitHub Actions builds are automatically triggered for every pull request, so you can review and download the built images directly from the PR checks.
+
+## Development cycle using docker
 
 Each time the `docker compose up` command runs, a full build from scratch is performed. You can optionally run `docker compose up -d` in detached mode by adding the `-d` flag. This will run the container in the background. To have faster development cycles you'll likely want to avoid building the OS from scratch each time. To avoid recreating the docker image/container each time, you have a few different routes. One such route is to pass the options `--no-op` (which is the default) to the `SS_ARGS` env variable when running `docker-compose up`. This will cause the container to skip the build steps but keep the container running in the background until you explicitly stop it. You can then launch a shell session into the container and work interactively, running any specific build commands you desire.
 
-> **Note:** Development microSD images can also be generated on demand via a GitHub Actions build task. Visit [SeedSigner Actions](https://github.com/3rdIteration/seedsigner/actions/) to trigger a build and download the resulting image without setting up a local environment.
+First make sure that the submodules are in sync:
+```bash
+git submodule update --recursive
+```
 
 Using docker compose will start the container (create new container if one does not already exist) without building an image
 ```bash
