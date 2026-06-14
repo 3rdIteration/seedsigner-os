@@ -102,33 +102,6 @@ mv seedsigner_os.0.8.6.pi2.img ${BINARIES_DIR}
 download_and_verify "https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi4.img" "47879ded57a91ecf46dbb44825699c53550bbf5aa6aa7c5b6519913a8863d157"
 mv seedsigner_os.0.8.6.pi4.img ${BINARIES_DIR}
 
-download_and_verify "https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-v0.2-0.1.cap" "28dbae3c7c130a6f7d0e6d05f41386ffd93976fd290eaa5d8db708b9903dabcd"
-mv SeedKeeper-v0.2-0.1.cap ${BINARIES_DIR}
-
-download_and_verify "https://github.com/Toporin/Seedkeeper-Applet/releases/download/v0.2-0.1/SeedKeeper-Ndef-v0.2-0.1.cap" "ef776360415ee0c64881b1e36339ffba815231aab2406014559d18fdaa632c9b"
-mv SeedKeeper-Ndef-v0.2-0.1.cap ${BINARIES_DIR}
-
-download_and_verify "https://github.com/Toporin/SatochipApplet/releases/download/v0.12/SatoChip-0.12-05.cap" "b608d1a1a53956d58e53e1aceb417a10d3492fa744528a08904eb0b068e293ce"
-mv SatoChip-0.12-05.cap ${BINARIES_DIR}
-
-download_and_verify "https://github.com/Toporin/Satodime-Applet/releases/download/v0.1-0.2/Satodime-0.1-0.2.cap" "d106503ae273a6f9193f9a6199e3565b0e02d3dd2ad57aa313a1ea16143197d9"
-mv Satodime-0.1-0.2.cap ${BINARIES_DIR}
-
-download_and_verify "https://github.com/cryptoadvance/specter-javacard/releases/download/v0.1.0/MemoryCardApplet.cap" "5f855f0c490402ac2f1e4cb1fc39cf6e4ce3d633fcb407fe024d275677f0efb4"
-mv MemoryCardApplet.cap ${BINARIES_DIR}
-
-download_and_verify "https://github.com/DangerousThings/flexsecure-applets/releases/download/v0.18.9/vivokey-otp.cap" "f2b7909a75a15f93aae5fa1c1c3bfe69cc613f3a74072db6c25e57b5423f16e0"
-mv vivokey-otp.cap ${BINARIES_DIR}
-
-download_and_verify "https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap" "9aa779f3615083b02df0acd1eb7268e370c9fefee99727581c8560c7efeafa09"
-mv SmartPGP-v1.22.2-jc304-rsa_up_to_2048.cap ${BINARIES_DIR}/SmartPGP-RSA2048.cap
-
-download_and_verify "https://github.com/github-af/SmartPGP/releases/download/v1.22.2-3.0.4/SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap" "8df7523e24117e0d3a289f511179b25b82b1bc1df39c203f03b21c568ac2b6b8"
-mv SmartPGP-v1.22.2-jc304-rsa_up_to_4096.cap ${BINARIES_DIR}/SmartPGP-RSA4096.cap
-
-download_and_verify "https://github.com/keycard-tech/status-keycard/releases/download/3.2/keycard_v3.2.cap" "9ed83c56e64cfb00d732cab4705e6f339fa1f039507ad86de7028bb3056675e8"
-mv keycard_v3.2.cap ${BINARIES_DIR}
-
 rm -R -f ./tmp/
 
 # Download pre-built La Frite bootloader (BL2+BL31+BL33 combined, Amlogic GXL encrypted)
@@ -168,5 +141,9 @@ genimage \
 	--inputpath "${BINARIES_DIR}"  \
 	--outputpath "${BINARIES_DIR}" \
 	--config "${GENIMAGE_CFG}"
+
+# Create empty javacard-cap directory on the boot partition using mtools
+### needed: apt install mtools
+MTOOLS_SKIP_CHECK=1 mmd -i "${BINARIES_DIR}/seedsigner_os.img::1" ::javacard-cap
 
 exit $?
