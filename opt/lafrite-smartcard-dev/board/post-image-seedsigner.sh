@@ -144,6 +144,6 @@ genimage \
 
 # Create empty javacard-cap directory on the boot partition using mtools
 ### needed: apt install mtools
-MTOOLS_SKIP_CHECK=1 mmd -i "${BINARIES_DIR}/seedsigner_os.img" ::javacard-cap
+MTOOLS_SKIP_CHECK=1 mmd -i "${BINARIES_DIR}/seedsigner_os.img:p1" ::javacard-cap
 
 exit $?
