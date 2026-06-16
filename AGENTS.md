@@ -65,3 +65,50 @@ These run inside the buildroot container with `$TARGET_DIR`, `$STAGING_DIR`, etc
 * **Fail fast**: if a tool is missing (e.g., `mtools`, `sfdisk`), skip with a clear message rather than silently passing.
 * **Clean up**: use `trap cleanup EXIT` to remove temp directories on failure.
 * **Pin versions**: when tests depend on external tools, note the expected version or behaviour so changes in tooling don't silently break things.
+
+## Build Profile Conventions
+
+Profiles are located under `opt/{profile-name}/`. Full documentation is in [docs/build_profiles.md](docs/build_profiles.md).
+
+### Naming Pattern
+
+`{board}[-smartcard][-dev]` — e.g. `pi0-smartcard`, `lafrite-smartcard-dev`.
+
+- **`-smartcard`**: Adds NFC reader stack (`libnfc-pn532-i2c`, `ccid`, `ifdnfc`, `openct`), JavaCard crypto tools (`gnupg2`, `pycryptodome-x`, `pysatochip`), and DIY tools squashfs (Java JDK + Ant + Satochip source) on the boot partition.
+- **`-dev`**: Adds networking (SSH via dropbear, git, curl, wget, pip, WiFi tools, DHCP). Uses `genimage` for image creation (non-reproducible). Includes `rootfs-overlay-dev/` for MicroSD source override.
+
+### What Changes Between Dev and Non-Dev
+
+| Level | Dev | Non-Dev |
+|-------|-----|---------|
+| **defconfig** | +dropbear, git, curl, wget, pip, wifi tools, DHCP, nano, mc | Minimal packages only |
+| **busybox.config** | Networking applets enabled (ifconfig, ip, ping, udhcpc, wget) | All networking applets disabled |
+| **kernel config** | INET, IPV6, NETDEVICES, DRM, FRAMEBUFFER_CONSOLE enabled | All disabled (air-gapped, no display output) |
+| **post-build.sh** | Copies `rootfs-overlay-dev/` into target | No dev overlay copy |
+| **post-image script** | Uses `genimage` (non-reproducible) | Manual deterministic: dd + sfdisk + mkfs.vfat --invariant + mcopy, fixed timestamps (`2023/01/01T12:15:05`), pinned bootloader SHA-256 |
+
+### Kernel Config Approaches by Platform
+
+- **Pi profiles**: Full `kernel.config` files. Dev configs add networking/display options at the bottom of an otherwise identical base config. Non-dev configs strip them out.
+- **Lafrite profile**: Uses `BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y` with a kernel fragment (`kernel-fragment.config`). The dev fragment only forces built-in drivers for initramfs boot (serial, MMC, SPI). The non-dev fragment additionally disables INET, IPV6, NETDEVICES, PACKET, DRM, and FRAMEBUFFER_CONSOLE that the arm64 arch default enables.
+
+### Rootfs Overlay Structure
+
+- `board/rootfs-overlay/` — shared between dev/non-dev: hardware config files (mdev.conf, reader.conf.d)
+- `../rootfs-overlay-dev/` — dev-only: MicroSD source override startup script. Copied by dev profiles' post-build.sh. Not present in non-dev builds.
+
+### Image Creation Methods
+
+- **Dev**: `genimage` with `genimage-seedsigner.cfg`. Fast, but embeds build-time metadata (non-reproducible).
+- **Non-dev**: Manual script that creates disk image via dd, partitions with sfdisk (fixed label-id `ba5eba11`), formats FAT32 with `mkfs.vfat --invariant`, copies files via mcopy with normalized timestamps. Produces byte-identical output across builds.
+
+### Adding a New Profile
+
+When creating a new profile (e.g. `lafrite-smartcard` from `lafrite-smartcard-dev`):
+1. Copy hardware files unchanged: extlinux.conf, boot.cmd, DTS, genimage-diy-tools.cfg, rootfs-overlay, Config.in, external.mk
+2. Create defconfig: remove dev packages, update paths to new profile name, single rootfs-overlay (no `-dev`)
+3. Create post-build.sh: adapt from existing non-dev profile for the target architecture (armhf vs aarch64)
+4. Create busybox.config: copy from equivalent non-dev profile (minimal networking)
+5. Create kernel config or fragment: disable INET, IPV6, NETDEVICES, PACKET, DRM, FRAMEBUFFER_CONSOLE
+6. Create post-image script: deterministic manual approach with pinned bootloader SHA-256
+7. Update external.desc: remove "Dev" from description

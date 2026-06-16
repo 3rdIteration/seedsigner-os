@@ -173,12 +173,15 @@ That image can be burned to an SD card and run in your SeedSigner.
 
 
 ## Board configs
-| Board                 | Image Name                        | Build Script Option |
-| --------------------- | --------------------------------- | ------------------- |
-|Raspberry Pi Zero      |`seedsigner_os.<tag>.pi0.img`      | --pi0               |
-|Raspberry Pi Zero W    |`seedsigner_os.<tag>.pi0.img`      | --pi0               |
-|Raspberry Pi 2 Model B |`seedsigner_os.<tag>.pi2.img`      | --pi2               |
-|Raspberry Pi Zero 2 W  |`seedsigner_os.<tag>.pi02w.img`    | --pi02w             |
-|Raspberry Pi 3 Model B |`seedsigner_os.<tag>.pi02w.img`    | --pi02w             |
-|Raspberry Pi 4 Model B |`seedsigner_os.<tag>.pi4.img`      | --pi4               |
-|Build all targets      |(all of the above)                 | --all               |
+| Board                        | Image Name                              | Build Script Option |
+| ---------------------------- | --------------------------------------- | ------------------- |
+|Raspberry Pi Zero             |`seedsigner_os.<tag>.pi0.img`            | --pi0               |
+|Raspberry Pi Zero W           |`seedsigner_os.<tag>.pi0.img`            | --pi0               |
+|Raspberry Pi 2 Model B        |`seedsigner_os.<tag>.pi2.img`            | --pi2               |
+|Raspberry Pi Zero 2 W         |`seedsigner_os.<tag>.pi02w.img`          | --pi02w             |
+|Raspberry Pi 3 Model B        |`seedsigner_os.<tag>.pi02w.img`          | --pi02w             |
+|Raspberry Pi 4 Model B        |`seedsigner_os.<tag>.pi4.img`            | --pi4               |
+|La Frite (AML-S805X-AC)       |`seedsigner_os.<tag>.lafrite.img`        | --lafrite           |
+|Build all targets             |(all of the above)                       | --all               |
+
+For details on the differences between dev and non-dev builds, smartcard vs non-smartcard profiles, and kernel configuration approaches per platform, see [build_profiles.md](build_profiles.md).

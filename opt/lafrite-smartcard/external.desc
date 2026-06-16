@@ -1,0 +1,3 @@
+BR2_EXTERNAL_DESC="SeedSigner OS for La Frite (Smartcard)"
+BR2_EXTERNAL_SITE="https://github.com/SeedSigner/seedsigner-os"
+BR2_EXTERNAL_HASH="SKIP"
