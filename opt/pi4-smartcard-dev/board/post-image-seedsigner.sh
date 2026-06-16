@@ -133,6 +133,8 @@ genimage \
 
 # Create empty javacard-cap directory on the boot partition using mtools
 ### needed: apt install mtools
-MTOOLS_SKIP_CHECK=1 mmd -i "${BINARIES_DIR}/seedsigner_os.img::1" ::javacard-cap
+# Read partition 1 start sector from MBR (byte offset 454, little-endian uint32) and convert to byte offset
+PARTITION_OFFSET=$(python3 -c "import struct; print(struct.unpack('<I', open('${BINARIES_DIR}/seedsigner_os.img','rb').read()[454:458])[0] * 512)")
+MTOOLS_SKIP_CHECK=1 mmd -i "${BINARIES_DIR}/seedsigner_os.img@@${PARTITION_OFFSET}" ::javacard-cap
 
 exit $?
