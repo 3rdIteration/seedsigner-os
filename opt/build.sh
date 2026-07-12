@@ -63,34 +63,43 @@ compile_translations_and_fonts() {
   # generate messages.mo files for each translation
   python3 setup.py compile_catalog || exit
 
-  # extract characters from all messages.mo translations into all_chars shell variable
-  all_chars=""
-  for f in ${ss_translations_repo}/l10n/*/LC_MESSAGES/messages.mo; do
-    # extract just the locale name from the path (e.g. "ca" from ".../l10n/ca/LC_MESSAGES/messages.mo")
-    locale=$(basename "$(dirname "$(dirname "$f")")")
-    output_chars=$(cd ${ss_translations_repo}/tools && python3 extract_characters_from_babel_mo.py "$locale") || echo "Warning: failed to extract chars for locale: $locale" >&2
-    all_chars="${all_chars}${output_chars}"
-  done
+  # extract characters from the translations and slim down the bundled NotoSans
+  # fonts. The translations repo only ships the fonts and the extraction tool on
+  # newer commits, so skip this step gracefully when either is missing (e.g. when
+  # the app branch pins an older seedsigner-translations commit).
+  ss_translations_tool="${ss_translations_repo}/tools/extract_characters_from_babel_mo.py"
+  if [ -d "${ss_translations_repo}/fonts" ] && [ -f "${ss_translations_tool}" ]; then
 
-  # add newline chars
-  all_chars="${all_chars}\n\r"
+    # extract characters from all messages.mo translations into all_chars shell variable
+    all_chars=""
+    for f in ${ss_translations_repo}/l10n/*/LC_MESSAGES/messages.mo; do
+      # extract just the locale name from the path (e.g. "ca" from ".../l10n/ca/LC_MESSAGES/messages.mo")
+      locale=$(basename "$(dirname "$(dirname "$f")")")
+      output_chars=$(cd ${ss_translations_repo}/tools && python3 extract_characters_from_babel_mo.py "$locale") || echo "Warning: failed to extract chars for locale: $locale" >&2
+      all_chars="${all_chars}${output_chars}"
+    done
 
-  # rename source NotoSans*ttf files to include "Original" in the name
-  mv ${ss_translations_repo}/fonts/NotoSansAR-Regular.ttf ${ss_translations_repo}/fonts/NotoSansAR-Regular-Original.ttf
-  mv ${ss_translations_repo}/fonts/NotoSansJP-Regular.ttf ${ss_translations_repo}/fonts/NotoSansJP-Regular-Original.ttf
-  mv ${ss_translations_repo}/fonts/NotoSansKR-Regular.ttf ${ss_translations_repo}/fonts/NotoSansKR-Regular-Original.ttf
-  mv ${ss_translations_repo}/fonts/NotoSansSC-Regular.ttf ${ss_translations_repo}/fonts/NotoSansSC-Regular-Original.ttf
-  mv ${ss_translations_repo}/fonts/NotoSansTH-Regular.ttf ${ss_translations_repo}/fonts/NotoSansTH-Regular-Original.ttf
+    # add newline chars
+    all_chars="${all_chars}\n\r"
 
-  # slim down font files using characters in all_chars
-  pyftsubset ${ss_translations_repo}/fonts/NotoSansAR-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansAR-Regular.ttf || exit
-  pyftsubset ${ss_translations_repo}/fonts/NotoSansJP-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansJP-Regular.ttf || exit
-  pyftsubset ${ss_translations_repo}/fonts/NotoSansKR-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansKR-Regular.ttf || exit
-  pyftsubset ${ss_translations_repo}/fonts/NotoSansSC-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansSC-Regular.ttf || exit
-  pyftsubset ${ss_translations_repo}/fonts/NotoSansTH-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansTH-Regular.ttf || exit
+    # rename each source NotoSans*ttf to include "Original" in the name, then slim
+    # it down to just the characters used by the translations
+    for font in NotoSansAR NotoSansJP NotoSansKR NotoSansSC NotoSansTH; do
+      src="${ss_translations_repo}/fonts/${font}-Regular.ttf"
+      if [ ! -f "${src}" ]; then
+        echo "Warning: font ${src} not found, skipping" >&2
+        continue
+      fi
+      orig="${ss_translations_repo}/fonts/${font}-Regular-Original.ttf"
+      mv "${src}" "${orig}" || exit
+      pyftsubset "${orig}" --text="${all_chars}" --output-file="${src}" || exit
+    done
 
-  # remove original font files
-  rm -f ${ss_translations_repo}/fonts/NotoSans*Regular-Original*ttf
+    # remove original font files
+    rm -f ${ss_translations_repo}/fonts/NotoSans*Regular-Original*ttf
+  else
+    echo "Translation fonts or extraction tool not found, skipping font slimming"
+  fi
 
   cd -
   deactivate
