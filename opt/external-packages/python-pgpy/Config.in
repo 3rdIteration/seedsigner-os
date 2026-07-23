@@ -1,8 +1,13 @@
 config BR2_PACKAGE_PYTHON_PGPY
 	bool "python-pgpy"
-	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY
 	select BR2_PACKAGE_PYTHON_PYASN1
+	# uClibc toolchains use the pycryptodomex-backed fork (avoids Rust/cryptography)
+	select BR2_PACKAGE_PYTHON_PYCRYPTODOMEX if BR2_TOOLCHAIN_USES_UCLIBC
+	select BR2_PACKAGE_PYTHON_ECDSA if BR2_TOOLCHAIN_USES_UCLIBC
+	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY if !BR2_TOOLCHAIN_USES_UCLIBC
 	help
-      Pretty Good Privacy (PGP) implementation in Python
+	  Pretty Good Privacy (PGP) implementation in Python.
+	  On uClibc toolchains a pycryptodomex-backed fork is used
+	  to avoid the python-cryptography (Rust) dependency.
 
 	  https://github.com/SecurityInnovation/PGPy

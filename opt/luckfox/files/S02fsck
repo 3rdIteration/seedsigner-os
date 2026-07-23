@@ -1,0 +1,217 @@
+#!/bin/sh
+#
+# S02fsck - Automatic filesystem check at boot
+#
+# Runs e2fsck on ext4 partitions and fsck.fat on FAT partitions before
+# services start.  Safely skips UBIFS/SPI-NAND systems where block-level
+# fsck does not apply.
+#
+# FAT partitions that are already mounted read-only (the "stuck ro" scenario
+# caused by filesystem errors) are unmounted, repaired, and remounted.
+#
+
+FSCK_LOG="/tmp/fsck.log"
+
+log_fsck() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [fsck] $1" | tee -a "$FSCK_LOG"
+}
+
+# Return the block device mounted at /
+get_root_device() {
+    awk '$2 == "/" { print $1; exit }' /proc/mounts
+}
+
+# Return the filesystem type for the device mounted at /
+# Uses /proc/mounts directly — no blkid dependency.
+get_root_fstype() {
+    awk '$2 == "/" { print $3; exit }' /proc/mounts
+}
+
+# Check whether a device has an ext2/3/4 filesystem.
+# For unmounted devices, falls back to blkid if available; otherwise skips.
+is_ext4() {
+    local dev="$1"
+    local fstype
+    if command -v blkid >/dev/null 2>&1; then
+        fstype=$(blkid -s TYPE -o value "$dev" 2>/dev/null)
+    else
+        return 1
+    fi
+    case "$fstype" in
+        ext2|ext3|ext4) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Check whether a device is currently listed in /proc/mounts
+is_mounted() {
+    local dev="$1"
+    awk -v d="$dev" '$1 == d { found=1 } END { exit !found }' /proc/mounts
+}
+
+# Run e2fsck in preen (automatic repair) mode and log the result.
+# Returns the e2fsck exit code.
+run_e2fsck() {
+    local dev="$1"
+    local rc
+
+    e2fsck -p "$dev" >> "$FSCK_LOG" 2>&1
+    rc=$?
+
+    # e2fsck exit codes are bit flags:
+    #   0  - no errors
+    #   1  - errors corrected
+    #   2  - errors corrected, reboot recommended
+    #   4  - errors left uncorrected
+    #   8  - operational error
+    #  16  - usage error or other
+    case $rc in
+        0)  log_fsck "$dev: filesystem clean" ;;
+        1)  log_fsck "$dev: errors corrected" ;;
+        2)  log_fsck "$dev: errors corrected; reboot recommended" ;;
+        *)  log_fsck "$dev: fsck returned exit code $rc - check $FSCK_LOG" ;;
+    esac
+
+    return $rc
+}
+
+# Run fsck.fat in automatic-repair mode and log the result.
+# Returns the fsck.fat exit code.
+run_fsck_fat() {
+    local dev="$1"
+    local rc
+
+    fsck.fat -a "$dev" >> "$FSCK_LOG" 2>&1
+    rc=$?
+
+    # fsck.fat exit codes:
+    #   0 - no errors
+    #   1 - errors corrected
+    #   2 - errors found but not corrected (or fatal error)
+    case $rc in
+        0) log_fsck "$dev: FAT filesystem clean" ;;
+        1) log_fsck "$dev: FAT errors corrected" ;;
+        *) log_fsck "$dev: fsck.fat returned exit code $rc - check $FSCK_LOG" ;;
+    esac
+
+    return $rc
+}
+
+start() {
+    if ! command -v e2fsck >/dev/null 2>&1 && ! command -v fsck.fat >/dev/null 2>&1; then
+        log_fsck "Neither e2fsck nor fsck.fat found; skipping filesystem check"
+        return 0
+    fi
+
+    log_fsck "Starting filesystem check"
+
+    # --- Check the root filesystem ---
+    local root_dev root_fstype
+    root_dev=$(get_root_device)
+    root_fstype=$(get_root_fstype)
+
+    case "$root_fstype" in
+        ext2|ext3|ext4)
+            if [ -n "$root_dev" ] && [ -b "$root_dev" ]; then
+                log_fsck "Root device $root_dev is $root_fstype; running fsck (remounting read-only)"
+                if mount -o remount,ro / 2>>"$FSCK_LOG"; then
+                    run_e2fsck "$root_dev"
+                    local fsck_rc=$?
+                    mount -o remount,rw / 2>>"$FSCK_LOG" || log_fsck "WARNING: failed to remount / read-write"
+                    if [ $fsck_rc -ge 4 ]; then
+                        log_fsck "Root filesystem has uncorrected errors (code $fsck_rc); system may be unstable"
+                    fi
+                else
+                    log_fsck "Could not remount / read-only; skipping root fsck"
+                fi
+            fi
+            ;;
+        *)
+            log_fsck "Root ($root_dev) is $root_fstype (likely UBIFS/SPI-NAND); skipping root fsck"
+            ;;
+    esac
+
+    # --- Scan other block partitions for ext4 and FAT filesystem issues ---
+    #
+    # For FAT partitions: the kernel silently remounts a FAT partition read-only
+    # when it detects filesystem errors.  We detect this from /proc/mounts
+    # (no blkid required), unmount, repair with fsck.fat, and remount.
+    # For unmounted partitions of any type we use blkid to identify the type.
+    local dev
+    for dev in /dev/mmcblk[0-9]p[0-9]* /dev/sd[a-z][0-9]*; do
+        [ -b "$dev" ] || continue
+        [ "$dev" = "$root_dev" ] && continue
+
+        # Read mount info for this device from /proc/mounts in one pass
+        local mntpt mnt_fstype mnt_opts
+        read -r mntpt mnt_fstype mnt_opts <<EOF
+$(awk -v d="$dev" '$1==d{print $2, $3, $4; exit}' /proc/mounts)
+EOF
+
+        if [ -n "$mntpt" ]; then
+            # Device is mounted — only act on FAT partitions stuck read-only
+            case "$mnt_fstype" in
+                vfat|fat|msdos)
+                    case ",$mnt_opts," in
+                        *,ro,*)
+                            if command -v fsck.fat >/dev/null 2>&1; then
+                                log_fsck "FAT partition $dev mounted read-only at $mntpt; unmounting to repair"
+                                if umount "$dev" 2>>"$FSCK_LOG"; then
+                                    run_fsck_fat "$dev"
+                                    mount "$dev" "$mntpt" 2>>"$FSCK_LOG" \
+                                        && log_fsck "Remounted $dev at $mntpt" \
+                                        || log_fsck "WARNING: could not remount $dev at $mntpt"
+                                else
+                                    log_fsck "Could not unmount $dev; skipping FAT repair"
+                                fi
+                            else
+                                log_fsck "$dev: FAT partition stuck read-only but fsck.fat not available"
+                            fi
+                            ;;
+                    esac
+                    ;;
+            esac
+            continue
+        fi
+
+        # Device is unmounted — use blkid to identify type, then run appropriate fsck
+        command -v blkid >/dev/null 2>&1 || continue
+        local blkid_type
+        blkid_type=$(blkid -s TYPE -o value "$dev" 2>/dev/null)
+
+        case "$blkid_type" in
+            ext2|ext3|ext4)
+                log_fsck "Checking unmounted ext2/ext3/ext4 partition $dev"
+                run_e2fsck "$dev"
+                ;;
+            vfat|fat|msdos)
+                if command -v fsck.fat >/dev/null 2>&1; then
+                    log_fsck "Checking unmounted FAT partition $dev"
+                    run_fsck_fat "$dev"
+                else
+                    log_fsck "$dev: FAT partition found but fsck.fat not available"
+                fi
+                ;;
+        esac
+    done
+
+    log_fsck "Filesystem check complete"
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        # Nothing to do on shutdown
+        ;;
+    restart|reload)
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0

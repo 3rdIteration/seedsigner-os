@@ -3,3 +3,12 @@
 .buildroot-ccache/
 .ccache/
 opt/output/
+
+# Luckfox Pico build (opt/luckfox)
+opt/luckfox/build-output/
+opt/luckfox/cache/
+# Repos the Luckfox build clones at build time (SDK + app)
+luckfox-pico/
+opt/luckfox-pico/
+opt/seedsigner/
+build-artifacts/

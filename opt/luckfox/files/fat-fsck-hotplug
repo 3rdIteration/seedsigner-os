@@ -1,0 +1,98 @@
+#!/bin/sh
+#
+# fat-fsck-hotplug - Repair FAT filesystems on hot-inserted block devices.
+#
+# Called by mdev when a block device partition is added.  Detects FAT/vfat
+# partitions and runs fsck.fat -a to automatically repair any errors before
+# the partition is mounted by the system.
+#
+# If the partition has already been mounted read-only (because the kernel
+# detected errors during a previous mount attempt), this script unmounts it,
+# repairs it, and remounts it at the original mountpoint.
+#
+# Environment variables set by mdev:
+#   $MDEV   - device name without /dev/ prefix (e.g. mmcblk1p1)
+#   $ACTION - hotplug action: "add" when device appears, "remove" when removed
+#
+
+FSCK_LOG="/tmp/fsck.log"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [fat-hotplug] $1" | tee -a "$FSCK_LOG"
+}
+
+# Only act on add events (mdev -s sets no ACTION; treat that as "add")
+case "${ACTION:-add}" in
+    add) ;;
+    *) exit 0 ;;
+esac
+
+[ -n "$MDEV" ] || exit 0
+DEV="/dev/${MDEV}"
+
+# Wait up to 3 seconds for the device node to become a valid block device
+waited=0
+while [ $waited -lt 3 ]; do
+    [ -b "$DEV" ] && break
+    sleep 1
+    waited=$((waited + 1))
+done
+[ -b "$DEV" ] || exit 0
+
+# Determine filesystem type via blkid (preferred) or /proc/mounts (fallback)
+fstype=""
+if command -v blkid >/dev/null 2>&1; then
+    fstype=$(blkid -s TYPE -o value "$DEV" 2>/dev/null)
+fi
+if [ -z "$fstype" ]; then
+    fstype=$(awk -v d="$DEV" '$1==d{print $3;exit}' /proc/mounts)
+fi
+
+case "$fstype" in
+    vfat|fat|msdos)
+        ;;
+    *)
+        # Not a FAT partition; nothing to do
+        exit 0
+        ;;
+esac
+
+if ! command -v fsck.fat >/dev/null 2>&1; then
+    log_msg "$DEV: FAT partition detected but fsck.fat not available"
+    exit 0
+fi
+
+# Read current mount state in one awk pass
+read -r mntpt mnt_opts <<EOF
+$(awk -v d="$DEV" '$1==d{print $2, $4; exit}' /proc/mounts)
+EOF
+
+if [ -n "$mntpt" ]; then
+    # Already mounted — only repair if stuck read-only
+    case ",$mnt_opts," in
+        *,ro,*)
+            log_msg "FAT partition $DEV mounted read-only at $mntpt; unmounting to repair"
+            if umount "$DEV" 2>>"$FSCK_LOG"; then
+                fsck.fat -a "$DEV" >> "$FSCK_LOG" 2>&1
+                rc=$?
+                log_msg "fsck.fat on $DEV completed (rc=$rc)"
+                mount "$DEV" "$mntpt" 2>>"$FSCK_LOG" \
+                    && log_msg "Remounted $DEV at $mntpt" \
+                    || log_msg "WARNING: could not remount $DEV at $mntpt"
+            else
+                log_msg "Could not unmount $DEV; skipping FAT repair"
+            fi
+            ;;
+        *)
+            log_msg "$DEV already mounted read-write at $mntpt; no repair needed"
+            ;;
+    esac
+else
+    # Not yet mounted — repair in place before any mount attempt
+    log_msg "New unmounted FAT partition $DEV; running fsck.fat"
+    fsck.fat -a "$DEV" >> "$FSCK_LOG" 2>&1
+    rc=$?
+    log_msg "fsck.fat on $DEV completed (rc=$rc)"
+fi
+
+exit 0
