@@ -1,3 +1,2 @@
-BR2_EXTERNAL_DESC="SeedSigner OS for La Frite (Smartcard)"
-BR2_EXTERNAL_SITE="https://github.com/SeedSigner/seedsigner-os"
-BR2_EXTERNAL_HASH="SKIP"
+name: RPI_SEEDSIGNER
+desc: SeedSignerOS image for La Frite AML-S805X-AC (with Smartcard Functionality)
