@@ -60,6 +60,12 @@ These run inside the buildroot container with `$TARGET_DIR`, `$STAGING_DIR`, etc
 * Set the variables to local paths pointing at a minimal rootfs or empty directory.
 * Source the script and step through it, checking that file operations target the right locations.
 
+> **Commit scripts as executable (mode `100755`).** Buildroot invokes `BR2_ROOTFS_POST_BUILD_SCRIPT` and `BR2_ROOTFS_POST_IMAGE_SCRIPT` directly (not via `sh <script>`), so a script committed non-executable (`100644`) fails `target-finalize` with exit code **126**. This is easy to miss when authoring on Windows, where the working tree doesn't carry a Unix exec bit. Set it explicitly and verify what git recorded:
+> ```sh
+> git update-index --chmod=+x opt/<profile>/board/post-build.sh opt/<profile>/board/post-image-seedsigner.sh
+> git ls-files -s opt/<profile>/board/*.sh   # each must show mode 100755
+> ```
+
 ### General Principles
 
 * **Fail fast**: if a tool is missing (e.g., `mtools`, `sfdisk`), skip with a clear message rather than silently passing.
@@ -111,4 +117,5 @@ When creating a new profile (e.g. `lafrite-smartcard` from `lafrite-smartcard-de
 4. Create busybox.config: copy from equivalent non-dev profile (minimal networking)
 5. Create kernel config or fragment: disable INET, IPV6, NETDEVICES, PACKET, DRM, FRAMEBUFFER_CONSOLE
 6. Create post-image script: deterministic manual approach with pinned bootloader SHA-256
-7. Update external.desc: remove "Dev" from description
+7. Update external.desc: keep buildroot's `key: value` format with a `name:` line (all profiles use `name: RPI_SEEDSIGNER`, referenced by `external.mk` as `BR2_EXTERNAL_RPI_SEEDSIGNER_PATH`); remove "Dev" from the `desc:`. A missing `name:` aborts the build with "external.desc does not define the name".
+8. Set the executable bit on `post-build.sh` and the post-image script and confirm it before committing (see the note under [Buildroot Post-Build / Post-Install Scripts](#buildroot-post-build--post-install-scripts)). Non-executable scripts fail at `target-finalize` with exit code 126.
