@@ -145,6 +145,13 @@ run_build() {
         exit 1
     fi
 
+    # Mount the shared OS-release generator so os-build.sh can stamp provenance.
+    local gen_os_release="$(cd "$SCRIPT_DIR/.." && pwd)/gen-os-release.sh"
+    local gen_os_release_arg=""
+    if [[ -f "$gen_os_release" ]]; then
+        gen_os_release_arg="-v $gen_os_release:/build/gen-os-release.sh:ro"
+    fi
+
     # Docker run arguments with persistent volume
     local docker_args="$PLATFORM_ARGS
                        --name $CONTAINER_NAME
@@ -152,6 +159,7 @@ run_build() {
                        -v $volume_name:/build/repos
                        -v $abs_output_dir:/build/output
                        -v $external_packages_dir:/build/external-packages:ro
+                       $gen_os_release_arg
                        $env_args"
     
     case "$mode" in

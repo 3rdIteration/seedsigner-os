@@ -1191,7 +1191,15 @@ install_seedsigner_app() {
     # Copy SeedSigner code
     print_info "Copying SeedSigner application..."
     cp -rv "$WORK_DIR/seedsigner/src/" "$rootfs_dir/seedsigner"
-    
+
+    # Generate the SeedSigner OS identity + provenance marker (host build has both
+    # git checkouts available: this repo for OS data, the clone for app data).
+    SEEDSIGNER_OS_REPO="https://github.com/3rdIteration/seedsigner-os" \
+    SEEDSIGNER_OS_GIT_DIR="$SCRIPT_DIR/../.." \
+    SEEDSIGNER_APP_GIT_DIR="$WORK_DIR/seedsigner" \
+      bash "$SCRIPT_DIR/../gen-os-release.sh" "$rootfs_dir/etc/seedsigner-os-release" \
+      || print_warning "Could not generate seedsigner-os-release"
+
     # Clean up non-essential files from rootfs
     print_info "Cleaning up non-essential files from rootfs..."
     rm -rf "$rootfs_dir/seedsigner/../docs" 2>/dev/null || true

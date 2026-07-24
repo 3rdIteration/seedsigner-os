@@ -191,6 +191,12 @@ bootstrap_camera_graph() {
 # Set up signal handlers
 trap cleanup SIGTERM SIGINT
 
+# Ensure the kernel hostname matches what the SeedSigner app expects. This is a
+# sethostname() call (no disk write) so it is safe even on a full rootfs, and it
+# guarantees SeedSigner-OS platform detection regardless of whether the SDK init
+# applied /etc/hostname.
+hostname seedsigner-os 2>/dev/null || true
+
 # Kill any existing rkipc processes
 killall rkipc 2>/dev/null
 bootstrap_camera_graph

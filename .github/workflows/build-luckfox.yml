@@ -1094,6 +1094,18 @@ jobs:
           echo "   rkaiq-service will not be available"
         fi
 
+        # Generate the SeedSigner OS identity + provenance marker: positively
+        # identifies a SeedSigner OS build to the app and records both repos'
+        # branch/commit/date for the System Info screen.
+        echo "🔧 Generating /etc/seedsigner-os-release ..."
+        SEEDSIGNER_OS_REPO="${{ format('https://github.com/{0}', github.repository) }}" \
+        SEEDSIGNER_OS_GIT_DIR="$GITHUB_WORKSPACE/seedsigner-os" \
+        SEEDSIGNER_APP_REPO="${{ github.event.inputs.seedsigner_repo_url || 'https://github.com/3rdIteration/seedsigner.git' }}" \
+        SEEDSIGNER_APP_BRANCH="${{ github.event.inputs.seedsigner_branch || 'dev' }}" \
+        SEEDSIGNER_APP_GIT_DIR="$GITHUB_WORKSPACE/seedsigner" \
+          bash ../seedsigner-os/opt/gen-os-release.sh "$ROOTFS_DIR/etc/seedsigner-os-release" \
+          || echo "⚠️  Warning: could not generate seedsigner-os-release"
+
     - name: Package firmware
       run: |
         cd luckfox-pico

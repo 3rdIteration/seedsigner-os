@@ -1144,7 +1144,18 @@ s/^endef\nendif/endef\nendif\nendif/
 
     print_step "Installing SeedSigner Code"
     cp -rv "$SEEDSIGNER_CODE_DIR/src/" "$ROOTFS_DIR/seedsigner"
-    
+
+    # Generate the SeedSigner OS identity + provenance marker. App git data comes
+    # from the cloned repo; OS git data is unavailable inside the build container,
+    # so it falls back to "unknown" (gen-os-release.sh is mounted at /build by build.sh).
+    if [ -f /build/gen-os-release.sh ]; then
+        SEEDSIGNER_APP_REPO="$SEEDSIGNER_REPO_URL" \
+        SEEDSIGNER_APP_BRANCH="$SEEDSIGNER_BRANCH" \
+        SEEDSIGNER_APP_GIT_DIR="$SEEDSIGNER_CODE_DIR" \
+          bash /build/gen-os-release.sh "$ROOTFS_DIR/etc/seedsigner-os-release" \
+          || print_error "Could not generate seedsigner-os-release"
+    fi
+
     print_step "Cleaning up non-essential files from rootfs"
     # Remove documentation, hardware files, git metadata, and test files
     # These are kept in the repo but shouldn't be in the final image

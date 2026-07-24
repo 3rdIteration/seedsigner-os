@@ -12,3 +12,5 @@ luckfox-pico/
 opt/luckfox-pico/
 opt/seedsigner/
 build-artifacts/
+# Build-time generated OS identity/provenance marker (Pi/La Frite overlay)
+opt/rootfs-overlay/etc/seedsigner-os-release

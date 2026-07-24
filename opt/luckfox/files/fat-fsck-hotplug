@@ -21,7 +21,33 @@ log_msg() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') [fat-hotplug] $1" | tee -a "$FSCK_LOG"
 }
 
-# Only act on add events (mdev -s sets no ACTION; treat that as "add")
+MOUNT_POINT="/mnt/microsd"
+FIFO="/tmp/mdev_fifo"
+
+is_mounted() {
+    awk -v m="$MOUNT_POINT" '$2==m{found=1} END{exit !found}' /proc/mounts 2>/dev/null
+}
+
+# Notify the running SeedSigner app of insert/remove via its mdev FIFO. Backgrounded
+# so a not-yet-ready reader can never hang mdev; skipped if the FIFO isn't present
+# (the app also samples the mount state at startup).
+signal_app() {
+    if [ -p "$FIFO" ]; then
+        ( printf '%s' "$1" > "$FIFO" 2>/dev/null ) &
+    fi
+}
+
+# On removal, unmount the card and tell the app; nothing else to do.
+if [ "${ACTION:-add}" = "remove" ]; then
+    if is_mounted; then
+        umount "$MOUNT_POINT" 2>>"$FSCK_LOG" || umount -l "$MOUNT_POINT" 2>>"$FSCK_LOG" || true
+        log_msg "Unmounted $MOUNT_POINT (device removed)"
+    fi
+    signal_app remove
+    exit 0
+fi
+
+# Anything other than add/remove: ignore (mdev -s sets no ACTION -> treated as add).
 case "${ACTION:-add}" in
     add) ;;
     *) exit 0 ;;
@@ -93,6 +119,21 @@ else
     fsck.fat -a "$DEV" >> "$FSCK_LOG" 2>&1
     rc=$?
     log_msg "fsck.fat on $DEV completed (rc=$rc)"
+fi
+
+# Mount the (now-checked) FAT card as SeedSigner's removable media (/mnt/microsd)
+# and notify the running app. The Luckfox SDK does not auto-mount removable media,
+# so this mirrors the Raspberry Pi mdev handler.
+mkdir -p "$MOUNT_POINT"
+if is_mounted; then
+    log_msg "$MOUNT_POINT already mounted; not remounting $DEV"
+else
+    if mount -o sync "$DEV" "$MOUNT_POINT" 2>>"$FSCK_LOG"; then
+        log_msg "Mounted $DEV at $MOUNT_POINT"
+        signal_app add
+    else
+        log_msg "WARNING: failed to mount $DEV at $MOUNT_POINT"
+    fi
 fi
 
 exit 0
