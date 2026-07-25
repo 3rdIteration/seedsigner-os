@@ -75,6 +75,58 @@ on:
         type: string
         default: ''
 
+  # Allow other repos (e.g. the seedsigner app) to reuse this build. Inputs mirror
+  # workflow_dispatch (as strings, since workflow_call has no `choice` type) plus
+  # seedsigner_os_repo/ref for the reusable checkout.
+  workflow_call:
+    inputs:
+      hardware_type:
+        required: false
+        type: string
+        default: 'RV1103_Luckfox_Pico_Mini'
+      boot_medium:
+        required: false
+        type: string
+        default: 'SD_CARD'
+      disable_uart2_console_debug:
+        required: false
+        type: string
+        default: 'true'
+      luckfox_repo_url:
+        required: false
+        type: string
+        default: 'https://github.com/3rdIteration/luckfox-pico.git'
+      luckfox_branch:
+        required: false
+        type: string
+        default: ''
+      seedsigner_repo_url:
+        required: false
+        type: string
+        default: 'https://github.com/3rdIteration/seedsigner.git'
+      seedsigner_branch:
+        required: false
+        type: string
+        default: 'dev'
+      build_rust_from_source:
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        required: false
+        type: string
+        default: ''
+      seedsigner_os_repo:
+        description: 'seedsigner-os repository to build from (owner/name)'
+        required: false
+        type: string
+        default: ''
+      seedsigner_os_ref:
+        description: 'seedsigner-os ref (branch/tag/sha) to build from'
+        required: false
+        type: string
+        default: ''
+
 jobs:
   build:
     name: Build (${{ matrix.hardware }} / ${{ matrix.boot }})
@@ -88,7 +140,7 @@ jobs:
         include:
           # When manually triggered via workflow_dispatch with specific (non-ALL) inputs, build that single combination.
           # Otherwise (push, pull_request, or ALL selected), build all 5 valid combinations.
-          ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.hardware_type != 'ALL' && github.event.inputs.boot_medium != 'ALL') && fromJSON(format('[{{"hardware":"{0}","boot":"{1}"}}]', github.event.inputs.hardware_type, github.event.inputs.boot_medium)) || fromJSON('[
+          ${{ (inputs.hardware_type != '' && inputs.hardware_type != 'ALL' && inputs.boot_medium != '' && inputs.boot_medium != 'ALL') && fromJSON(format('[{{"hardware":"{0}","boot":"{1}"}}]', inputs.hardware_type, inputs.boot_medium)) || fromJSON('[
             {"hardware":"RV1103_Luckfox_Pico_Mini","boot":"SD_CARD"},
             {"hardware":"RV1103_Luckfox_Pico_Mini","boot":"SPI_NAND"},
             {"hardware":"RV1106_Luckfox_Pico_Pro_Max","boot":"SD_CARD"},
@@ -100,6 +152,11 @@ jobs:
     - name: Checkout seedsigner-os repository
       uses: actions/checkout@v4
       with:
+        # Defaults target this repo/ref for direct push/dispatch runs; a caller
+        # (e.g. the seedsigner app's build-luckfox workflow) overrides these to
+        # build a specific seedsigner-os checkout.
+        repository: ${{ inputs.seedsigner_os_repo || github.repository }}
+        ref: ${{ inputs.seedsigner_os_ref || github.ref }}
         path: seedsigner-os
 
     - name: Validate build combination
@@ -151,10 +208,10 @@ jobs:
       run: |
         # Set repository URLs and branches with fallbacks
         # Use workflow_dispatch inputs if available, otherwise use defaults
-        LUCKFOX_REPO="${{ github.event.inputs.luckfox_repo_url || 'https://github.com/3rdIteration/luckfox-pico.git' }}"
-        LUCKFOX_BRANCH="${{ github.event.inputs.luckfox_branch || '' }}"
-        SEEDSIGNER_REPO="${{ github.event.inputs.seedsigner_repo_url || 'https://github.com/3rdIteration/seedsigner.git' }}"
-        SEEDSIGNER_BRANCH="${{ github.event.inputs.seedsigner_branch || 'dev' }}"
+        LUCKFOX_REPO="${{ inputs.luckfox_repo_url || 'https://github.com/3rdIteration/luckfox-pico.git' }}"
+        LUCKFOX_BRANCH="${{ inputs.luckfox_branch || '' }}"
+        SEEDSIGNER_REPO="${{ inputs.seedsigner_repo_url || 'https://github.com/3rdIteration/seedsigner.git' }}"
+        SEEDSIGNER_BRANCH="${{ inputs.seedsigner_branch || 'dev' }}"
         # SeedSigner OS Buildroot packages come from this checked-out repo
         # (../seedsigner-os/opt/external-packages); nothing to clone.
 
@@ -399,7 +456,7 @@ jobs:
       run: |
         cd luckfox-pico
 
-        DISABLE_UART2_CONSOLE_DEBUG="${{ github.event.inputs.disable_uart2_console_debug }}"
+        DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
         if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
           DISABLE_UART2_CONSOLE_DEBUG="true"
         fi
@@ -436,7 +493,7 @@ jobs:
       run: |
         cd luckfox-pico
 
-        DISABLE_UART2_CONSOLE_DEBUG="${{ github.event.inputs.disable_uart2_console_debug }}"
+        DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
         if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
           DISABLE_UART2_CONSOLE_DEBUG="true"
         fi
@@ -491,7 +548,7 @@ jobs:
       run: |
         cd luckfox-pico
 
-        DISABLE_UART2_CONSOLE_DEBUG="${{ github.event.inputs.disable_uart2_console_debug }}"
+        DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
         if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
           DISABLE_UART2_CONSOLE_DEBUG="true"
         fi
@@ -826,7 +883,7 @@ jobs:
         fi
 
     - name: Restore cached Rust toolchain
-      if: github.event.inputs.build_rust_from_source != 'true'
+      if: ${{ inputs.build_rust_from_source != true }}
       id: rust-cache
       uses: actions/cache@v4
       with:
@@ -1100,8 +1157,8 @@ jobs:
         echo "🔧 Generating /etc/seedsigner-os-release ..."
         SEEDSIGNER_OS_REPO="${{ format('https://github.com/{0}', github.repository) }}" \
         SEEDSIGNER_OS_GIT_DIR="$GITHUB_WORKSPACE/seedsigner-os" \
-        SEEDSIGNER_APP_REPO="${{ github.event.inputs.seedsigner_repo_url || 'https://github.com/3rdIteration/seedsigner.git' }}" \
-        SEEDSIGNER_APP_BRANCH="${{ github.event.inputs.seedsigner_branch || 'dev' }}" \
+        SEEDSIGNER_APP_REPO="${{ inputs.seedsigner_repo_url || 'https://github.com/3rdIteration/seedsigner.git' }}" \
+        SEEDSIGNER_APP_BRANCH="${{ inputs.seedsigner_branch || 'dev' }}" \
         SEEDSIGNER_APP_GIT_DIR="$GITHUB_WORKSPACE/seedsigner" \
           bash ../seedsigner-os/opt/gen-os-release.sh "$ROOTFS_DIR/etc/seedsigner-os-release" \
           || echo "⚠️  Warning: could not generate seedsigner-os-release"
@@ -1366,11 +1423,11 @@ jobs:
         if-no-files-found: warn
     
     - name: Upload artifacts to GitHub Release
-      if: success() && github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+      if: success() && github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        TAG="${{ github.event.inputs.release_tag }}"
+        TAG="${{ inputs.release_tag }}"
 
         echo "🏷️ Uploading artifacts to release: $TAG"
 
