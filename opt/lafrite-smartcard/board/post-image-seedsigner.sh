@@ -145,10 +145,13 @@ SECTORS=$(/sbin/fdisk -l -o Sectors disk.img|tail -n 1)
 OFFSET=$(sectorsToBytes $START)
 
 # Copy boot files.
-mkdir -p boot/extlinux
+# boot/extlinux is created empty to establish the ::extlinux dir in the image;
+# extlinux.conf is staged in a top-level extlinux/ dir and mcopied in below
+# (mirrors the overlays/microsd-images handling in the pi profiles).
+mkdir -p boot/extlinux extlinux
 cp ${BINARIES_DIR}/Image boot/Image
 cp ${BINARIES_DIR}/meson-gxl-s805x-libretech-ac.dtb boot/meson-gxl-s805x-libretech-ac.dtb
-cp ${BOARD_DIR}/extlinux.conf boot/extlinux/extlinux.conf
+cp ${BOARD_DIR}/extlinux.conf extlinux/extlinux.conf
 
 # Copy DIY Tools Image
 cp ${BINARIES_DIR}/diy-tools.squashfs boot/diy-tools.squashfs
@@ -161,7 +164,7 @@ touch -d "${disk_timestamp}" `find boot extlinux javacard-cap`
 ### needed: apt install mtools
 mcopy -bpm -i "disk.img@@$OFFSET" boot/* ::
 # mcopy doesn't copy directories deterministically, so rely on sorted shell globbing instead.
-mcopy -bpm -i "disk.img@@$OFFSET" boot/extlinux/* ::extlinux
+mcopy -bpm -i "disk.img@@$OFFSET" extlinux/* ::extlinux
 mv disk.img ${BASE_DIR}/images/seedsigner_os.img
 
 cd -
