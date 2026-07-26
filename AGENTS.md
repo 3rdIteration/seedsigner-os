@@ -93,6 +93,22 @@ Profiles are located under `opt/{profile-name}/`. Full documentation is in [docs
 | **post-build.sh** | Copies `rootfs-overlay-dev/` into target | No dev overlay copy |
 | **post-image script** | Uses `genimage` (non-reproducible) | Manual deterministic: dd + sfdisk + mkfs.vfat --invariant + mcopy, fixed timestamps (`2023/01/01T12:15:05`), pinned bootloader SHA-256 |
 
+### Non-Dev Hardening (no information leakage)
+
+Non-dev (production) images are **air-gapped and headless by design** — they must not emit or accept anything over networking, HDMI, or serial. Every vector below must be closed; a profile can build green with any of them left open, and several only surface on real hardware (or a serial capture), so verify there — not just from a green CI run.
+
+| Leak vector | How it's closed (non-dev) | Where |
+|---|---|---|
+| **Networking** | `CONFIG_INET`/`IPV6`/`NETDEVICES`/`PACKET` off; no dropbear / wifi / dhcp / curl packages | kernel config + defconfig |
+| **HDMI / video console** | `CONFIG_DRM`/`FB`/`FRAMEBUFFER_CONSOLE` off (the UI LCD is SPI/userspace, unaffected) | kernel config |
+| **Kernel serial console** | no `console=<serial>`, no `earlyprintk`; route the console to a null sink via `console=ttynull` + `CONFIG_NULL_TTY=y` | cmdline (`boot_cmdline.txt` / `extlinux.conf`) + kernel config |
+| **Serial login prompt** | `# BR2_TARGET_GENERIC_GETTY is not set` (no getty on any tty) | defconfig |
+| **System logging daemons** | `post-build.sh` removes `S01syslogd` / `S02klogd` | post-build.sh |
+
+**Silencing the serial console differs by platform** — get this right per-board:
+- **Pi**: the firmware (`boot_config.txt`) doesn't route the console to the UART, so the cmdline simply omits `console=`. That also frees `/dev/ttyAMA0` (via `dtoverlay=disable-bt`) for the SEC1210 reader, which shares that UART — here serial output would actively break the reader.
+- **Lafrite**: the DTS sets `chosen/stdout-path = "serial0"` (`ttyAML0`), so **omitting `console=` is not enough** — the DT still routes the console to serial. Pass `console=ttynull` explicitly (a cmdline `console=` sets `console_set_on_cmdline`, which makes the kernel ignore the DT stdout-path), and provide `ttynull` via `CONFIG_NULL_TTY=y`. The SEC1210 reader is on a *separate* UART (`/dev/ttyAML6`), so console and reader don't collide as on the Pi — but the console is still silenced to meet the no-leak requirement.
+
 ### Kernel Config Approaches by Platform
 
 - **Pi profiles**: Full `kernel.config` files. Dev configs add networking/display options at the bottom of an otherwise identical base config. Non-dev configs strip them out.
@@ -124,3 +140,4 @@ When creating a new profile (e.g. `lafrite-smartcard` from `lafrite-smartcard-de
 6. Create post-image script: deterministic manual approach with pinned bootloader SHA-256
 7. Update external.desc: keep buildroot's `key: value` format with a `name:` line (all profiles use `name: RPI_SEEDSIGNER`, referenced by `external.mk` as `BR2_EXTERNAL_RPI_SEEDSIGNER_PATH`); remove "Dev" from the `desc:`. A missing `name:` aborts the build with "external.desc does not define the name".
 8. Set the executable bit on `post-build.sh` and the post-image script and confirm it before committing (see the note under [Buildroot Post-Build / Post-Install Scripts](#buildroot-post-build--post-install-scripts)). Non-executable scripts fail at `target-finalize` with exit code 126.
+9. Confirm every leak vector is closed for non-dev — networking, HDMI, kernel serial console (`console=ttynull`), serial login getty, logging daemons (see [Non-Dev Hardening](#non-dev-hardening-no-information-leakage)). These build green when left open, so verify on hardware or a serial capture.
