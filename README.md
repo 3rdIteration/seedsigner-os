@@ -17,7 +17,7 @@
 * [Overview](#overview)
 * [Building](docs/building.md)
 * [Building (without Docker)](docs/without_docker.md)
-* [Building for Luckfox Pico](docs/luckfox/OS-build-instructions.md)
+* [Building for Luckfox Pico](docs/luckfox/README.md)
 * [SeedSigner OS structure](docs/structure.md)
 * [Dev workflow](docs/dev_workflow.md)
 * [Customizing Buildroot](docs/customize_buildroot.md)
@@ -45,7 +45,7 @@ SeedSigner OS is built using [Buildroot](https://www.buildroot.org). Buildroot i
 This repo builds images for two hardware families through two coexisting build pipelines:
 
 - **Raspberry Pi / La Frite** — standard Buildroot (the `opt/buildroot` submodule) with per-board external trees. Built via `docker compose` / `opt/build.sh`. See [Building](docs/building.md).
-- **Luckfox Pico (Rockchip RV1103/RV1106)** — the Luckfox Pico vendor SDK, built under `opt/luckfox/`. See [Building for Luckfox Pico](docs/luckfox/OS-build-instructions.md).
+- **Luckfox Pico (Rockchip RV1103/RV1106)** — the Luckfox Pico vendor SDK, built under `opt/luckfox/`. See [Building for Luckfox Pico](docs/luckfox/README.md).
 
 A convenience dispatcher at the repo root routes to the right pipeline:
 

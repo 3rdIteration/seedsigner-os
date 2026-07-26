@@ -1,5 +1,11 @@
 # OS Build Instructions
 
+> **Note:** this page is the detailed/manual reference and was carried over from the original standalone
+> `seedsigner-luckfox-pico` repo, so some paths (e.g. a top-level `buildroot/` directory) reflect that older
+> layout. For the current build/dev process in this merged repo — the `./build.sh --luckfox` dispatcher, the
+> reusable CI workflow, the package set, and reboot-to-flash (Loader) commands — see
+> [Luckfox Pico — build & development](README.md).
+
 ## Build with GitHub Actions (Easiest Method)
 
 For most users, building with GitHub Actions is the easiest and most reliable method. This approach builds directly on GitHub's infrastructure without using Docker:
