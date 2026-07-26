@@ -141,3 +141,44 @@ When creating a new profile (e.g. `lafrite-smartcard` from `lafrite-smartcard-de
 7. Update external.desc: keep buildroot's `key: value` format with a `name:` line (all profiles use `name: RPI_SEEDSIGNER`, referenced by `external.mk` as `BR2_EXTERNAL_RPI_SEEDSIGNER_PATH`); remove "Dev" from the `desc:`. A missing `name:` aborts the build with "external.desc does not define the name".
 8. Set the executable bit on `post-build.sh` and the post-image script and confirm it before committing (see the note under [Buildroot Post-Build / Post-Install Scripts](#buildroot-post-build--post-install-scripts)). Non-executable scripts fail at `target-finalize` with exit code 126.
 9. Confirm every leak vector is closed for non-dev — networking, HDMI, kernel serial console (`console=ttynull`), serial login getty, logging daemons (see [Non-Dev Hardening](#non-dev-hardening-no-information-leakage)). These build green when left open, so verify on hardware or a serial capture.
+
+## SeedSigner package set (per platform)
+
+This is the canonical list of Buildroot packages a SeedSigner OS image should enable, so a new/updated
+platform build does not silently fall behind (this list exists because the Luckfox defconfig had drifted from
+the Pi set). Keep it in sync when the app gains a dependency.
+
+**How packages are enabled differs by platform family:**
+* **Raspberry Pi / La Frite:** per-board defconfig `opt/<board>/configs/<board>_defconfig` over the
+  `opt/buildroot` submodule; custom packages live in `opt/external-packages/` and are wired via each board's
+  `Config.in`/`external.mk`.
+* **Luckfox Pico:** `opt/luckfox/configs/luckfox_pico_defconfig` copied into the vendor SDK's Buildroot, plus an
+  injected `menu "SeedSigner"` block that `source`s each custom package's `Config.in`. **Two-place rule:** a
+  custom `opt/external-packages` package needs BOTH a `source "package/<name>/Config.in"` line in that menu
+  block (in all three build implementations: `.github/workflows/build-luckfox.yml`, `opt/luckfox/os-build.sh`,
+  `opt/luckfox/build-local.sh`) AND a `BR2_PACKAGE_*=y` in the defconfig — the defconfig line alone is silently
+  dropped for a package the menu doesn't source.
+
+**Core app — required on every platform:**
+`python3` (+`_SSL`, `_BZIP2`), `python-embit`, `python-urtypes`, `python-mnemonic`, `python-shamir-mnemonic`,
+`python-ecdsa`, `python-pyaes`, `python-pyasn1`, `python-pycryptodomex`, `python-ndeflib`; QR/imaging:
+`python-pyzbar`, `zbar`, `python-qrcode`, `python-pyqrcode`, `python-pillow` (Pi uses `python-pillow-ep`),
+`freetype`, `libraqm`, `jpeg`/`jpeg-turbo`, `libpng`.
+
+**Smartcard / hardware-wallet features — all platforms:**
+`python-pyscard`, `python-pysatochip`, `python-pgpy`, `python-keycard-py`, `python-specter-card`,
+`python-pygp`, `ccid-sec1210`, `pcsc-lite`, `gnupg2`, `pinentry`.
+
+**Optional peripherals:** `python-smbus2` (or `python-smbus-cffi`), `python-periphery`, `python-spidev`
+(battery HAT / IO; the app imports these behind `try/except`).
+
+**Platform-specific — do NOT cross-port:**
+* Camera — Pi: `libcamera` + `python-picamera2` (+`python-picamera`). Luckfox: Rockchip ISP
+  (`rkaiq-service`, `nv12_converter`), **no** libcamera.
+* GPIO — Pi: `python-pigpio` / `python-rpi-gpio` / `bcm2835`. Luckfox: `libgpiod`.
+* `python-numpy` — glibc (Pi) only; **not buildable on the Luckfox uClibc toolchain** (the app tolerates its
+  absence — the numpy preload is guarded).
+
+**Currently excluded on all platforms:** the NFC *reader* hardware stack (`nfc-bindings`, `libnfc`, `ifdnfc`)
+and `openct`. (`python-ndeflib` is the pure-Python NDEF *format* library and IS included — it pulls none of
+that native stack.)

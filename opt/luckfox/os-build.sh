@@ -1040,6 +1040,12 @@ menu "SeedSigner"
         source "package/python-pysatochip/Config.in"
         source "package/python-pgpy/Config.in"
         source "package/ccid-sec1210/Config.in"
+        source "package/python-ndeflib/Config.in"
+        source "package/python-keycard-py/Config.in"
+        source "package/python-specter-card/Config.in"
+        source "package/python-pygp/Config.in"
+        source "package/python-smbus2/Config.in"
+        source "package/libraqm/Config.in"
 endmenu
 CONFIGMENU
     fi
@@ -1182,6 +1188,10 @@ s/^endef\nendif/endef\nendif\nendif/
     if [[ -f "/build/files/configure-gpio.sh" ]]; then
         cp -v "/build/files/configure-gpio.sh" "$ROOTFS_DIR/usr/bin/configure-gpio.sh"
         chmod +x "$ROOTFS_DIR/usr/bin/configure-gpio.sh"
+    fi
+    if [[ -f "/build/files/rk-reboot" ]]; then
+        cp -v "/build/files/rk-reboot" "$ROOTFS_DIR/usr/bin/rk-reboot"
+        chmod +x "$ROOTFS_DIR/usr/bin/rk-reboot"
     fi
     [[ -f "/build/files/S02fsck" ]] && cp -v "/build/files/S02fsck" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S10mdev" ]] && cp -v "/build/files/S10mdev" "$ROOTFS_DIR/etc/init.d/"

@@ -868,6 +868,12 @@ menu "SeedSigner"
 	source "package/python-pysatochip/Config.in"
 	source "package/python-pgpy/Config.in"
 	source "package/ccid-sec1210/Config.in"
+	source "package/python-ndeflib/Config.in"
+	source "package/python-keycard-py/Config.in"
+	source "package/python-specter-card/Config.in"
+	source "package/python-pygp/Config.in"
+	source "package/python-smbus2/Config.in"
+	source "package/libraqm/Config.in"
 endmenu
 EOF
     fi
@@ -1249,6 +1255,8 @@ install_seedsigner_app() {
     cp -v "$SCRIPT_DIR/files/start-seedsigner.sh" "$rootfs_dir/"
     cp -v "$SCRIPT_DIR/files/configure-gpio.sh" "$rootfs_dir/usr/bin/configure-gpio.sh"
     chmod +x "$rootfs_dir/usr/bin/configure-gpio.sh"
+    cp -v "$SCRIPT_DIR/files/rk-reboot" "$rootfs_dir/usr/bin/rk-reboot"
+    chmod +x "$rootfs_dir/usr/bin/rk-reboot"
     cp -v "$SCRIPT_DIR/files/S02fsck" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S10mdev" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S60pcscd" "$rootfs_dir/etc/init.d/"

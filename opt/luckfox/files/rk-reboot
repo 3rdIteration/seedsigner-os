@@ -1,0 +1,41 @@
+#!/bin/sh
+#
+# rk-reboot [mode]
+#
+# Reboot a Rockchip Luckfox Pico (RV1103/RV1106) into a firmware download mode
+# from Linux. busybox `reboot` ignores its positional argument (it never issues
+# the reboot(2) RESTART2 syscall with the mode string), so `reboot loader` is a
+# no-op. This helper issues RESTART2 directly via python3 (present in the image).
+#
+#   rk-reboot            -> reboot into Loader / rockusb mode (default)
+#   rk-reboot loader     -> same
+#   rk-reboot maskrom    -> BootROM / maskrom (requires a device-tree
+#                           `mode-maskrom` entry, which stock images do NOT have)
+#
+# The mode name must match a device-tree reboot-mode entry. rv1106.dtsi defines
+# `mode-loader` (magic 0x5242C301), which U-Boot turns into rockusb Loader mode.
+# In Loader mode the Rockchip SocToolKit / rkdeveloptool can re-flash a device
+# whose U-Boot still boots -- no physical BOOT button needed. Must run as root.
+
+MODE="${1:-loader}"
+
+exec python3 - "$MODE" <<'PY'
+import ctypes, os, sys
+
+mode = sys.argv[1].encode()
+libc = ctypes.CDLL(None, use_errno=True)
+
+# reboot(2) RESTART2 form. glibc/uClibc's reboot() wrapper only takes the 1-arg
+# cmd, so the mode string must go through the raw syscall.
+#   ARM 32-bit __NR_reboot = 88
+#   magic1 = 0xfee1dead
+#   magic2 = 0x28121969  (LINUX_REBOOT_MAGIC2)
+#   cmd    = 0xa1b2c3d4  (LINUX_REBOOT_CMD_RESTART2)
+#   arg    = mode string (matched against the device-tree reboot-mode entries)
+rc = libc.syscall(88, 0xfee1dead, 0x28121969, 0xa1b2c3d4, mode)
+
+# On success the syscall does not return; reaching here means it failed.
+err = ctypes.get_errno()
+sys.stderr.write("rk-reboot: reboot(%s) failed: %s\n" % (mode.decode(), os.strerror(err)))
+sys.exit(1)
+PY
