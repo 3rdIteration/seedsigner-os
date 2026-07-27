@@ -261,7 +261,16 @@ clone_repositories() {
     else
         print_info "seedsigner already exists"
     fi
-    
+
+    # Compile translation catalogs (.po -> .mo) + slim fonts in the checkout so
+    # the image ships multi-language support. Must run before the checkout is
+    # copied into the rootfs / l10n/ is pruned. Degrades to English-only if the
+    # host python toolchain is unavailable.
+    if [[ -f "$SCRIPT_DIR/compile-translations.sh" ]]; then
+        bash "$SCRIPT_DIR/compile-translations.sh" "$WORK_DIR/seedsigner" \
+          || print_info "Translation compile skipped (image will be English-only)"
+    fi
+
     print_success "All repositories available"
 }
 
@@ -1194,9 +1203,12 @@ install_seedsigner_app() {
     
     print_info "Using rootfs: $rootfs_dir"
     
-    # Copy SeedSigner code
-    print_info "Copying SeedSigner application..."
-    cp -rv "$WORK_DIR/seedsigner/src/" "$rootfs_dir/seedsigner"
+    # Install the whole app repo to /opt, matching the Raspberry Pi SeedSigner-OS
+    # layout: /opt/src runs the app and its sibling resource dirs resolve
+    # (/opt/javacard-cap bundled applets, /opt/gpg_keys release keys). Prune below.
+    print_info "Copying SeedSigner application to /opt..."
+    mkdir -p "$rootfs_dir/opt"
+    cp -a "$WORK_DIR/seedsigner/." "$rootfs_dir/opt/"
 
     # Generate the SeedSigner OS identity + provenance marker (host build has both
     # git checkouts available: this repo for OS data, the clone for app data).
@@ -1208,19 +1220,26 @@ install_seedsigner_app() {
 
     # Clean up non-essential files from rootfs
     print_info "Cleaning up non-essential files from rootfs..."
-    rm -rf "$rootfs_dir/seedsigner/../docs" 2>/dev/null || true
-    rm -rf "$rootfs_dir/seedsigner/../hardware-kicad" 2>/dev/null || true
-    rm -rf "$rootfs_dir/seedsigner/../img" 2>/dev/null || true
-    rm -rf "$rootfs_dir/seedsigner/../test_suite" 2>/dev/null || true
-    rm -rf "$rootfs_dir/seedsigner/../.git" 2>/dev/null || true
-    rm -f "$rootfs_dir/seedsigner/../.gitignore" 2>/dev/null || true
-    rm -f "$rootfs_dir/seedsigner/../.gitmodules" 2>/dev/null || true
-    rm -f "$rootfs_dir/seedsigner/../README.md" 2>/dev/null || true
+    # Keep src, javacard-cap, gpg_keys, tools; drop dev/build cruft (mirror opt/build.sh).
+    rm -rf "$rootfs_dir/opt/.git" "$rootfs_dir/opt/.github" "$rootfs_dir/opt/.translation-venv"
+    rm -rf "$rootfs_dir/opt/docker" "$rootfs_dir/opt/docs" "$rootfs_dir/opt/enclosures" \
+           "$rootfs_dir/opt/electronics" "$rootfs_dir/opt/l10n" \
+           "$rootfs_dir/opt/seedsigner-screenshots" "$rootfs_dir/opt/tests" \
+           "$rootfs_dir/opt/hardware-kicad" "$rootfs_dir/opt/img" "$rootfs_dir/opt/test_suite"
+    rm -f  "$rootfs_dir/opt/.gitignore" "$rootfs_dir/opt/.gitmodules" \
+           "$rootfs_dir/opt/.gitattributes" "$rootfs_dir/opt/.python-version" \
+           "$rootfs_dir/opt/README.md" "$rootfs_dir/opt/LICENSE.md" \
+           "$rootfs_dir/opt/docker-compose.yml" "$rootfs_dir/opt/MANIFEST.in" \
+           "$rootfs_dir/opt/pyproject.toml" "$rootfs_dir/opt/seedsigner_pubkey.gpg"
+    rm -f  "$rootfs_dir/opt/"setup.* "$rootfs_dir/opt/"requirements*.txt
+    rm -rf "$rootfs_dir/opt/src/seedsigner/resources/seedsigner-translations/.git"* 2>/dev/null || true
+    find "$rootfs_dir/opt/src/seedsigner/resources/seedsigner-translations/l10n" \
+         -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
-    
+
     # Patch settings.json for Mini hardware
     if [ "$hardware" == "mini" ]; then
-        local settings_json="$rootfs_dir/seedsigner/settings.json"
+        local settings_json="$rootfs_dir/opt/src/settings.json"
         if [ -f "$settings_json" ]; then
             print_info "Patching settings.json for Mini hardware (FOX_22)..."
             sed -i 's/"hardware_config":[[:space:]]*"FOX_40"/"hardware_config": "FOX_22"/g' "$settings_json"

@@ -205,8 +205,8 @@ bootstrap_camera_graph
 # under a lower chip number due to absent GPIO banks in the device tree.
 ensure_gpiochip_symlinks
 
-# Change to SeedSigner directory
-cd /seedsigner
+# Change to SeedSigner directory (Raspberry Pi SeedSigner-OS layout: app at /opt/src)
+cd /opt/src
 
 # Retry loop
 retry_count=0

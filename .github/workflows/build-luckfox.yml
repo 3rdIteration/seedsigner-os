@@ -248,6 +248,15 @@ jobs:
         
         echo "All repositories cloned successfully"
 
+    - name: Compile SeedSigner translations
+      run: |
+        # Compile .po -> .mo (and slim CJK fonts) in the seedsigner checkout so
+        # the image ships working multi-language support. Must run before the
+        # checkout is copied into the rootfs and before l10n/ is pruned (the
+        # fork's setup.py compile_catalog merges the l10n/fork overlay). Degrades
+        # gracefully to English-only if the toolchain is unavailable.
+        bash seedsigner-os/opt/luckfox/compile-translations.sh seedsigner
+
     - name: Apply SeedSigner SDK patches
       run: |
         cd luckfox-pico
@@ -1055,12 +1064,37 @@ jobs:
         ROOTFS_DIR="${ROOTFS_DIRS[0]}"
         echo "Using rootfs directory: $ROOTFS_DIR"
         
-        # Copy SeedSigner code
-        cp -rv ../seedsigner/src/ "$ROOTFS_DIR/seedsigner"
-        
+        # Install the SeedSigner app to /opt, matching the Raspberry Pi
+        # SeedSigner-OS layout (opt/build.sh download_app_repo): the whole repo
+        # is placed at /opt so /opt/src runs the app and its sibling resource
+        # dirs resolve correctly (/opt/javacard-cap bundled applets,
+        # /opt/gpg_keys release-signing keys — both located relative to the
+        # source tree by the app), then prune everything not needed at runtime.
+        mkdir -p "$ROOTFS_DIR/opt"
+        cp -a ../seedsigner/. "$ROOTFS_DIR/opt/"
+
+        # Prune dev/build cruft (mirror opt/build.sh) to keep the rootfs small.
+        rm -rf "$ROOTFS_DIR/opt/.git" "$ROOTFS_DIR/opt/.github" \
+               "$ROOTFS_DIR/opt/.translation-venv"
+        rm -rf "$ROOTFS_DIR/opt/docker" "$ROOTFS_DIR/opt/docs" \
+               "$ROOTFS_DIR/opt/enclosures" "$ROOTFS_DIR/opt/electronics" \
+               "$ROOTFS_DIR/opt/l10n" "$ROOTFS_DIR/opt/seedsigner-screenshots" \
+               "$ROOTFS_DIR/opt/tests" "$ROOTFS_DIR/opt/hardware-kicad" \
+               "$ROOTFS_DIR/opt/img" "$ROOTFS_DIR/opt/test_suite"
+        rm -f  "$ROOTFS_DIR/opt/.gitignore" "$ROOTFS_DIR/opt/.gitmodules" \
+               "$ROOTFS_DIR/opt/.gitattributes" "$ROOTFS_DIR/opt/.python-version" \
+               "$ROOTFS_DIR/opt/README.md" "$ROOTFS_DIR/opt/LICENSE.md" \
+               "$ROOTFS_DIR/opt/docker-compose.yml" "$ROOTFS_DIR/opt/MANIFEST.in" \
+               "$ROOTFS_DIR/opt/pyproject.toml" "$ROOTFS_DIR/opt/seedsigner_pubkey.gpg"
+        rm -f  "$ROOTFS_DIR/opt/"setup.* "$ROOTFS_DIR/opt/"requirements*.txt
+        # Strip the translations submodule .git and the now-compiled .po sources.
+        rm -rf "$ROOTFS_DIR/opt/src/seedsigner/resources/seedsigner-translations/.git"* 2>/dev/null || true
+        find "$ROOTFS_DIR/opt/src/seedsigner/resources/seedsigner-translations/l10n" \
+             -name '*.po' -delete 2>/dev/null || true
+
         # Patch settings.json for Mini hardware to use FOX_22 instead of FOX_40
         HARDWARE="${{ matrix.hardware }}"
-        SETTINGS_JSON="$ROOTFS_DIR/seedsigner/settings.json"
+        SETTINGS_JSON="$ROOTFS_DIR/opt/src/settings.json"
         
         if [[ "$HARDWARE" == *"Mini"* ]]; then
           echo "Patching settings.json for Mini hardware (FOX_22)..."

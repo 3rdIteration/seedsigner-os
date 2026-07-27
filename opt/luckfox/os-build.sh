@@ -189,6 +189,15 @@ clone_repositories() {
     else
         print_info "seedsigner already exists"
     fi
+
+    # Compile translation catalogs (.po -> .mo) + slim fonts in the checkout so
+    # the image ships multi-language support. Must run before the checkout is
+    # copied into the rootfs / l10n/ is pruned. Degrades to English-only if the
+    # container python toolchain is unavailable.
+    if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/compile-translations.sh" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/compile-translations.sh" "$SEEDSIGNER_CODE_DIR" \
+          || print_info "Translation compile skipped (image will be English-only)"
+    fi
     
     # Show repository status
     print_info "Repository Status:"
@@ -1149,7 +1158,11 @@ s/^endef\nendif/endef\nendif\nendif/
     resolve_rootfs_dir
 
     print_step "Installing SeedSigner Code"
-    cp -rv "$SEEDSIGNER_CODE_DIR/src/" "$ROOTFS_DIR/seedsigner"
+    # Install the whole app repo to /opt, matching the Raspberry Pi SeedSigner-OS
+    # layout: /opt/src runs the app and its sibling resource dirs resolve
+    # (/opt/javacard-cap bundled applets, /opt/gpg_keys release keys). Prune below.
+    mkdir -p "$ROOTFS_DIR/opt"
+    cp -a "$SEEDSIGNER_CODE_DIR/." "$ROOTFS_DIR/opt/"
 
     # Generate the SeedSigner OS identity + provenance marker. App git data comes
     # from the cloned repo; OS git data is unavailable inside the build container,
@@ -1163,16 +1176,21 @@ s/^endef\nendif/endef\nendif\nendif/
     fi
 
     print_step "Cleaning up non-essential files from rootfs"
-    # Remove documentation, hardware files, git metadata, and test files
-    # These are kept in the repo but shouldn't be in the final image
-    rm -rf "$ROOTFS_DIR/seedsigner/../docs" 2>/dev/null || true
-    rm -rf "$ROOTFS_DIR/seedsigner/../hardware-kicad" 2>/dev/null || true
-    rm -rf "$ROOTFS_DIR/seedsigner/../img" 2>/dev/null || true
-    rm -rf "$ROOTFS_DIR/seedsigner/../test_suite" 2>/dev/null || true
-    rm -rf "$ROOTFS_DIR/seedsigner/../.git" 2>/dev/null || true
-    rm -f "$ROOTFS_DIR/seedsigner/../.gitignore" 2>/dev/null || true
-    rm -f "$ROOTFS_DIR/seedsigner/../.gitmodules" 2>/dev/null || true
-    rm -f "$ROOTFS_DIR/seedsigner/../README.md" 2>/dev/null || true
+    # Keep src, javacard-cap, gpg_keys, tools; drop dev/build cruft (mirror opt/build.sh).
+    rm -rf "$ROOTFS_DIR/opt/.git" "$ROOTFS_DIR/opt/.github" "$ROOTFS_DIR/opt/.translation-venv"
+    rm -rf "$ROOTFS_DIR/opt/docker" "$ROOTFS_DIR/opt/docs" "$ROOTFS_DIR/opt/enclosures" \
+           "$ROOTFS_DIR/opt/electronics" "$ROOTFS_DIR/opt/l10n" \
+           "$ROOTFS_DIR/opt/seedsigner-screenshots" "$ROOTFS_DIR/opt/tests" \
+           "$ROOTFS_DIR/opt/hardware-kicad" "$ROOTFS_DIR/opt/img" "$ROOTFS_DIR/opt/test_suite"
+    rm -f  "$ROOTFS_DIR/opt/.gitignore" "$ROOTFS_DIR/opt/.gitmodules" \
+           "$ROOTFS_DIR/opt/.gitattributes" "$ROOTFS_DIR/opt/.python-version" \
+           "$ROOTFS_DIR/opt/README.md" "$ROOTFS_DIR/opt/LICENSE.md" \
+           "$ROOTFS_DIR/opt/docker-compose.yml" "$ROOTFS_DIR/opt/MANIFEST.in" \
+           "$ROOTFS_DIR/opt/pyproject.toml" "$ROOTFS_DIR/opt/seedsigner_pubkey.gpg"
+    rm -f  "$ROOTFS_DIR/opt/"setup.* "$ROOTFS_DIR/opt/"requirements*.txt
+    rm -rf "$ROOTFS_DIR/opt/src/seedsigner/resources/seedsigner-translations/.git"* 2>/dev/null || true
+    find "$ROOTFS_DIR/opt/src/seedsigner/resources/seedsigner-translations/l10n" \
+         -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
     print_step "Installing SeedSigner Support Files"
