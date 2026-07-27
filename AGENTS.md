@@ -60,8 +60,84 @@ These run inside the buildroot container with `$TARGET_DIR`, `$STAGING_DIR`, etc
 * Set the variables to local paths pointing at a minimal rootfs or empty directory.
 * Source the script and step through it, checking that file operations target the right locations.
 
+> **Commit scripts as executable (mode `100755`).** Buildroot invokes `BR2_ROOTFS_POST_BUILD_SCRIPT` and `BR2_ROOTFS_POST_IMAGE_SCRIPT` directly (not via `sh <script>`), so a script committed non-executable (`100644`) fails `target-finalize` with exit code **126**. This is easy to miss when authoring on Windows, where the working tree doesn't carry a Unix exec bit. Set it explicitly and verify what git recorded:
+> ```sh
+> git update-index --chmod=+x opt/<profile>/board/post-build.sh opt/<profile>/board/post-image-seedsigner.sh
+> git ls-files -s opt/<profile>/board/*.sh   # each must show mode 100755
+> ```
+
 ### General Principles
 
 * **Fail fast**: if a tool is missing (e.g., `mtools`, `sfdisk`), skip with a clear message rather than silently passing.
 * **Clean up**: use `trap cleanup EXIT` to remove temp directories on failure.
 * **Pin versions**: when tests depend on external tools, note the expected version or behaviour so changes in tooling don't silently break things.
+
+## Build Profile Conventions
+
+Profiles are located under `opt/{profile-name}/`. Full documentation is in [docs/build_profiles.md](docs/build_profiles.md).
+
+### Naming Pattern
+
+`{board}[-smartcard][-dev]` — e.g. `pi0-smartcard`, `lafrite-smartcard-dev`.
+
+- **`-smartcard`**: Adds NFC reader stack (`libnfc-pn532-i2c`, `ccid`, `ifdnfc`, `openct`), JavaCard crypto tools (`gnupg2`, `pycryptodome-x`, `pysatochip`), and DIY tools squashfs (Java JDK + Ant + Satochip source) on the boot partition.
+- **`-dev`**: Adds networking (SSH via dropbear, git, curl, wget, pip, WiFi tools, DHCP). Uses `genimage` for image creation (non-reproducible). Includes `rootfs-overlay-dev/` for MicroSD source override.
+
+### What Changes Between Dev and Non-Dev
+
+| Level | Dev | Non-Dev |
+|-------|-----|---------|
+| **defconfig** | +dropbear, git, curl, wget, pip, wifi tools, DHCP, nano, mc | Minimal packages only |
+| **busybox.config** | Networking applets enabled (ifconfig, ip, ping, udhcpc, wget) | All networking applets disabled |
+| **kernel config** | INET, IPV6, NETDEVICES, DRM, FRAMEBUFFER_CONSOLE enabled | All disabled (air-gapped, no display output) |
+| **post-build.sh** | Copies `rootfs-overlay-dev/` into target | No dev overlay copy |
+| **post-image script** | Uses `genimage` (non-reproducible) | Manual deterministic: dd + sfdisk + mkfs.vfat --invariant + mcopy, fixed timestamps (`2023/01/01T12:15:05`), pinned bootloader SHA-256 |
+
+### Non-Dev Hardening (no information leakage)
+
+Non-dev (production) images are **air-gapped and headless by design** — they must not emit or accept anything over networking, HDMI, or serial. Every vector below must be closed; a profile can build green with any of them left open, and several only surface on real hardware (or a serial capture), so verify there — not just from a green CI run.
+
+| Leak vector | How it's closed (non-dev) | Where |
+|---|---|---|
+| **Networking** | `CONFIG_INET`/`IPV6`/`NETDEVICES`/`PACKET` off; no dropbear / wifi / dhcp / curl packages | kernel config + defconfig |
+| **HDMI / video console** | `CONFIG_DRM`/`FB`/`FRAMEBUFFER_CONSOLE` off (the UI LCD is SPI/userspace, unaffected) | kernel config |
+| **Kernel serial console** | no `console=<serial>`, no `earlyprintk`; route the console to a null sink via `console=ttynull` + `CONFIG_NULL_TTY=y` | cmdline (`boot_cmdline.txt` / `extlinux.conf`) + kernel config |
+| **Serial login prompt** | `# BR2_TARGET_GENERIC_GETTY is not set` (no getty on any tty) | defconfig |
+| **System logging daemons** | `post-build.sh` removes `S01syslogd` / `S02klogd` | post-build.sh |
+
+**Silencing the serial console differs by platform** — get this right per-board:
+- **Pi**: the firmware (`boot_config.txt`) doesn't route the console to the UART, so the cmdline simply omits `console=`. That also frees `/dev/ttyAMA0` (via `dtoverlay=disable-bt`) for the SEC1210 reader, which shares that UART — here serial output would actively break the reader.
+- **Lafrite**: the DTS sets `chosen/stdout-path = "serial0"` (`ttyAML0`), so **omitting `console=` is not enough** — the DT still routes the console to serial. Pass `console=ttynull` explicitly (a cmdline `console=` sets `console_set_on_cmdline`, which makes the kernel ignore the DT stdout-path), and provide `ttynull` via `CONFIG_NULL_TTY=y`. The SEC1210 reader is on a *separate* UART (`/dev/ttyAML6`), so console and reader don't collide as on the Pi — but the console is still silenced to meet the no-leak requirement.
+
+### Kernel Config Approaches by Platform
+
+- **Pi profiles**: Full `kernel.config` files. Dev configs add networking/display options at the bottom of an otherwise identical base config. Non-dev configs strip them out.
+- **Lafrite profile**: Uses `BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y` with a kernel fragment (`kernel-fragment.config`). The arm64 arch default builds many drivers as **modules**, and the initramfs has **no on-disk module tree**, so every driver the device needs must be forced `=y` in the fragment: serial, MMC, SPI (the LCD), HW RNG, **and USB host + UVC (`USB_XHCI_HCD`, `USB_DWC3`, `USB_VIDEO_CLASS`, `MEDIA_*`, `VIDEOBUF2_*`) — the La Frite camera is USB (`/dev/video1`)**. Build the non-dev fragment as *dev fragment minus networking*: keep all the hardware `=y` forcing, and only add the non-dev disables (INET, IPV6, NETDEVICES, PACKET, and optionally DRM/FB/FRAMEBUFFER_CONSOLE — the LCD is SPI/userspace and needs none of them). Dropping a required `=y` driver builds fine but leaves that hardware dead at runtime (e.g. no camera).
+
+### Rootfs Overlay Structure
+
+Three distinct overlays — do not confuse them:
+
+- **`opt/rootfs-overlay/`** (top-level, shared by ALL profiles) — the SeedSigner userspace: the app at `/opt/src`, `/etc/init.d/S02seedsigner`, `/etc/fstab`, and **`/start.sh`** (the launcher that `S02seedsigner` runs). **Every profile's `BR2_ROOTFS_OVERLAY` must list this overlay.**
+- **`<profile>/board/rootfs-overlay/`** (per-profile) — hardware config only (mdev.conf, reader.conf.d).
+- **`opt/rootfs-overlay-dev/`** (dev-only) — networking + a MicroSD-source-override `start.sh` that *overrides* the shared `/start.sh`. Copied by dev profiles' `post-build.sh`; absent in non-dev, so non-dev uses the shared headless `/start.sh`.
+
+> **`BR2_ROOTFS_OVERLAY` must include the shared overlay.** Set it to `"../rootfs-overlay/ ../<profile>/board/rootfs-overlay/"` (shared first, board second), matching `lafrite-smartcard-dev`. If you list only the board overlay, the app, init scripts, and `/start.sh` are all missing — **the build still succeeds, but the booted image never launches SeedSigner (blank screen).** This is only detectable by actually booting the image, so verify it on hardware (or via the serial console) before assuming a green build works.
+
+### Image Creation Methods
+
+- **Dev**: `genimage` with `genimage-seedsigner.cfg`. Fast, but embeds build-time metadata (non-reproducible).
+- **Non-dev**: Manual script that creates disk image via dd, partitions with sfdisk (fixed label-id `ba5eba11`), formats FAT32 with `mkfs.vfat --invariant`, copies files via mcopy with normalized timestamps. Produces byte-identical output across builds.
+
+### Adding a New Profile
+
+When creating a new profile (e.g. `lafrite-smartcard` from `lafrite-smartcard-dev`):
+1. Copy hardware files unchanged: extlinux.conf, boot.cmd, DTS, genimage-diy-tools.cfg, rootfs-overlay, Config.in, external.mk
+2. Create defconfig: remove dev packages, update paths to the new profile name. **`BR2_ROOTFS_OVERLAY` must list the shared overlay AND the board overlay** — `"../rootfs-overlay/ ../<profile>/board/rootfs-overlay/"` (see [Rootfs Overlay Structure](#rootfs-overlay-structure)); omitting `../rootfs-overlay/` produces a blank-screen image that still builds green.
+3. Create post-build.sh: adapt from existing non-dev profile for the target architecture (armhf vs aarch64)
+4. Create busybox.config: copy from equivalent non-dev profile (minimal networking)
+5. Create kernel config or fragment: force `=y` every hardware driver the device needs (serial, MMC, SPI, HW RNG, **and USB + UVC for USB-camera boards** — modules in the arch default won't load with no initramfs module tree), keeping parity with the dev fragment; then add only the non-dev disables (INET, IPV6, NETDEVICES, PACKET, optionally DRM/FB/FRAMEBUFFER_CONSOLE). See [Kernel Config Approaches by Platform](#kernel-config-approaches-by-platform).
+6. Create post-image script: deterministic manual approach with pinned bootloader SHA-256
+7. Update external.desc: keep buildroot's `key: value` format with a `name:` line (all profiles use `name: RPI_SEEDSIGNER`, referenced by `external.mk` as `BR2_EXTERNAL_RPI_SEEDSIGNER_PATH`); remove "Dev" from the `desc:`. A missing `name:` aborts the build with "external.desc does not define the name".
+8. Set the executable bit on `post-build.sh` and the post-image script and confirm it before committing (see the note under [Buildroot Post-Build / Post-Install Scripts](#buildroot-post-build--post-install-scripts)). Non-executable scripts fail at `target-finalize` with exit code 126.
+9. Confirm every leak vector is closed for non-dev — networking, HDMI, kernel serial console (`console=ttynull`), serial login getty, logging daemons (see [Non-Dev Hardening](#non-dev-hardening-no-information-leakage)). These build green when left open, so verify on hardware or a serial capture.

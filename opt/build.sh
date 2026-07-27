@@ -383,6 +383,7 @@ if ! [ -z ${ALL_FLAG} ]; then
   build_image "pi02w${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
   build_image "pi2${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
   build_image "pi4${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  build_image "lafrite${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
 fi
 
 # Build only for pi0, pi0w, and pi1
