@@ -42,25 +42,33 @@ echo "=== Applying non-dev (production) hardening to $ROOTFS ==="
 # "::respawn:-/bin/sh", etc. The ::sysinit: line (rcS / app launch) is untouched.
 INITTAB="$ROOTFS/etc/inittab"
 if [ -f "$INITTAB" ]; then
-    n=$(grep -cE '::(respawn|askfirst):.*(getty|login|sulogin|/bin/a?sh)' "$INITTAB" 2>/dev/null || true)
-    sed -i -E '/::(respawn|askfirst):.*(getty|login|sulogin|\/bin\/a?sh)/ s/^([^#])/# [nondev] \1/' "$INITTAB"
-    log "inittab: commented ${n:-0} getty/login/shell respawn line(s) in /etc/inittab"
+    # Only comment true login gettys (getty/login/sulogin). Deliberately DO NOT
+    # touch bare "-/bin/sh" console respawn lines: on the Luckfox SDK the app boot
+    # path can run through a console shell, and commenting it blanks the screen.
+    # The buildroot defconfig (GETTY off) already removes the login getty; this is
+    # belt-and-suspenders for any SDK-added getty.
+    n=$(grep -cE '::(respawn|askfirst):.*(getty|login|sulogin)' "$INITTAB" 2>/dev/null || true)
+    sed -i -E '/::(respawn|askfirst):.*(getty|login|sulogin)/ s/^([^#])/# [nondev] \1/' "$INITTAB"
+    log "inittab: commented ${n:-0} getty/login respawn line(s) in /etc/inittab (console shells left intact)"
     grep -nE '^# \[nondev\]' "$INITTAB" | sed 's/^/        /' || true
 else
     skip "no /etc/inittab"
 fi
 
 # --------------------------------------------------------------------------- 2
-# USB ADB + RNDIS gadget. Reliable levers live in the main rootfs (binaries +
-# init.d); RkLunch.sh is patched best-effort (it may live on a separate oem
-# stage not present here). Removing the binaries guarantees no gadget can start.
+# USB ADB + RNDIS gadget. Neutralize the gadget/adb binaries with a no-op stub
+# rather than deleting them. The SDK launcher (RkLunch.sh, on the separate oem
+# stage we can't patch here) still invokes `usbdevice` at boot; a *missing* binary
+# made that call fail and aborted boot to a blank screen. A stub keeps the caller
+# happy while guaranteeing no gadget/adb is ever configured.
 removed_any_gadget=0
 for bin in \
     oem/usr/bin/usbdevice usr/bin/usbdevice usr/sbin/usbdevice \
     oem/usr/bin/adbd usr/bin/adbd usr/sbin/adbd bin/adbd
 do
     if [ -e "$ROOTFS/$bin" ]; then
-        rm -f "$ROOTFS/$bin" && { log "removed USB gadget/adb binary /$bin"; removed_any_gadget=1; }
+        printf '#!/bin/sh\nexit 0\n' > "$ROOTFS/$bin" && chmod 0755 "$ROOTFS/$bin" \
+            && { log "neutralized USB gadget/adb binary /$bin (no-op stub)"; removed_any_gadget=1; }
     fi
 done
 
@@ -97,7 +105,7 @@ else
     skip "no /oem/usr/bin/RkLunch.sh staged in rootfs (gadget disabled via binaries/init.d above)"
 fi
 
-[ "$removed_any_gadget" -eq 1 ] || log "WARNING: no USB gadget/adb artifact found to remove — verify on-device that 'adb devices' and 'usb0' are absent"
+[ "$removed_any_gadget" -eq 1 ] || log "WARNING: no USB gadget/adb artifact found to neutralize — verify on-device that 'adb devices' and 'usb0' are absent"
 
 # --------------------------------------------------------------------------- 3
 # Logging daemons (syslogd / klogd).
