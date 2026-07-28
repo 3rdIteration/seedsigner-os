@@ -37,15 +37,16 @@ on:
           - EMMC
         default: 'SD_CARD'
       disable_uart2_console_debug:
-        description: 'Disable UART2 console debug (remove ttyFIQ0 console args)'
+        description: 'Serial console (ttyFIQ0) override: auto follows build_variant (non-dev=off, dev=on); or force true/false'
         required: false
         type: choice
         options:
+          - 'auto'
           - 'true'
           - 'false'
-        default: 'true'
+        default: 'auto'
       build_variant:
-        description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell)'
+        description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell). Automatic push/PR CI always builds dev.'
         required: false
         type: choice
         options:
@@ -99,7 +100,7 @@ on:
       disable_uart2_console_debug:
         required: false
         type: string
-        default: 'true'
+        default: 'auto'
       build_variant:
         required: false
         type: string
@@ -478,13 +479,15 @@ jobs:
         cd luckfox-pico
 
         DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
-        if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
-          DISABLE_UART2_CONSOLE_DEBUG="true"
-        fi
-        # non-dev (production) images always strip the serial console
-        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
-          DISABLE_UART2_CONSOLE_DEBUG="true"
-        fi
+        # Effective variant: push/PR CI has no inputs -> 'dev' (validate the full,
+        # debuggable stack); explicit dispatch/call keeps its build_variant default.
+        BUILD_VARIANT="${{ inputs.build_variant || 'dev' }}"
+        # Console: explicit true/false wins; otherwise (auto/empty) non-dev strips
+        # the serial console and dev keeps it.
+        case "$DISABLE_UART2_CONSOLE_DEBUG" in
+          true|false) ;;
+          *) if [ "$BUILD_VARIANT" = "non-dev" ]; then DISABLE_UART2_CONSOLE_DEBUG="true"; else DISABLE_UART2_CONSOLE_DEBUG="false"; fi ;;
+        esac
 
         BOARD_CONFIG="$BOARD_CONFIG_PATH"
         if [ ! -f "$BOARD_CONFIG" ] && [ -L ".BoardConfig.mk" ]; then
@@ -519,13 +522,15 @@ jobs:
         cd luckfox-pico
 
         DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
-        if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
-          DISABLE_UART2_CONSOLE_DEBUG="true"
-        fi
-        # non-dev (production) images always strip the serial console
-        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
-          DISABLE_UART2_CONSOLE_DEBUG="true"
-        fi
+        # Effective variant: push/PR CI has no inputs -> 'dev' (validate the full,
+        # debuggable stack); explicit dispatch/call keeps its build_variant default.
+        BUILD_VARIANT="${{ inputs.build_variant || 'dev' }}"
+        # Console: explicit true/false wins; otherwise (auto/empty) non-dev strips
+        # the serial console and dev keeps it.
+        case "$DISABLE_UART2_CONSOLE_DEBUG" in
+          true|false) ;;
+          *) if [ "$BUILD_VARIANT" = "non-dev" ]; then DISABLE_UART2_CONSOLE_DEBUG="true"; else DISABLE_UART2_CONSOLE_DEBUG="false"; fi ;;
+        esac
 
         HARDWARE="${{ matrix.hardware }}"
         if [[ "$HARDWARE" == "RV1103_Luckfox_Pico_Mini" ]]; then
@@ -578,13 +583,15 @@ jobs:
         cd luckfox-pico
 
         DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
-        if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
-          DISABLE_UART2_CONSOLE_DEBUG="true"
-        fi
-        # non-dev (production) images always strip the serial console
-        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
-          DISABLE_UART2_CONSOLE_DEBUG="true"
-        fi
+        # Effective variant: push/PR CI has no inputs -> 'dev' (validate the full,
+        # debuggable stack); explicit dispatch/call keeps its build_variant default.
+        BUILD_VARIANT="${{ inputs.build_variant || 'dev' }}"
+        # Console: explicit true/false wins; otherwise (auto/empty) non-dev strips
+        # the serial console and dev keeps it.
+        case "$DISABLE_UART2_CONSOLE_DEBUG" in
+          true|false) ;;
+          *) if [ "$BUILD_VARIANT" = "non-dev" ]; then DISABLE_UART2_CONSOLE_DEBUG="true"; else DISABLE_UART2_CONSOLE_DEBUG="false"; fi ;;
+        esac
 
         if [ "$DISABLE_UART2_CONSOLE_DEBUG" = "true" ]; then
           BOARD_CONFIG="$BOARD_CONFIG_PATH"
@@ -878,7 +885,7 @@ jobs:
         # Non-dev (production) hardening: no serial login (getty) and no dev/network
         # CLI tools on the target. Applied to every copied defconfig. (A package that
         # `select`s one of these keeps it enabled at make-time -> no build break.)
-        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
+        if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
           echo "🔒 non-dev: hardening defconfig (getty off; drop pip/curl/wget)"
           for dc in "$BUILDROOT_DIR/configs/luckfox_pico_defconfig" "$BUILDROOT_DIR/configs/luckfox_pico_w_defconfig" "$BUILDROOT_DIR/.config"; do
             [ -f "$dc" ] || continue
@@ -1249,7 +1256,7 @@ jobs:
         # Non-dev (production) hardening of the built rootfs: remove the serial
         # login shell, USB adb/RNDIS gadget, and logging daemons. Guarded/no-op on
         # dev builds. Review the [harden] log lines to confirm vectors were closed.
-        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
+        if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
           echo "🔒 Applying non-dev rootfs hardening ..."
           bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
         else

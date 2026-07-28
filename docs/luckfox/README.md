@@ -69,8 +69,13 @@ tolerates its absence).
 
 ## Build variants — dev vs non-dev
 
-The `build_variant` workflow input (choice; **default `non-dev`**, or `dev`) selects a hardened production
-image vs a debuggable one. Local builds set the same thing via `SEEDSIGNER_BUILD_VARIANT=dev|non-dev`.
+The `build_variant` workflow input (choice; `non-dev` or `dev`) selects a hardened production image vs a
+debuggable one. **Automatic push/PR CI always builds `dev`** (it validates the full debuggable stack); a
+manual "Run workflow" defaults to `non-dev` (pick `dev` to override). Local builds set the same thing via
+`SEEDSIGNER_BUILD_VARIANT=dev|non-dev` (default `non-dev`).
+
+For the serial console specifically, the `disable_uart2_console_debug` input defaults to `auto` (follow the
+variant: non-dev strips it, dev keeps it); force it with `true`/`false`.
 
 The Luckfox implementation differs from the Pi / La Frite profiles (which have parallel `-dev`/non-dev profile
 directories). Luckfox is the Rockchip SDK with a single defconfig + an SDK-provided rootfs, so **non-dev is a
