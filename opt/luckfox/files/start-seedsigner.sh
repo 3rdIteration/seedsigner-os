@@ -199,7 +199,15 @@ hostname seedsigner-os 2>/dev/null || true
 
 # Kill any existing rkipc processes
 killall rkipc 2>/dev/null
-bootstrap_camera_graph
+# Non-dev (production) images carry /etc/seedsigner-nondev (see optimize-nondev.sh):
+# background the ~4s camera-graph bootstrap so the display/UI comes up first. Dev
+# images have no marker and keep the SDK-default foreground ordering.
+if [ -f /etc/seedsigner-nondev ]; then
+    log_message "non-dev: backgrounding camera graph bootstrap (UI-first boot)"
+    bootstrap_camera_graph &
+else
+    bootstrap_camera_graph
+fi
 
 # Ensure /dev/gpiochip4 exists — on some variants, GPIO4 bank is registered
 # under a lower chip number due to absent GPIO banks in the device tree.

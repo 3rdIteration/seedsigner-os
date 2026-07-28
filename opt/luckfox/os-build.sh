@@ -1132,6 +1132,7 @@ s/^endef\nendif/endef\nendif\nendif/
                     -e 's/^BR2_PACKAGE_WGET=y/# BR2_PACKAGE_WGET is not set/' \
                     -e 's/^BR2_PACKAGE_LIBCURL=y/# BR2_PACKAGE_LIBCURL is not set/' \
                     -e 's/^BR2_PACKAGE_LIBCURL_CURL=y/# BR2_PACKAGE_LIBCURL_CURL is not set/' \
+                    -e 's/^BR2_OPTIMIZE_3=y/BR2_OPTIMIZE_S=y/' \
                     "$dc"
             done
         fi
@@ -1270,8 +1271,11 @@ s/^endef\nendif/endef\nendif\nendif/
         if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/harden-nondev.sh" ]]; then
             bash "$SEEDSIGNER_LUCKFOX_DIR/harden-nondev.sh" "$ROOTFS_DIR" || print_error "non-dev hardening reported an error"
         fi
+        if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/optimize-nondev.sh" ]]; then
+            bash "$SEEDSIGNER_LUCKFOX_DIR/optimize-nondev.sh" "$ROOTFS_DIR" || print_error "non-dev optimization reported an error"
+        fi
     else
-        print_info "dev build: skipping rootfs hardening (serial console + adb retained)"
+        print_info "dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"
     fi
 
     print_step "Packaging Firmware"

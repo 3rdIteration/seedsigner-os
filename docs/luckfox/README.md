@@ -98,6 +98,25 @@ closed** — review the `[harden]` log lines, and verify on hardware / a serial 
 login prompt; `adb devices` and `usb0` absent; no `syslogd`/`klogd`; `which pip curl wget` empty; the app
 still works). The reboot-to-Loader Power option / `rk-reboot` is retained in **both** variants.
 
+### Non-dev size / boot optimizations
+
+Non-dev images also get size and boot tweaks (dev keeps SDK defaults). Companion script
+**`opt/luckfox/optimize-nondev.sh <ROOTFS_DIR>`** runs right after `harden-nondev.sh`:
+
+| Tweak | What / where | Notes |
+|---|---|---|
+| Optimize for size | defconfig `BR2_OPTIMIZE_3=y` → `BR2_OPTIMIZE_S=y` | smaller binaries, marginally slower |
+| Prune test/metadata | remove `tests/`, `*.dist-info`/`*.egg-info` under site-packages + `/opt/src`, and `/opt/tools` | `optimize-nondev.sh` |
+| Prune camera iqfiles | keep only the board's sensor (`IQFILES_KEEP`), remove the rest from `/oem` | `optimize-nondev.sh`; **verify camera** |
+| Quiet boot | append `quiet loglevel=3` to the DTS `bootargs` | marginal once console is stripped |
+| U-Boot bootdelay | zero any non-zero `CONFIG_BOOTDELAY`/`bootdelay=` in the SDK U-Boot | best-effort, guarded |
+| UI-first camera | `optimize-nondev.sh` drops `/etc/seedsigner-nondev`; `start-seedsigner.sh` then backgrounds the ~4s camera-graph bootstrap so the UI comes up first | **experimental — verify camera on hardware** |
+
+Same discipline as hardening: everything keys off `build_variant=non-dev`, is guarded/no-op when the SDK
+target isn't present, and logs under `[optimize]`. **iqfiles pruning and the UI-first camera reorder must be
+verified on real hardware** (scan a QR) — a green build proves nothing about the camera. Both are trivially
+revertible (widen `IQFILES_KEEP`; the reorder only triggers when the `/etc/seedsigner-nondev` marker exists).
+
 ## Flashing & recovery — Loader / Maskrom mode
 
 To re-flash with the Rockchip **SocToolKit** or `rkdeveloptool` you normally hold the **BOOT** button while

@@ -560,6 +560,11 @@ jobs:
             echo "UART bootargs debug in DTS source (before patch): $target"
             grep -nE 'ttyFIQ0|console=|earlycon=|user_debug=|bootargs' "$target" || echo "  (no matching bootarg tokens)"
             sed -i 's/\<console=ttyFIQ0[^ "]*\>//g; s/\<earlycon=uart8250,[^ "]*\>//g; s/\<user_debug=[^ "]*\>//g' "$target"
+            # Non-dev: quieter boot. Marginal once the console is stripped, but harmless.
+            # Only appends inside an existing chosen bootargs="..." string (no-op otherwise).
+            if [ "$BUILD_VARIANT" = "non-dev" ]; then
+              sed -i -E '/bootargs[[:space:]]*=/ { /quiet/! s/(bootargs[[:space:]]*=[[:space:]]*"[^"]*)"/\1 quiet loglevel=3"/ }' "$target"
+            fi
             if grep -Eq '&uart2[[:space:]]*\{' "$target"; then
               sed -i '/&uart2[[:space:]]*{/,/};/ s/status[[:space:]]*=[[:space:]]*"[^"]*"/status = "okay"/' "$target"
             else
@@ -886,7 +891,7 @@ jobs:
         # CLI tools on the target. Applied to every copied defconfig. (A package that
         # `select`s one of these keeps it enabled at make-time -> no build break.)
         if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
-          echo "🔒 non-dev: hardening defconfig (getty off; drop pip/curl/wget)"
+          echo "🔒 non-dev: hardening defconfig (getty off; drop pip/curl/wget; optimize for size)"
           for dc in "$BUILDROOT_DIR/configs/luckfox_pico_defconfig" "$BUILDROOT_DIR/configs/luckfox_pico_w_defconfig" "$BUILDROOT_DIR/.config"; do
             [ -f "$dc" ] || continue
             sed -i -E \
@@ -895,6 +900,7 @@ jobs:
               -e 's/^BR2_PACKAGE_WGET=y/# BR2_PACKAGE_WGET is not set/' \
               -e 's/^BR2_PACKAGE_LIBCURL=y/# BR2_PACKAGE_LIBCURL is not set/' \
               -e 's/^BR2_PACKAGE_LIBCURL_CURL=y/# BR2_PACKAGE_LIBCURL_CURL is not set/' \
+              -e 's/^BR2_OPTIMIZE_3=y/BR2_OPTIMIZE_S=y/' \
               "$dc"
           done
         fi
@@ -1025,6 +1031,26 @@ jobs:
                  "$BUILDROOT_DIR/output/host/lib/rustlib" 2>/dev/null || true
           echo "RUST_FROM_CACHE=false" >> $GITHUB_ENV
         fi
+
+    - name: Non-dev U-Boot bootdelay (skip autoboot countdown)
+      if: ${{ (inputs.build_variant || 'dev') == 'non-dev' }}
+      run: |
+        cd luckfox-pico
+        echo "🔧 non-dev: zeroing any non-zero U-Boot bootdelay (best-effort; SDK layout varies)"
+        patched=0
+        # Only modify existing settings (never create) and only under U-Boot paths,
+        # so a wrong guess is a harmless no-op. SDK paths have no spaces.
+        CFG_FILES=$(grep -rlE '^CONFIG_BOOTDELAY=[1-9]' sysdrv u-boot uboot 2>/dev/null | grep -iE 'uboot|u-boot' || true)
+        for f in $CFG_FILES; do
+          sed -i -E 's/^CONFIG_BOOTDELAY=[1-9][0-9]*/CONFIG_BOOTDELAY=0/' "$f"
+          echo "  zeroed CONFIG_BOOTDELAY in $f"; patched=1
+        done
+        ENV_FILES=$(grep -rlE '(^|[^A-Za-z_])bootdelay=[1-9]' sysdrv u-boot uboot 2>/dev/null | grep -iE 'uboot|u-boot' || true)
+        for f in $ENV_FILES; do
+          sed -i -E 's/(^|[^A-Za-z_])bootdelay=[1-9][0-9]*/\1bootdelay=0/g' "$f"
+          echo "  zeroed bootdelay in $f"; patched=1
+        done
+        [ "$patched" -eq 1 ] || echo "  ⚠️  no non-zero bootdelay found in the SDK U-Boot tree — left at SDK default"
 
     - name: Build system
       run: |
@@ -1259,8 +1285,10 @@ jobs:
         if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
           echo "🔒 Applying non-dev rootfs hardening ..."
           bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
+          echo "📦 Applying non-dev size/boot optimizations ..."
+          bash ../seedsigner-os/opt/luckfox/optimize-nondev.sh "$ROOTFS_DIR"
         else
-          echo "🛠️  dev build: skipping rootfs hardening (serial console + adb retained)"
+          echo "🛠️  dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"
         fi
 
     - name: Package firmware

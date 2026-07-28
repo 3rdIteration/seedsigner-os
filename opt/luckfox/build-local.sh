@@ -971,6 +971,7 @@ apply_seedsigner_config() {
                 -e 's/^BR2_PACKAGE_WGET=y/# BR2_PACKAGE_WGET is not set/' \
                 -e 's/^BR2_PACKAGE_LIBCURL=y/# BR2_PACKAGE_LIBCURL is not set/' \
                 -e 's/^BR2_PACKAGE_LIBCURL_CURL=y/# BR2_PACKAGE_LIBCURL_CURL is not set/' \
+                -e 's/^BR2_OPTIMIZE_3=y/BR2_OPTIMIZE_S=y/' \
                 "$dc"
         done
     fi
@@ -1333,8 +1334,11 @@ install_seedsigner_app() {
         if [ -f "$SCRIPT_DIR/harden-nondev.sh" ]; then
             bash "$SCRIPT_DIR/harden-nondev.sh" "$rootfs_dir" || print_warning "non-dev hardening reported an error"
         fi
+        if [ -f "$SCRIPT_DIR/optimize-nondev.sh" ]; then
+            bash "$SCRIPT_DIR/optimize-nondev.sh" "$rootfs_dir" || print_warning "non-dev optimization reported an error"
+        fi
     else
-        print_info "dev build: skipping rootfs hardening (serial console + adb retained)"
+        print_info "dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"
     fi
 
     print_success "SeedSigner application installed"
