@@ -1033,25 +1033,26 @@ jobs:
           echo "RUST_FROM_CACHE=false" >> $GITHUB_ENV
         fi
 
-    - name: Non-dev U-Boot bootdelay (skip autoboot countdown)
+    - name: Non-dev U-Boot recovery config (bootdelay + bootcount→loader failover)
       if: ${{ (inputs.build_variant || 'dev') == 'non-dev' }}
       run: |
         cd luckfox-pico
-        echo "🔧 non-dev: zeroing any non-zero U-Boot bootdelay (best-effort; SDK layout varies)"
-        patched=0
-        # Only modify existing settings (never create) and only under U-Boot paths,
-        # so a wrong guess is a harmless no-op. SDK paths have no spaces.
-        CFG_FILES=$(grep -rlE '^CONFIG_BOOTDELAY=[1-9]' sysdrv u-boot uboot 2>/dev/null | grep -iE 'uboot|u-boot' || true)
-        for f in $CFG_FILES; do
-          sed -i -E 's/^CONFIG_BOOTDELAY=[1-9][0-9]*/CONFIG_BOOTDELAY=0/' "$f"
-          echo "  zeroed CONFIG_BOOTDELAY in $f"; patched=1
+        echo "🔧 non-dev: U-Boot recovery config (bootdelay=0 + bootcount→loader)"
+        # bootdelay (already 0 on the Luckfox SDK; guard kept for other SDK versions).
+        for f in $(grep -rlE '^CONFIG_BOOTDELAY=[1-9]' sysdrv 2>/dev/null | grep -iE 'uboot|u-boot' || true); do
+          sed -i -E 's/^CONFIG_BOOTDELAY=[1-9][0-9]*/CONFIG_BOOTDELAY=0/' "$f"; echo "  zeroed CONFIG_BOOTDELAY in $f"
         done
-        ENV_FILES=$(grep -rlE '(^|[^A-Za-z_])bootdelay=[1-9]' sysdrv u-boot uboot 2>/dev/null | grep -iE 'uboot|u-boot' || true)
-        for f in $ENV_FILES; do
-          sed -i -E 's/(^|[^A-Za-z_])bootdelay=[1-9][0-9]*/\1bootdelay=0/g' "$f"
-          echo "  zeroed bootdelay in $f"; patched=1
+        # Enable the U-Boot boot counter so N failed boots auto-enter rockusb Loader
+        # (via altbootcmd, set from the OS). The SDK U-Boot ships the bootcount drivers
+        # (drivers/bootcount/bootcount_env.c); append the symbols to every Luckfox
+        # U-Boot defconfig. Env-backed so it persists in the env partition (mtd0).
+        bc=0
+        for f in $(find sysdrv -path '*uboot*/configs/luckfox_*_defconfig' 2>/dev/null || true); do
+          grep -q '^CONFIG_BOOTCOUNT_LIMIT=y' "$f" || echo 'CONFIG_BOOTCOUNT_LIMIT=y' >> "$f"
+          grep -q '^CONFIG_BOOTCOUNT_ENV=y'   "$f" || echo 'CONFIG_BOOTCOUNT_ENV=y'   >> "$f"
+          echo "  enabled CONFIG_BOOTCOUNT_LIMIT/_ENV in $(basename "$f")"; bc=1
         done
-        [ "$patched" -eq 1 ] || echo "  ⚠️  no non-zero bootdelay found in the SDK U-Boot tree — left at SDK default"
+        [ "$bc" -eq 1 ] || echo "  ⚠️  no luckfox U-Boot defconfig found — bootcount NOT enabled (userspace watchdog still covers app failures)"
 
     - name: Build system
       run: |
@@ -1288,6 +1289,11 @@ jobs:
           bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
           echo "📦 Applying non-dev size/boot optimizations ..."
           bash ../seedsigner-os/opt/luckfox/optimize-nondev.sh "$ROOTFS_DIR"
+          # Boot-failover: fw_env.config lets fw_setenv/printenv reach the U-Boot env
+          # (mtd0) so the U-Boot bootcount can be reset on success + configured (start-
+          # seedsigner sets bootlimit/altbootcmd). Env layout verified from a device.
+          echo "🧭 Installing /etc/fw_env.config (U-Boot env access for boot-failover) ..."
+          cp -v ../seedsigner-os/opt/luckfox/files/fw_env.config "$ROOTFS_DIR/etc/fw_env.config"
         else
           echo "🛠️  dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"
         fi

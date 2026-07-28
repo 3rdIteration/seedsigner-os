@@ -203,6 +203,23 @@ trap cleanup SIGTERM SIGINT
 # applied /etc/hostname.
 hostname seedsigner-os 2>/dev/null || true
 
+# Boot-failover (non-dev; gated on /etc/fw_env.config being present). Configure the
+# U-Boot boot counter so that N consecutive boots that never reach the app auto-enter
+# rockusb Loader mode for re-flashing — no BOOT button, ADB, or working app needed.
+# altbootcmd reuses the proven reboot-mode Loader entry (the same 0x5242C301 magic
+# `rk-reboot loader` uses) and clears the counter first so it is never a permanent
+# dead-end. Set once (idempotent); the app clears the counter on a healthy boot.
+if [ -f /etc/fw_env.config ] && command -v fw_setenv >/dev/null 2>&1; then
+    if ! fw_printenv bootlimit >/dev/null 2>&1; then
+        if fw_setenv bootlimit 5 2>/dev/null \
+           && fw_setenv altbootcmd 'setenv bootcount 0; saveenv; mw.l 0xff020200 0x5242c301; reset' 2>/dev/null; then
+            log_message "boot-failover: configured U-Boot bootlimit=5 + altbootcmd (loader)"
+        else
+            log_message "boot-failover: fw_setenv failed — U-Boot bootcount failover inactive"
+        fi
+    fi
+fi
+
 # Kill any existing rkipc processes
 killall rkipc 2>/dev/null
 # Non-dev (production) images carry /etc/seedsigner-nondev (see optimize-nondev.sh):

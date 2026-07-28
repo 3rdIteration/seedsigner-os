@@ -131,22 +131,27 @@ So a bad image self-heals into a flashable state without the BOOT button:
 - **ADB for debugging:** ADB is **left enabled on non-dev** for now (`adb shell` → read `/tmp/startup.log`).
   Re-harden later by building the non-dev image with `HARDEN_DISABLE_ADB=1`.
 
-**U-Boot boot-counter (follow-up).** For kernel/init failures the userspace watchdog can't catch, the plan is
-a U-Boot bootcount: `CONFIG_BOOTCOUNT_LIMIT` + `altbootcmd` that enters rockusb after `bootlimit` failed boots,
-reset from userspace once the app is up. The app already calls `fw_setenv bootcount 0` on ready and
-`u-boot-tools` is installed. The env partition is now **confirmed from a live device** (`cat /proc/mtd`): a
-dedicated `env` partition = **`/dev/mtd0`, offset `0x0`, size `0x40000` (256 KB, single copy — written 0x00
-throughout), erase `0x20000`**, holding a real U-Boot env (`sys_bootargs`, `mtdparts`, …). So the config is:
+**U-Boot boot-counter → loader (non-dev).** For kernel/init failures the userspace watchdog can't catch, the
+non-dev build enables a U-Boot boot counter that auto-enters rockusb Loader after `bootlimit` failed boots — no
+BOOT button, ADB, or working app required. How it fits together:
+- **U-Boot** (`build-luckfox.yml` recovery step): appends `CONFIG_BOOTCOUNT_LIMIT=y` + `CONFIG_BOOTCOUNT_ENV=y`
+  to the Luckfox U-Boot defconfigs (the SDK U-Boot already ships the bootcount drivers). U-Boot then increments
+  an env-backed `bootcount` each boot and runs `altbootcmd` (instead of the normal boot) once `bootcount >
+  bootlimit`.
+- **Env access:** `/etc/fw_env.config` = `/dev/mtd0 0x0 0x40000 0x20000` — **verified from a live device**: the
+  env is a standard CRC32+data U-Boot env in the dedicated `env` MTD partition (mtd0), single copy, written
+  0x00 throughout the 256 KB partition. `u-boot-tools` provides `fw_printenv`/`fw_setenv`.
+- **Policy:** `start-seedsigner.sh` sets (once) `bootlimit=5` and
+  `altbootcmd='setenv bootcount 0; saveenv; mw.l 0xff020200 0x5242c301; reset'`. That reuses the **proven**
+  reboot-mode Loader entry (the same `BOOT_LOADER=0x5242C301` magic `rk-reboot loader` uses) and clears the
+  counter first so it is never a permanent dead-end.
+- **Reset on success:** the app (`MainMenuView`) calls `fw_setenv bootcount 0` when it reaches Home.
 
-```
-# /etc/fw_env.config
-/dev/mtd0    0x0    0x40000    0x20000
-```
-
-What remains before enabling: verify the SDK U-Boot (`3rdIteration/luckfox-pico`) builds with
-`CONFIG_BOOTCOUNT_LIMIT`/`CONFIG_BOOTCOUNT_ENV` and set `altbootcmd` to the RV1106 rockusb-download command +
-`bootlimit`. **Ship `fw_env.config` together with the U-Boot change** — until then it's deliberately omitted so
-the app's `fw_setenv` stays a harmless no-op (no per-boot env churn, no corruption risk).
+**Must be hardware-verified** (env writes touch flash; a wrong boot flow could break normal boot). On a
+non-dev image via ADB: `fw_printenv` shows the env; reboot a few times and watch `bootcount` climb, then reach
+Home and confirm it resets to 0; force ≥ `bootlimit`+1 failed boots (e.g. rename `/opt/src/main.py`) and
+confirm the device enumerates as a Rockchip **Loader** device (`rkdeveloptool ld`). If anything misbehaves,
+`rm /etc/fw_env.config` (disables the OS policy) or `fw_setenv altbootcmd ''`.
 
 ## Flashing & recovery — Loader / Maskrom mode
 
