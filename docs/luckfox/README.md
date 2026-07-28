@@ -131,13 +131,22 @@ So a bad image self-heals into a flashable state without the BOOT button:
 - **ADB for debugging:** ADB is **left enabled on non-dev** for now (`adb shell` → read `/tmp/startup.log`).
   Re-harden later by building the non-dev image with `HARDEN_DISABLE_ADB=1`.
 
-**U-Boot boot-counter (follow-up, needs device info).** For kernel/init failures the userspace watchdog can't
-catch, the plan is a U-Boot bootcount: `CONFIG_BOOTCOUNT_LIMIT` + `altbootcmd` that enters rockusb after
-`bootlimit` failed boots, reset from userspace once the app is up. The app already calls
-`fw_setenv bootcount 0` on ready and `u-boot-tools` is installed; what remains is `/etc/fw_env.config` with the
-**actual env-partition offset** (read it from the device now that ADB is back:
-`cat /proc/mtd`, and the SDK U-Boot `env` offset) plus verifying the SDK U-Boot supports bootcount. Left
-disabled until verified so it can never break normal boot.
+**U-Boot boot-counter (follow-up).** For kernel/init failures the userspace watchdog can't catch, the plan is
+a U-Boot bootcount: `CONFIG_BOOTCOUNT_LIMIT` + `altbootcmd` that enters rockusb after `bootlimit` failed boots,
+reset from userspace once the app is up. The app already calls `fw_setenv bootcount 0` on ready and
+`u-boot-tools` is installed. The env partition is now **confirmed from a live device** (`cat /proc/mtd`): a
+dedicated `env` partition = **`/dev/mtd0`, offset `0x0`, size `0x40000` (256 KB, single copy — written 0x00
+throughout), erase `0x20000`**, holding a real U-Boot env (`sys_bootargs`, `mtdparts`, …). So the config is:
+
+```
+# /etc/fw_env.config
+/dev/mtd0    0x0    0x40000    0x20000
+```
+
+What remains before enabling: verify the SDK U-Boot (`3rdIteration/luckfox-pico`) builds with
+`CONFIG_BOOTCOUNT_LIMIT`/`CONFIG_BOOTCOUNT_ENV` and set `altbootcmd` to the RV1106 rockusb-download command +
+`bootlimit`. **Ship `fw_env.config` together with the U-Boot change** — until then it's deliberately omitted so
+the app's `fw_setenv` stays a harmless no-op (no per-boot env churn, no corruption risk).
 
 ## Flashing & recovery — Loader / Maskrom mode
 
