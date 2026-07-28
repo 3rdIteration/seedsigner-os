@@ -7,6 +7,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(dirname "$SCRIPT_DIR")"
+# Build variant: non-dev (hardened/air-gapped) or dev. Override via SEEDSIGNER_BUILD_VARIANT env.
+BUILD_VARIANT="${SEEDSIGNER_BUILD_VARIANT:-non-dev}"
 
 # Default Python version for buildroot (used if detection fails)
 DEFAULT_PYTHON_VERSION="3.12"
@@ -958,6 +960,21 @@ apply_seedsigner_config() {
     cp -v "$SCRIPT_DIR/configs/luckfox_pico_defconfig" "$buildroot_dir/configs/luckfox_pico_w_defconfig"
     cp -v "$SCRIPT_DIR/configs/luckfox_pico_defconfig" "$buildroot_dir/.config"
 
+    # Non-dev (production) hardening: no serial login (getty), no dev/network CLI tools.
+    if [ "$BUILD_VARIANT" == "non-dev" ]; then
+        print_info "non-dev: hardening defconfig (getty off; drop pip/curl/wget)"
+        for dc in "$buildroot_dir/configs/luckfox_pico_defconfig" "$buildroot_dir/configs/luckfox_pico_w_defconfig" "$buildroot_dir/.config"; do
+            [ -f "$dc" ] || continue
+            sed -i -E \
+                -e 's/^BR2_TARGET_GENERIC_GETTY=y/# BR2_TARGET_GENERIC_GETTY is not set/' \
+                -e 's/^BR2_PACKAGE_PYTHON_PIP=y/# BR2_PACKAGE_PYTHON_PIP is not set/' \
+                -e 's/^BR2_PACKAGE_WGET=y/# BR2_PACKAGE_WGET is not set/' \
+                -e 's/^BR2_PACKAGE_LIBCURL=y/# BR2_PACKAGE_LIBCURL is not set/' \
+                -e 's/^BR2_PACKAGE_LIBCURL_CURL=y/# BR2_PACKAGE_LIBCURL_CURL is not set/' \
+                "$dc"
+        done
+    fi
+
     # Remove pip/setuptools/git from Mini SPI-NAND builds to save space
     if [ "$hardware" == "mini" ] && [ "$boot_medium" == "nand" ]; then
         print_info "Removing python-pip, python-setuptools, and git for Mini SPI-NAND build..."
@@ -1309,7 +1326,17 @@ install_seedsigner_app() {
     else
         print_warning "rkaiq-service not found, rkaiq-service will not be available"
     fi
-    
+
+    # Non-dev (production) rootfs hardening: serial login, USB adb/RNDIS gadget, logging daemons.
+    if [ "$BUILD_VARIANT" == "non-dev" ]; then
+        print_info "Applying non-dev rootfs hardening..."
+        if [ -f "$SCRIPT_DIR/harden-nondev.sh" ]; then
+            bash "$SCRIPT_DIR/harden-nondev.sh" "$rootfs_dir" || print_warning "non-dev hardening reported an error"
+        fi
+    else
+        print_info "dev build: skipping rootfs hardening (serial console + adb retained)"
+    fi
+
     print_success "SeedSigner application installed"
 }
 

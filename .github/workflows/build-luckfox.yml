@@ -44,6 +44,14 @@ on:
           - 'true'
           - 'false'
         default: 'true'
+      build_variant:
+        description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell)'
+        required: false
+        type: choice
+        options:
+          - 'non-dev'
+          - 'dev'
+        default: 'non-dev'
       luckfox_repo_url:
         description: 'LuckFox Pico SDK Repository URL'
         required: false
@@ -92,6 +100,10 @@ on:
         required: false
         type: string
         default: 'true'
+      build_variant:
+        required: false
+        type: string
+        default: 'non-dev'
       luckfox_repo_url:
         required: false
         type: string
@@ -469,6 +481,10 @@ jobs:
         if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
           DISABLE_UART2_CONSOLE_DEBUG="true"
         fi
+        # non-dev (production) images always strip the serial console
+        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
+          DISABLE_UART2_CONSOLE_DEBUG="true"
+        fi
 
         BOARD_CONFIG="$BOARD_CONFIG_PATH"
         if [ ! -f "$BOARD_CONFIG" ] && [ -L ".BoardConfig.mk" ]; then
@@ -504,6 +520,10 @@ jobs:
 
         DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
         if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
+          DISABLE_UART2_CONSOLE_DEBUG="true"
+        fi
+        # non-dev (production) images always strip the serial console
+        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
           DISABLE_UART2_CONSOLE_DEBUG="true"
         fi
 
@@ -559,6 +579,10 @@ jobs:
 
         DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
         if [ -z "$DISABLE_UART2_CONSOLE_DEBUG" ]; then
+          DISABLE_UART2_CONSOLE_DEBUG="true"
+        fi
+        # non-dev (production) images always strip the serial console
+        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
           DISABLE_UART2_CONSOLE_DEBUG="true"
         fi
 
@@ -850,6 +874,23 @@ jobs:
         # loads our clean config instead of the SDK's WiFi/BT-enabled config
         cp -v ../seedsigner-os/opt/luckfox/configs/luckfox_pico_defconfig "$BUILDROOT_DIR/configs/luckfox_pico_w_defconfig"
         cp -v ../seedsigner-os/opt/luckfox/configs/luckfox_pico_defconfig "$BUILDROOT_DIR/.config"
+
+        # Non-dev (production) hardening: no serial login (getty) and no dev/network
+        # CLI tools on the target. Applied to every copied defconfig. (A package that
+        # `select`s one of these keeps it enabled at make-time -> no build break.)
+        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
+          echo "🔒 non-dev: hardening defconfig (getty off; drop pip/curl/wget)"
+          for dc in "$BUILDROOT_DIR/configs/luckfox_pico_defconfig" "$BUILDROOT_DIR/configs/luckfox_pico_w_defconfig" "$BUILDROOT_DIR/.config"; do
+            [ -f "$dc" ] || continue
+            sed -i -E \
+              -e 's/^BR2_TARGET_GENERIC_GETTY=y/# BR2_TARGET_GENERIC_GETTY is not set/' \
+              -e 's/^BR2_PACKAGE_PYTHON_PIP=y/# BR2_PACKAGE_PYTHON_PIP is not set/' \
+              -e 's/^BR2_PACKAGE_WGET=y/# BR2_PACKAGE_WGET is not set/' \
+              -e 's/^BR2_PACKAGE_LIBCURL=y/# BR2_PACKAGE_LIBCURL is not set/' \
+              -e 's/^BR2_PACKAGE_LIBCURL_CURL=y/# BR2_PACKAGE_LIBCURL_CURL is not set/' \
+              "$dc"
+          done
+        fi
 
         # Remove pip/setuptools/git from Mini SPI-NAND builds to save space
         if [[ "${HARDWARE}" == "RV1103_Luckfox_Pico_Mini" ]] && [[ "${BOOT_MEDIUM}" == "SPI_NAND" ]]; then
@@ -1204,6 +1245,16 @@ jobs:
         SEEDSIGNER_APP_GIT_DIR="$GITHUB_WORKSPACE/seedsigner" \
           bash ../seedsigner-os/opt/gen-os-release.sh "$ROOTFS_DIR/etc/seedsigner-os-release" \
           || echo "⚠️  Warning: could not generate seedsigner-os-release"
+
+        # Non-dev (production) hardening of the built rootfs: remove the serial
+        # login shell, USB adb/RNDIS gadget, and logging daemons. Guarded/no-op on
+        # dev builds. Review the [harden] log lines to confirm vectors were closed.
+        if [ "${{ inputs.build_variant }}" = "non-dev" ]; then
+          echo "🔒 Applying non-dev rootfs hardening ..."
+          bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
+        else
+          echo "🛠️  dev build: skipping rootfs hardening (serial console + adb retained)"
+        fi
 
     - name: Package firmware
       run: |

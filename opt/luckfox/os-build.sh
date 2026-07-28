@@ -13,6 +13,8 @@ export OUTPUT_DIR="/build/output"
 export LUCKFOX_REPO_URL="https://github.com/3rdIteration/luckfox-pico.git"
 export SEEDSIGNER_REPO_URL="https://github.com/3rdIteration/seedsigner.git"
 export SEEDSIGNER_BRANCH="dev"
+# Build variant: non-dev (hardened/air-gapped) or dev. Mirrors build-luckfox.yml's build_variant.
+export SEEDSIGNER_BUILD_VARIANT="${SEEDSIGNER_BUILD_VARIANT:-non-dev}"
 # SeedSigner OS Buildroot packages now live in this same repo. build.sh mounts
 # opt/external-packages into the container at /build/external-packages, so there
 # is no seedsigner-os clone.
@@ -1118,6 +1120,21 @@ s/^endef\nendif/endef\nendif\nendif/
         # loads our clean config instead of the SDK's WiFi/BT-enabled config
         cp -v "/build/configs/luckfox_pico_defconfig" "$BUILDROOT_DIR/configs/luckfox_pico_w_defconfig"
         cp -v "/build/configs/luckfox_pico_defconfig" "$BUILDROOT_DIR/.config"
+
+        # Non-dev (production) hardening: no serial login (getty), no dev/network CLI tools.
+        if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
+            print_info "non-dev: hardening defconfig (getty off; drop pip/curl/wget)"
+            for dc in "$BUILDROOT_DIR/configs/luckfox_pico_defconfig" "$BUILDROOT_DIR/configs/luckfox_pico_w_defconfig" "$BUILDROOT_DIR/.config"; do
+                [[ -f "$dc" ]] || continue
+                sed -i -E \
+                    -e 's/^BR2_TARGET_GENERIC_GETTY=y/# BR2_TARGET_GENERIC_GETTY is not set/' \
+                    -e 's/^BR2_PACKAGE_PYTHON_PIP=y/# BR2_PACKAGE_PYTHON_PIP is not set/' \
+                    -e 's/^BR2_PACKAGE_WGET=y/# BR2_PACKAGE_WGET is not set/' \
+                    -e 's/^BR2_PACKAGE_LIBCURL=y/# BR2_PACKAGE_LIBCURL is not set/' \
+                    -e 's/^BR2_PACKAGE_LIBCURL_CURL=y/# BR2_PACKAGE_LIBCURL_CURL is not set/' \
+                    "$dc"
+            done
+        fi
     else
         print_error "SeedSigner configuration file not found"
         exit 1
@@ -1245,6 +1262,16 @@ s/^endef\nendif/endef\nendif\nendif/
         print_success "Installed rkaiq-service to /usr/bin/"
     else
         print_warning "rkaiq-service not found, rkaiq-service will not be available"
+    fi
+
+    # Non-dev (production) rootfs hardening: serial login, USB adb/RNDIS gadget, logging daemons.
+    if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
+        print_step "Applying non-dev rootfs hardening"
+        if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/harden-nondev.sh" ]]; then
+            bash "$SEEDSIGNER_LUCKFOX_DIR/harden-nondev.sh" "$ROOTFS_DIR" || print_error "non-dev hardening reported an error"
+        fi
+    else
+        print_info "dev build: skipping rootfs hardening (serial console + adb retained)"
     fi
 
     print_step "Packaging Firmware"

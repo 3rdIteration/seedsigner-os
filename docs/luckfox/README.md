@@ -67,6 +67,32 @@ opt/luckfox/build-local.sh --hardware mini --boot nand
 (`arm-rockchip830-linux-uclibcgnueabihf`, ARMv7); note `python-numpy` is not buildable there (the app
 tolerates its absence).
 
+## Build variants — dev vs non-dev
+
+The `build_variant` workflow input (choice; **default `non-dev`**, or `dev`) selects a hardened production
+image vs a debuggable one. Local builds set the same thing via `SEEDSIGNER_BUILD_VARIANT=dev|non-dev`.
+
+The Luckfox implementation differs from the Pi / La Frite profiles (which have parallel `-dev`/non-dev profile
+directories). Luckfox is the Rockchip SDK with a single defconfig + an SDK-provided rootfs, so **non-dev is a
+set of build-time hardening steps gated on the flag**, not a second profile tree. It maps to the AGENTS.md
+[non-dev leak-vector table](../../AGENTS.md#non-dev-hardening-no-information-leakage) like so (Luckfox has no
+HDMI; its "networking" vector is the USB gadget, not Ethernet/WiFi):
+
+| Vector | non-dev closes it via | Where |
+|---|---|---|
+| Kernel serial console | strip `console=ttyFIQ0`/`earlycon`/`user_debug` bootargs (forced on for non-dev; the `disable_uart2_console_debug` input is the dev override) | build-luckfox.yml "Configure UART2 console debug" |
+| Serial **login** (getty) | `# BR2_TARGET_GENERIC_GETTY is not set` in the defconfig **and** comment console/tty getty/login/shell `respawn` lines in the rootfs `/etc/inittab` | defconfig sed + `harden-nondev.sh` |
+| **Networking** (USB ADB + RNDIS) | remove `adbd`/`usbdevice` binaries, `/etc/init.d/S*usb*`, and comment gadget/adb invocations in `RkLunch.sh` → no `adb shell`, no `usb0` | `harden-nondev.sh` |
+| Logging daemons | remove `syslogd`/`klogd` autostart | `harden-nondev.sh` |
+| Dev / network CLI tools | drop `python-pip`, `wget`, `libcurl`/curl from the target | defconfig sed |
+
+The rootfs surgery lives in **`opt/luckfox/harden-nondev.sh <ROOTFS_DIR>`** (called from all three build
+implementations). Because the SDK rootfs layout varies by version, every step is **guarded/no-op if the
+target is absent** and logs each file it did/didn't touch. **A green build does not prove the vectors were
+closed** — review the `[harden]` log lines, and verify on hardware / a serial capture (no console output or
+login prompt; `adb devices` and `usb0` absent; no `syslogd`/`klogd`; `which pip curl wget` empty; the app
+still works). The reboot-to-Loader Power option / `rk-reboot` is retained in **both** variants.
+
 ## Flashing & recovery — Loader / Maskrom mode
 
 To re-flash with the Rockchip **SocToolKit** or `rkdeveloptool` you normally hold the **BOOT** button while
