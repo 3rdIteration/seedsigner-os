@@ -243,6 +243,10 @@ BR2_PACKAGE_GETTEXT_GNU=y
 BR2_PACKAGE_DOSFSTOOLS=y
 BR2_PACKAGE_E2FSPROGS=y
 BR2_PACKAGE_E2FSPROGS_FSCK=y
+# u-boot-tools: fw_printenv/fw_setenv for the boot-failover counter reset (see
+# /etc/fw_env.config). Harmless if fw_env.config is absent (reset is a no-op).
+BR2_PACKAGE_UBOOT_TOOLS=y
+BR2_PACKAGE_UBOOT_TOOLS_FWPRINTENV=y
 BR2_PACKAGE_E2FSPROGS_RESIZE2FS=y
 BR2_PACKAGE_MIDORI_ARCH_SUPPORTS=n
 BR2_PACKAGE_NETSURF_ARCH_SUPPORTS=n

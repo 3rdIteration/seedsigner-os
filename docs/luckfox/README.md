@@ -117,6 +117,28 @@ target isn't present, and logs under `[optimize]`. **iqfiles pruning and the UI-
 verified on real hardware** (scan a QR) — a green build proves nothing about the camera. Both are trivially
 revertible (widen `IQFILES_KEEP`; the reorder only triggers when the `/etc/seedsigner-nondev` marker exists).
 
+## Boot recovery & auto-failover to Loader
+
+So a bad image self-heals into a flashable state without the BOOT button:
+- **KEY3 very-long-press on Home** (both variants, Luckfox only): hold KEY3 ~5 s on the home screen to reboot
+  into rockusb Loader mode — same action as the Power menu's "Reboot to flash mode". A short KEY3 tap still
+  selects. Implemented in the app (`MainMenuScreen`/`RebootToLoaderView`).
+- **Startup watchdog** (`start-seedsigner.sh`, both variants): the app writes `/tmp/seedsigner-ready` when it
+  reaches Home; if that never appears within ~120 s, or the launch retry loop is exhausted, the device reboots
+  into Loader mode. Covers the app-crash and app-hang cases.
+- **`panic=5`** (non-dev bootargs): a kernel panic reboots instead of hanging, giving the failover another
+  shot. Dev keeps panics visible for debugging.
+- **ADB for debugging:** ADB is **left enabled on non-dev** for now (`adb shell` → read `/tmp/startup.log`).
+  Re-harden later by building the non-dev image with `HARDEN_DISABLE_ADB=1`.
+
+**U-Boot boot-counter (follow-up, needs device info).** For kernel/init failures the userspace watchdog can't
+catch, the plan is a U-Boot bootcount: `CONFIG_BOOTCOUNT_LIMIT` + `altbootcmd` that enters rockusb after
+`bootlimit` failed boots, reset from userspace once the app is up. The app already calls
+`fw_setenv bootcount 0` on ready and `u-boot-tools` is installed; what remains is `/etc/fw_env.config` with the
+**actual env-partition offset** (read it from the device now that ADB is back:
+`cat /proc/mtd`, and the SDK U-Boot `env` offset) plus verifying the SDK U-Boot supports bootcount. Left
+disabled until verified so it can never break normal boot.
+
 ## Flashing & recovery — Loader / Maskrom mode
 
 To re-flash with the Rockchip **SocToolKit** or `rkdeveloptool` you normally hold the **BOOT** button while

@@ -76,11 +76,18 @@ else
 fi
 
 # --------------------------------------------------------------------------- 3
-# UI-first camera bring-up marker (read by start-seedsigner.sh). Dev builds never
-# get this file, so they keep the SDK-default boot ordering.
-mkdir -p "$ROOTFS/etc"
-: > "$ROOTFS/etc/seedsigner-nondev" \
-    && log "created /etc/seedsigner-nondev (start-seedsigner.sh launches UI before camera bootstrap)"
+# UI-first camera bring-up marker (read by start-seedsigner.sh). OPT-IN only:
+# backgrounding the camera-graph bootstrap can race the SPI display init and blank
+# the screen, so it is OFF by default until proven on hardware. Enable with
+# OPTIMIZE_UI_FIRST_CAMERA=1. Without the marker, boot uses the SDK-default order.
+if [ "${OPTIMIZE_UI_FIRST_CAMERA:-0}" = "1" ]; then
+    mkdir -p "$ROOTFS/etc"
+    : > "$ROOTFS/etc/seedsigner-nondev" \
+        && log "created /etc/seedsigner-nondev (UI-first camera bring-up ENABLED)"
+else
+    rm -f "$ROOTFS/etc/seedsigner-nondev" 2>/dev/null || true
+    log "UI-first camera bring-up DISABLED (SDK-default camera ordering; set OPTIMIZE_UI_FIRST_CAMERA=1 to enable)"
+fi
 
 size_after=$(du -sk "$ROOTFS" 2>/dev/null | cut -f1 || true)
 if [ -n "${size_before:-}" ] && [ -n "${size_after:-}" ]; then

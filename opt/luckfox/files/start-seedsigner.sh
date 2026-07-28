@@ -6,9 +6,12 @@ RETRY_DELAY=10  # seconds
 CAMERA_START_TIMEOUT=20  # max seconds to wait for app init signal
 CAMERA_POLL_INTERVAL=1   # seconds
 CAMERA_POST_SPI_DELAY=10  # seconds to wait after SPI init detection
+BOOT_WATCHDOG_TIMEOUT=120  # seconds; fall into Loader mode if the app never signals ready
 LOG_FILE="/tmp/startup.log"
+READY_FILE="/tmp/seedsigner-ready"  # written by the app (MainMenuView) once it is up
 APP_PID=""
 CAMERA_HELPER_PID=""
+BOOT_WATCHDOG_PID=""
 
 # Function to log messages
 log_message() {
@@ -18,6 +21,9 @@ log_message() {
 # Function to cleanup on exit
 cleanup() {
     log_message "Stopping SeedSigner..."
+    if [ -n "$BOOT_WATCHDOG_PID" ]; then
+        kill "$BOOT_WATCHDOG_PID" 2>/dev/null || true
+    fi
     if [ -n "$CAMERA_HELPER_PID" ]; then
         kill "$CAMERA_HELPER_PID" 2>/dev/null || true
     fi
@@ -216,6 +222,26 @@ ensure_gpiochip_symlinks
 # Change to SeedSigner directory (Raspberry Pi SeedSigner-OS layout: app at /opt/src)
 cd /opt/src
 
+# Boot watchdog: recover a bad boot without the BOOT button. If the app never
+# signals readiness (the app writes $READY_FILE from MainMenuView) within the
+# window, reboot into rockusb Loader mode so the device stays re-flashable. This
+# covers the app-hang case the retry loop cannot (a hung app never returns from
+# `wait`). Cleared automatically once the app is up.
+rm -f "$READY_FILE" 2>/dev/null || true
+(
+    waited=0
+    while [ "$waited" -lt "$BOOT_WATCHDOG_TIMEOUT" ]; do
+        [ -f "$READY_FILE" ] && exit 0
+        sleep 5
+        waited=$((waited + 5))
+    done
+    if [ ! -f "$READY_FILE" ]; then
+        log_message "Boot watchdog: app not ready after ${BOOT_WATCHDOG_TIMEOUT}s — rebooting into Loader mode"
+        rk-reboot loader
+    fi
+) &
+BOOT_WATCHDOG_PID="$!"
+
 # Retry loop
 retry_count=0
 while [ $retry_count -lt $MAX_RETRIES ]; do
@@ -264,7 +290,8 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
             log_message "Retrying in $RETRY_DELAY seconds..."
             sleep $RETRY_DELAY
         else
-            log_message "Maximum retries reached. SeedSigner failed to start."
+            log_message "Maximum retries reached. SeedSigner failed to start — rebooting into Loader mode."
+            rk-reboot loader
             exit 1
         fi
     fi

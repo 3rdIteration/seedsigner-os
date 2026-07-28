@@ -560,10 +560,11 @@ jobs:
             echo "UART bootargs debug in DTS source (before patch): $target"
             grep -nE 'ttyFIQ0|console=|earlycon=|user_debug=|bootargs' "$target" || echo "  (no matching bootarg tokens)"
             sed -i 's/\<console=ttyFIQ0[^ "]*\>//g; s/\<earlycon=uart8250,[^ "]*\>//g; s/\<user_debug=[^ "]*\>//g' "$target"
-            # Non-dev: quieter boot. Marginal once the console is stripped, but harmless.
+            # Non-dev: quieter boot + reboot-on-panic (so a kernel panic doesn't hang
+            # forever — it reboots and the boot-failover machinery gets another shot).
             # Only appends inside an existing chosen bootargs="..." string (no-op otherwise).
             if [ "$BUILD_VARIANT" = "non-dev" ]; then
-              sed -i -E '/bootargs[[:space:]]*=/ { /quiet/! s/(bootargs[[:space:]]*=[[:space:]]*"[^"]*)"/\1 quiet loglevel=3"/ }' "$target"
+              sed -i -E '/bootargs[[:space:]]*=/ { /quiet/! s/(bootargs[[:space:]]*=[[:space:]]*"[^"]*)"/\1 quiet loglevel=3 panic=5"/ }' "$target"
             fi
             if grep -Eq '&uart2[[:space:]]*\{' "$target"; then
               sed -i '/&uart2[[:space:]]*{/,/};/ s/status[[:space:]]*=[[:space:]]*"[^"]*"/status = "okay"/' "$target"

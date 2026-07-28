@@ -56,11 +56,12 @@ else
 fi
 
 # --------------------------------------------------------------------------- 2
-# USB ADB + RNDIS gadget. Neutralize the gadget/adb binaries with a no-op stub
-# rather than deleting them. The SDK launcher (RkLunch.sh, on the separate oem
-# stage we can't patch here) still invokes `usbdevice` at boot; a *missing* binary
-# made that call fail and aborted boot to a blank screen. A stub keeps the caller
-# happy while guaranteeing no gadget/adb is ever configured.
+# USB ADB + RNDIS gadget. Disabled ONLY when HARDEN_DISABLE_ADB=1. By default ADB
+# is LEFT ENABLED even on non-dev images so it stays available as a debug/recovery
+# channel (and so the SDK's RkLunch.sh usbdevice call never orphans on a missing
+# binary). When enabled, neutralization uses no-op stubs (not deletion) so callers
+# still succeed while guaranteeing no gadget/adb is configured.
+if [ "${HARDEN_DISABLE_ADB:-0}" = "1" ]; then
 removed_any_gadget=0
 for bin in \
     oem/usr/bin/usbdevice usr/bin/usbdevice usr/sbin/usbdevice \
@@ -106,6 +107,9 @@ else
 fi
 
 [ "$removed_any_gadget" -eq 1 ] || log "WARNING: no USB gadget/adb artifact found to neutralize — verify on-device that 'adb devices' and 'usb0' are absent"
+else
+    log "USB ADB left ENABLED (HARDEN_DISABLE_ADB!=1) — retained as a debug/recovery channel on non-dev"
+fi
 
 # --------------------------------------------------------------------------- 3
 # Logging daemons (syslogd / klogd).
