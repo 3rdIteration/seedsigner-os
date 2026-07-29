@@ -131,27 +131,50 @@ So a bad image self-heals into a flashable state without the BOOT button:
 - **ADB for debugging:** ADB is **left enabled on non-dev** for now (`adb shell` → read `/tmp/startup.log`).
   Re-harden later by building the non-dev image with `HARDEN_DISABLE_ADB=1`.
 
-**U-Boot boot-counter → loader (non-dev).** For kernel/init failures the userspace watchdog can't catch, the
-non-dev build enables a U-Boot boot counter that auto-enters rockusb Loader after `bootlimit` failed boots — no
-BOOT button, ADB, or working app required. How it fits together:
-- **U-Boot** (`build-luckfox.yml` recovery step): appends `CONFIG_BOOTCOUNT_LIMIT=y` + `CONFIG_BOOTCOUNT_ENV=y`
-  to the Luckfox U-Boot defconfigs (the SDK U-Boot already ships the bootcount drivers). U-Boot then increments
-  an env-backed `bootcount` each boot and runs `altbootcmd` (instead of the normal boot) once `bootcount >
-  bootlimit`.
-- **Env access:** `/etc/fw_env.config` = `/dev/mtd0 0x0 0x40000 0x20000` — **verified from a live device**: the
-  env is a standard CRC32+data U-Boot env in the dedicated `env` MTD partition (mtd0), single copy, written
-  0x00 throughout the 256 KB partition. `u-boot-tools` provides `fw_printenv`/`fw_setenv`.
-- **Policy:** `start-seedsigner.sh` sets (once) `bootlimit=5` and
-  `altbootcmd='setenv bootcount 0; saveenv; mw.l 0xff020200 0x5242c301; reset'`. That reuses the **proven**
-  reboot-mode Loader entry (the same `BOOT_LOADER=0x5242C301` magic `rk-reboot loader` uses) and clears the
-  counter first so it is never a permanent dead-end.
-- **Reset on success:** the app (`MainMenuView`) calls `fw_setenv bootcount 0` when it reaches Home.
+**U-Boot boot-counter → loader (non-dev).** This is the deepest layer — for failures the userspace watchdog
+can't catch because they reboot *before* `start-seedsigner.sh` even runs (kernel panic, rootfs-mount or init
+failure). The non-dev build enables a U-Boot boot counter that auto-enters rockusb Loader after `bootlimit`
+consecutive such boots — no BOOT button, ADB, or working app required.
 
-**Must be hardware-verified** (env writes touch flash; a wrong boot flow could break normal boot). On a
-non-dev image via ADB: `fw_printenv` shows the env; reboot a few times and watch `bootcount` climb, then reach
-Home and confirm it resets to 0; force ≥ `bootlimit`+1 failed boots (e.g. rename `/opt/src/main.py`) and
-confirm the device enumerates as a Rockchip **Loader** device (`rkdeveloptool ld`). If anything misbehaves,
-`rm /etc/fw_env.config` (disables the OS policy) or `fw_setenv altbootcmd ''`.
+- **Why a *memory-backed* counter (not the usual env one):** this Rockchip U-Boot **2017.09** fork's
+  `drivers/bootcount/Kconfig` only defines `CONFIG_BOOTCOUNT` / `CONFIG_BOOTCOUNT_EXT` — there is **no
+  `CONFIG_BOOTCOUNT_LIMIT` / `CONFIG_BOOTCOUNT_ENV` symbol**, so putting those in a defconfig is silently
+  dropped by Kconfig (verified on-device: the compiled U-Boot had zero bootcount code). The always-built
+  generic backend `drivers/bootcount/bootcount.c` is used instead, pointed at a hardware register.
+- **U-Boot** (`build-luckfox.yml` recovery step): patches the U-Boot board header
+  `include/configs/rv1106_common.h` with `#define CONFIG_BOOTCOUNT_LIMIT`,
+  `#define CONFIG_SYS_BOOTCOUNT_SINGLEWORD`, and `#define CONFIG_SYS_BOOTCOUNT_ADDR 0xFF020218`. `autoboot.c`'s
+  `bootdelay_process()` — which runs on **every** boot to pick `bootcmd` — then increments the counter and,
+  once `bootcount > bootlimit`, runs `altbootcmd` instead of the normal boot. (No Kconfig/Makefile change and
+  no new source files: `bootcount.c` is `obj-y` and reads the `#define`s; `BOOTCOUNT_MAGIC 0xB001C041` comes
+  from `include/common.h`.)
+- **Register semantics (hardware-verified on a live Pico Pro Max):** the counter lives in a **free GRF `OS_REG`
+  scratch register `0xFF020218`** (`0xFF020210/214/218/21C` all read 0 = unused) — **not flash, so there is no
+  per-boot NAND wear**. The register **survives a warm reset**, so a kernel-panic reboot loop keeps counting,
+  and is cleared by a **cold power-cycle**, so simply unplugging the device resets the counter. Singleword
+  encoding stores `(0xB0010000 | count)`. The adjacent `0xFF020200` is the reboot-mode register (`0x5242C301`
+  = Loader). U-Boot honours the mtd0 env that `fw_setenv` writes (confirmed: an appended `sys_bootargs` token
+  reached `/proc/cmdline`).
+- **Env policy:** `start-seedsigner.sh` sets (once) `bootlimit=5` and
+  `altbootcmd='mw.l 0xFF020218 0; mw.l 0xff020200 0x5242c301; reset'` — zero the counter register, then enter
+  Loader via the **proven** reboot-mode magic (`0x5242C301`, same as `rk-reboot loader`). `bootlimit` and
+  `altbootcmd` live in the env, so this needs `/etc/fw_env.config` = `/dev/mtd0 0x0 0x40000 0x20000`
+  (verified: a standard CRC32+data env, single copy, in the `env` MTD partition) plus `u-boot-tools`
+  (`fw_printenv`/`fw_setenv`).
+- **Cleared on a healthy boot:** `start-seedsigner.sh` runs `devmem 0xFF020218 32 0` as soon as userspace is
+  up, and the app (`MainMenuView`) clears it again on reaching Home. So only boots that never reach userspace
+  accumulate toward the limit; a device that boots normally never approaches it.
+
+**Hardware-verify** on a non-dev image via ADB:
+- **Clear works:** shortly after a normal boot, `devmem 0xFF020218` reads `0x00000000` (userspace cleared it).
+- **Loader path:** force the counter over the limit and reboot once —
+  `devmem 0xFF020218 32 0xB0010006 && reboot -f` (0xB0010006 = magic | count 6, and 6 > bootlimit 5). U-Boot
+  should skip the normal boot and the device should enumerate as a Rockchip **Loader** device
+  (`rkdeveloptool ld`). A cold power-cycle clears the register and returns to normal boot.
+- **Healthy device never triggers:** repeatedly reaching Home must always keep the counter at/near 0.
+
+To disable the policy without a rebuild: `fw_setenv altbootcmd ''` (or `rm /etc/fw_env.config`); the
+board-header counter itself is inert without an `altbootcmd`.
 
 ## Flashing & recovery — Loader / Maskrom mode
 

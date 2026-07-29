@@ -203,16 +203,27 @@ trap cleanup SIGTERM SIGINT
 # applied /etc/hostname.
 hostname seedsigner-os 2>/dev/null || true
 
-# Boot-failover (non-dev; gated on /etc/fw_env.config being present). Configure the
-# U-Boot boot counter so that N consecutive boots that never reach the app auto-enter
-# rockusb Loader mode for re-flashing — no BOOT button, ADB, or working app needed.
-# altbootcmd reuses the proven reboot-mode Loader entry (the same 0x5242C301 magic
-# `rk-reboot loader` uses) and clears the counter first so it is never a permanent
-# dead-end. Set once (idempotent); the app clears the counter on a healthy boot.
+# Boot-failover (non-dev). U-Boot carries a memory-backed boot counter
+# (CONFIG_SYS_BOOTCOUNT_ADDR = GRF OS_REG scratch register 0xFF020218, enabled in the
+# U-Boot board header) that increments on every boot; once it exceeds bootlimit, U-Boot
+# runs altbootcmd to enter rockusb Loader mode for re-flashing — no BOOT button, ADB, or
+# working app needed. Reaching userspace here is the "healthy enough" signal, so clear the
+# counter now; only boots that never get this far (kernel panic / rootfs-mount / init
+# failure) accumulate toward the limit. The register survives a warm reset (a panic reboot
+# loop) and clears on a cold power-cycle, so Loader is never a permanent dead-end.
+if command -v devmem >/dev/null 2>&1; then
+    if devmem 0xFF020218 32 0 2>/dev/null; then
+        log_message "boot-failover: cleared U-Boot boot counter (GRF 0xFF020218)"
+    fi
+fi
+# bootlimit + altbootcmd live in the U-Boot env; set once (idempotent), gated on
+# /etc/fw_env.config so fw_setenv can reach the mtd0 env. altbootcmd zeroes the counter
+# register first (defensive) then writes the reboot-mode Loader magic (the same 0x5242C301
+# `rk-reboot loader` uses) and resets.
 if [ -f /etc/fw_env.config ] && command -v fw_setenv >/dev/null 2>&1; then
     if ! fw_printenv bootlimit >/dev/null 2>&1; then
         if fw_setenv bootlimit 5 2>/dev/null \
-           && fw_setenv altbootcmd 'setenv bootcount 0; saveenv; mw.l 0xff020200 0x5242c301; reset' 2>/dev/null; then
+           && fw_setenv altbootcmd 'mw.l 0xFF020218 0; mw.l 0xff020200 0x5242c301; reset' 2>/dev/null; then
             log_message "boot-failover: configured U-Boot bootlimit=5 + altbootcmd (loader)"
         else
             log_message "boot-failover: fw_setenv failed — U-Boot bootcount failover inactive"

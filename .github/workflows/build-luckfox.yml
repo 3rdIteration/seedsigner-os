@@ -1042,17 +1042,41 @@ jobs:
         for f in $(grep -rlE '^CONFIG_BOOTDELAY=[1-9]' sysdrv 2>/dev/null | grep -iE 'uboot|u-boot' || true); do
           sed -i -E 's/^CONFIG_BOOTDELAY=[1-9][0-9]*/CONFIG_BOOTDELAY=0/' "$f"; echo "  zeroed CONFIG_BOOTDELAY in $f"
         done
-        # Enable the U-Boot boot counter so N failed boots auto-enter rockusb Loader
-        # (via altbootcmd, set from the OS). The SDK U-Boot ships the bootcount drivers
-        # (drivers/bootcount/bootcount_env.c); append the symbols to every Luckfox
-        # U-Boot defconfig. Env-backed so it persists in the env partition (mtd0).
+        # Enable the U-Boot boot counter so N consecutive boots that never reach
+        # userspace auto-enter rockusb Loader (via altbootcmd, set from the OS at
+        # runtime). NOTE: this Rockchip U-Boot 2017.09 fork's drivers/bootcount/Kconfig
+        # only defines CONFIG_BOOTCOUNT / CONFIG_BOOTCOUNT_EXT — there is NO
+        # CONFIG_BOOTCOUNT_LIMIT / _ENV Kconfig symbol, so appending those to a defconfig
+        # is silently dropped (verified on-device: bootcount never compiled in). Instead
+        # use the always-built generic backend (drivers/bootcount/bootcount.c is obj-y)
+        # via board-header #defines: the counter lives in a FREE GRF OS_REG scratch
+        # register (0xFF020218) that survives a warm reset (kernel-panic reboot loops)
+        # and auto-clears on a cold power-cycle. autoboot.c's bootdelay_process() runs
+        # the increment + "bootcount > bootlimit -> altbootcmd" check on every boot.
+        # (Hardware-verified on a live Pico Pro Max: reg is free, survives reboot -f, and
+        # U-Boot honours the mtd0 env that fw_setenv writes.) The OS clears the counter
+        # via `devmem 0xFF020218 32 0` once userspace is up (start-seedsigner.sh), so only
+        # boots that never get that far accumulate toward the limit.
         bc=0
-        for f in $(find sysdrv -path '*uboot*/configs/luckfox_*_defconfig' 2>/dev/null || true); do
-          grep -q '^CONFIG_BOOTCOUNT_LIMIT=y' "$f" || echo 'CONFIG_BOOTCOUNT_LIMIT=y' >> "$f"
-          grep -q '^CONFIG_BOOTCOUNT_ENV=y'   "$f" || echo 'CONFIG_BOOTCOUNT_ENV=y'   >> "$f"
-          echo "  enabled CONFIG_BOOTCOUNT_LIMIT/_ENV in $(basename "$f")"; bc=1
+        for h in $(find sysdrv -path '*uboot*/include/configs/rv1106_common.h' 2>/dev/null || true); do
+          if ! grep -q 'CONFIG_SYS_BOOTCOUNT_ADDR' "$h"; then
+            awk '
+              { print }
+              !done && /^#define CONFIG_PREBOOT[ \t]*$/ {
+                print "";
+                print "/* SeedSigner boot-failover: memory-backed boot counter in a free GRF";
+                print " * OS_REG scratch register (survives warm reset, clears on cold power-off). */";
+                print "#define CONFIG_BOOTCOUNT_LIMIT";
+                print "#define CONFIG_SYS_BOOTCOUNT_SINGLEWORD";
+                print "#define CONFIG_SYS_BOOTCOUNT_ADDR\t0xFF020218";
+                done=1
+              }
+            ' "$h" > "$h.ssbc" && mv "$h.ssbc" "$h"
+          fi
+          grep -q 'CONFIG_SYS_BOOTCOUNT_ADDR' "$h" \
+            && { echo "  enabled memory-backed bootcount (GRF 0xFF020218) in $(basename "$h")"; bc=1; }
         done
-        [ "$bc" -eq 1 ] || echo "  ⚠️  no luckfox U-Boot defconfig found — bootcount NOT enabled (userspace watchdog still covers app failures)"
+        [ "$bc" -eq 1 ] || echo "  ⚠️  rv1106_common.h not patched — bootcount NOT enabled (userspace watchdog still covers app failures)"
 
     - name: Build system
       run: |
