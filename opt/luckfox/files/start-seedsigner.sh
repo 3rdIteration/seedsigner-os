@@ -211,23 +211,13 @@ hostname seedsigner-os 2>/dev/null || true
 # counter now; only boots that never get this far (kernel panic / rootfs-mount / init
 # failure) accumulate toward the limit. The register survives a warm reset (a panic reboot
 # loop) and clears on a cold power-cycle, so Loader is never a permanent dead-end.
+# bootlimit=5 and altbootcmd are compiled into U-Boot's DEFAULT env (this U-Boot is
+# built ENV_IS_NOWHERE and never reads the mtd0 env, so fw_setenv would be ignored —
+# see build-luckfox.yml). Nothing to provision here; userspace only has to CLEAR the
+# counter so a healthy boot never accumulates toward the limit.
 if command -v devmem >/dev/null 2>&1; then
     if devmem 0xFF020218 32 0 2>/dev/null; then
         log_message "boot-failover: cleared U-Boot boot counter (GRF 0xFF020218)"
-    fi
-fi
-# bootlimit + altbootcmd live in the U-Boot env; set once (idempotent), gated on
-# /etc/fw_env.config so fw_setenv can reach the mtd0 env. altbootcmd zeroes the counter
-# register first (defensive) then writes the reboot-mode Loader magic (the same 0x5242C301
-# `rk-reboot loader` uses) and resets.
-if [ -f /etc/fw_env.config ] && command -v fw_setenv >/dev/null 2>&1; then
-    if ! fw_printenv bootlimit >/dev/null 2>&1; then
-        if fw_setenv bootlimit 5 2>/dev/null \
-           && fw_setenv altbootcmd 'mw.l 0xFF020218 0; mw.l 0xff020200 0x5242c301; reset' 2>/dev/null; then
-            log_message "boot-failover: configured U-Boot bootlimit=5 + altbootcmd (loader)"
-        else
-            log_message "boot-failover: fw_setenv failed — U-Boot bootcount failover inactive"
-        fi
     fi
 fi
 

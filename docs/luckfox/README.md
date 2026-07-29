@@ -152,15 +152,18 @@ consecutive such boots — no BOOT button, ADB, or working app required.
   scratch register `0xFF020218`** (`0xFF020210/214/218/21C` all read 0 = unused) — **not flash, so there is no
   per-boot NAND wear**. The register **survives a warm reset**, so a kernel-panic reboot loop keeps counting,
   and is cleared by a **cold power-cycle**, so simply unplugging the device resets the counter. Singleword
-  encoding stores `(0xB0010000 | count)`. The adjacent `0xFF020200` is the reboot-mode register (`0x5242C301`
-  = Loader). U-Boot honours the mtd0 env that `fw_setenv` writes (confirmed: an appended `sys_bootargs` token
-  reached `/proc/cmdline`).
-- **Env policy:** `start-seedsigner.sh` sets (once) `bootlimit=5` and
-  `altbootcmd='mw.l 0xFF020218 0; mw.l 0xff020200 0x5242c301; reset'` — zero the counter register, then enter
-  Loader via the **proven** reboot-mode magic (`0x5242C301`, same as `rk-reboot loader`). `bootlimit` and
-  `altbootcmd` live in the env, so this needs `/etc/fw_env.config` = `/dev/mtd0 0x0 0x40000 0x20000`
-  (verified: a standard CRC32+data env, single copy, in the `env` MTD partition) plus `u-boot-tools`
-  (`fw_printenv`/`fw_setenv`).
+  encoding stores `(0xB0010000 | count)`. Proven on hardware: forcing the register to `0xB0010006` and
+  rebooting, U-Boot read count 6 and stored `0xB0010007` — the increment path runs. The adjacent `0xFF020200`
+  is the reboot-mode register (`0x5242C301` = Loader).
+- **`bootlimit` + `altbootcmd` are baked into the COMPILED DEFAULT ENV — not the mtd0 env.** This U-Boot is
+  built **`ENV_IS_NOWHERE`** (no `CONFIG_ENV_IS_*` in any Luckfox defconfig): it uses only its compiled-in
+  default environment and **never reads the mtd0 env that `fw_setenv` writes**. Proven on hardware: with the
+  counter forced to 7 and mtd0 `bootlimit=5`, U-Boot used its built-in default (`10`) and booted normally.
+  So the recovery step also injects into `CONFIG_EXTRA_ENV_SETTINGS`:
+  `bootlimit=5` and `altbootcmd='mw.l 0xFF020218 0; mw.l 0xff020200 0x5242c301; reset'` — zero the counter
+  register, then enter Loader via the **proven** reboot-mode magic (`0x5242C301`, same as `rk-reboot loader`;
+  `mw`/`reset` both exist in this U-Boot). No `fw_setenv`, `/etc/fw_env.config`, or `u-boot-tools` is needed
+  for the failover (they remain installed only for env inspection/debugging).
 - **Cleared on a healthy boot:** `start-seedsigner.sh` runs `devmem 0xFF020218 32 0` as soon as userspace is
   up, and the app (`MainMenuView`) clears it again on reaching Home. So only boots that never reach userspace
   accumulate toward the limit; a device that boots normally never approaches it.
@@ -173,8 +176,9 @@ consecutive such boots — no BOOT button, ADB, or working app required.
   (`rkdeveloptool ld`). A cold power-cycle clears the register and returns to normal boot.
 - **Healthy device never triggers:** repeatedly reaching Home must always keep the counter at/near 0.
 
-To disable the policy without a rebuild: `fw_setenv altbootcmd ''` (or `rm /etc/fw_env.config`); the
-board-header counter itself is inert without an `altbootcmd`.
+Note: because `bootlimit`/`altbootcmd` are compiled in (not env), disabling the policy requires a rebuild — it
+cannot be turned off with `fw_setenv`. The failover is inert on any boot that reaches userspace (the counter is
+cleared), so a healthy device never enters Loader on its own.
 
 ## Flashing & recovery — Loader / Maskrom mode
 
