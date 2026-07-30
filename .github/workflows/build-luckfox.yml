@@ -1444,9 +1444,23 @@ jobs:
           echo "No text-like image metadata files found under output/image"
         fi
 
-        if grep -aEq 'console=ttyFIQ0|earlycon=uart8250|user_debug=' output/image/boot.img; then
-          echo "ERROR: UART console/debug tokens still present in output/image/boot.img"
-          exit 1
+        # Only assert the UART console/debug tokens are stripped when the console was
+        # actually meant to be disabled (non-dev, or explicit true). dev builds keep the
+        # serial console by design, so their boot.img legitimately still has these tokens.
+        DISABLE_UART2_CONSOLE_DEBUG="${{ inputs.disable_uart2_console_debug }}"
+        BUILD_VARIANT="${{ inputs.build_variant || 'dev' }}"
+        case "$DISABLE_UART2_CONSOLE_DEBUG" in
+          true|false) ;;
+          *) if [ "$BUILD_VARIANT" = "non-dev" ]; then DISABLE_UART2_CONSOLE_DEBUG="true"; else DISABLE_UART2_CONSOLE_DEBUG="false"; fi ;;
+        esac
+        if [ "$DISABLE_UART2_CONSOLE_DEBUG" = "true" ]; then
+          if grep -aEq 'console=ttyFIQ0|earlycon=uart8250|user_debug=' output/image/boot.img; then
+            echo "ERROR: UART console/debug tokens still present in output/image/boot.img"
+            exit 1
+          fi
+          echo "✅ UART console/debug tokens stripped from boot.img"
+        else
+          echo "dev build: UART serial console retained by design (skipping strip assertion)"
         fi
 
     - name: Create flashable SD image
