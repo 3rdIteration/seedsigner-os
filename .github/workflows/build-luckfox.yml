@@ -45,6 +45,15 @@ on:
           - 'true'
           - 'false'
         default: 'auto'
+      disable_adb:
+        description: 'USB ADB shell override: auto follows build_variant (non-dev=off, dev=on); or force true/false'
+        required: false
+        type: choice
+        options:
+          - 'auto'
+          - 'true'
+          - 'false'
+        default: 'auto'
       build_variant:
         description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell). Automatic push/PR CI always builds dev.'
         required: false
@@ -98,6 +107,10 @@ on:
         type: string
         default: 'SD_CARD'
       disable_uart2_console_debug:
+        required: false
+        type: string
+        default: 'auto'
+      disable_adb:
         required: false
         type: string
         default: 'auto'
@@ -1336,14 +1349,25 @@ jobs:
         # login shell, USB adb/RNDIS gadget, and logging daemons. Guarded/no-op on
         # dev builds. Review the [harden] log lines to confirm vectors were closed.
         if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
-          echo "🔒 Applying non-dev rootfs hardening ..."
-          bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
+          # ADB: explicit true/false wins; otherwise (auto/empty) non-dev disables it.
+          # HARDEN_DISABLE_ADB=1 makes harden-nondev.sh neutralize the adb/usbdevice
+          # gadget (via no-op stubs, so RkLunch.sh never orphans). disable_adb=false
+          # keeps ADB on a non-dev image for debugging. dev builds skip this block, so
+          # dev always keeps ADB. Loader-mode recovery is unaffected either way (it's a
+          # U-Boot USB mode, independent of the Linux adbd gadget).
+          DISABLE_ADB="${{ inputs.disable_adb }}"
+          case "$DISABLE_ADB" in true|false) ;; *) DISABLE_ADB="true" ;; esac
+          HARDEN_ADB=0; [ "$DISABLE_ADB" = "true" ] && HARDEN_ADB=1
+          echo "🔒 Applying non-dev rootfs hardening (disable_adb=${DISABLE_ADB}) ..."
+          HARDEN_DISABLE_ADB=$HARDEN_ADB bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
           echo "📦 Applying non-dev size/boot optimizations ..."
           bash ../seedsigner-os/opt/luckfox/optimize-nondev.sh "$ROOTFS_DIR"
-          # Boot-failover: fw_env.config lets fw_setenv/printenv reach the U-Boot env
-          # (mtd0) so the U-Boot bootcount can be reset on success + configured (start-
-          # seedsigner sets bootlimit/altbootcmd). Env layout verified from a device.
-          echo "🧭 Installing /etc/fw_env.config (U-Boot env access for boot-failover) ..."
+          # /etc/fw_env.config gives fw_printenv/fw_setenv access to the U-Boot env
+          # (mtd0). NOTE: the boot-failover no longer depends on this — this U-Boot is
+          # ENV_IS_NOWHERE, so bootlimit/altbootcmd are baked into the compiled default
+          # env (see the recovery-config step), and the counter is a GRF register. It's
+          # kept only for optional env inspection (and is unreachable once ADB is off).
+          echo "🧭 Installing /etc/fw_env.config (optional U-Boot env inspection) ..."
           cp -v ../seedsigner-os/opt/luckfox/files/fw_env.config "$ROOTFS_DIR/etc/fw_env.config"
         else
           echo "🛠️  dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"

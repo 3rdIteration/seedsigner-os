@@ -128,8 +128,11 @@ So a bad image self-heals into a flashable state without the BOOT button:
   into Loader mode. Covers the app-crash and app-hang cases.
 - **`panic=5`** (non-dev bootargs): a kernel panic reboots instead of hanging, giving the failover another
   shot. Dev keeps panics visible for debugging.
-- **ADB for debugging:** ADB is **left enabled on non-dev** for now (`adb shell` → read `/tmp/startup.log`).
-  Re-harden later by building the non-dev image with `HARDEN_DISABLE_ADB=1`.
+- **ADB for debugging:** non-dev images **disable ADB by default** (air-gapped). For a debuggable non-dev
+  build, dispatch with the **`disable_adb=false`** input (or set `HARDEN_DISABLE_ADB=0` for a local build) —
+  then `adb shell` → read `/tmp/startup.log`. Dev builds always keep ADB. Removing ADB does **not** weaken
+  recovery: rockusb **Loader mode is a U-Boot/maskrom USB mode, independent of the Linux adbd gadget**, so the
+  KEY3→Loader gesture and the U-Boot bootcount failover still enumerate the device for re-flashing.
 
 **U-Boot boot-counter → loader (non-dev).** This is the deepest layer — for failures the userspace watchdog
 can't catch because they reboot *before* `start-seedsigner.sh` even runs (kernel panic, rootfs-mount or init
