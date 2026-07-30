@@ -1332,10 +1332,9 @@ install_seedsigner_app() {
     if [ "$BUILD_VARIANT" == "non-dev" ]; then
         print_info "Applying non-dev rootfs hardening..."
         if [ -f "$SCRIPT_DIR/harden-nondev.sh" ]; then
-            # Non-dev disables the USB adb/RNDIS gadget by default; override with
-            # HARDEN_DISABLE_ADB=0 to keep ADB on a non-dev image for debugging.
-            HARDEN_DISABLE_ADB="${HARDEN_DISABLE_ADB:-1}" \
-                bash "$SCRIPT_DIR/harden-nondev.sh" "$rootfs_dir" || print_warning "non-dev hardening reported an error"
+            # adb is removed via USB host mode (a DTS change in the CI build), not rootfs
+            # hardening; harden-nondev.sh keeps serial-login/logging/dev-tool hardening.
+            bash "$SCRIPT_DIR/harden-nondev.sh" "$rootfs_dir" || print_warning "non-dev hardening reported an error"
         fi
         if [ -f "$SCRIPT_DIR/optimize-nondev.sh" ]; then
             bash "$SCRIPT_DIR/optimize-nondev.sh" "$rootfs_dir" || print_warning "non-dev optimization reported an error"

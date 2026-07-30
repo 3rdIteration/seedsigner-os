@@ -128,11 +128,17 @@ So a bad image self-heals into a flashable state without the BOOT button:
   into Loader mode. Covers the app-crash and app-hang cases.
 - **`panic=5`** (non-dev bootargs): a kernel panic reboots instead of hanging, giving the failover another
   shot. Dev keeps panics visible for debugging.
-- **ADB for debugging:** non-dev images **disable ADB by default** (air-gapped). For a debuggable non-dev
-  build, dispatch with the **`disable_adb=false`** input (or set `HARDEN_DISABLE_ADB=0` for a local build) —
-  then `adb shell` → read `/tmp/startup.log`. Dev builds always keep ADB. Removing ADB does **not** weaken
-  recovery: rockusb **Loader mode is a U-Boot/maskrom USB mode, independent of the Linux adbd gadget**, so the
-  KEY3→Loader gesture and the U-Boot bootcount failover still enumerate the device for re-flashing.
+- **USB role (`usb_mode`) — this is the ADB switch.** The RV1106 USB port is either a **device gadget**
+  (`gadget` — adb + RNDIS, for debugging) or a **host** (`host` — drives external USB peripherals like a
+  camera or smartcard reader; **no gadget, so no adb/RNDIS** = air-gapped on the USB axis). Set via the
+  `usb_mode` dispatch input (`auto`/`gadget`/`host`); `auto` follows the variant: **non-dev = host, dev =
+  gadget**. Implemented as a device-tree override (`&usbdrd_dwc3 { dr_mode = "host"; }`) in the
+  "Configure USB mode in DTS" build step — no rootfs surgery. adb is *not* removed by hardening (that broke
+  boot: the SDK's `/oem` `RkLunch.sh` still called the stubbed `usbdevice`). To debug a non-dev image, build
+  it with `usb_mode=gadget`. Switching to host does **not** weaken recovery: rockusb **Loader mode is a
+  U-Boot/maskrom USB mode, independent of the Linux gadget**, so KEY3→Loader and the U-Boot bootcount failover
+  still enumerate the device for re-flashing. (Host mode needs the board to supply VBUS to power bus-powered
+  peripherals; a self-powered device or powered hub always works.)
 
 **U-Boot boot-counter → loader (non-dev).** This is the deepest layer — for failures the userspace watchdog
 can't catch because they reboot *before* `start-seedsigner.sh` even runs (kernel panic, rootfs-mount or init
