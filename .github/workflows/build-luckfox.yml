@@ -55,6 +55,15 @@ on:
           - 'host'
           - 'otg'
         default: 'auto'
+      debug_network:
+        description: 'Ethernet debug channel (telnet/ssh root shell over the network). on = keep it (debugging); off = remove it (air-gapped). auto follows build_variant (non-dev=off, dev=on).'
+        required: false
+        type: choice
+        options:
+          - 'auto'
+          - 'on'
+          - 'off'
+        default: 'auto'
       build_variant:
         description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell). Automatic push/PR CI always builds dev.'
         required: false
@@ -112,6 +121,10 @@ on:
         type: string
         default: 'auto'
       usb_mode:
+        required: false
+        type: string
+        default: 'auto'
+      debug_network:
         required: false
         type: string
         default: 'auto'
@@ -1442,6 +1455,18 @@ jobs:
           # keeps the serial-login, logging, and dev-tool hardening only.
           echo "🔒 Applying non-dev rootfs hardening ..."
           bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
+          # Ethernet debug channel (telnet/ssh root shell over the LAN). Resolve
+          # debug_network: explicit on/off wins; otherwise (auto) non-dev = off. When off,
+          # remove the telnet/ssh daemons so a shipped air-gapped image has no remote-root
+          # shell. Build with debug_network=on for a debuggable non-dev image (telnet in).
+          DEBUG_NET="${{ inputs.debug_network }}"
+          case "$DEBUG_NET" in on|off) ;; *) DEBUG_NET="off" ;; esac
+          if [ "$DEBUG_NET" = "off" ]; then
+            rm -fv "$ROOTFS_DIR"/etc/init.d/S*telnet* "$ROOTFS_DIR"/etc/init.d/S*sshd* "$ROOTFS_DIR"/etc/init.d/S*dropbear* 2>/dev/null || true
+            echo "🔒 debug_network=off: removed telnet/ssh daemons (no remote shell on the LAN)"
+          else
+            echo "🌐 debug_network=on: telnet/ssh RETAINED — root shell reachable over Ethernet (debug builds only)"
+          fi
           echo "📦 Applying non-dev size/boot optimizations ..."
           bash ../seedsigner-os/opt/luckfox/optimize-nondev.sh "$ROOTFS_DIR"
           # /etc/fw_env.config gives fw_printenv/fw_setenv access to the U-Boot env
