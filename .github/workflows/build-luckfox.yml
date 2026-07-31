@@ -1567,7 +1567,17 @@ jobs:
             MISSING_FILES+=("$file")
           fi
         done
-        
+
+        # userdata.img exists only on builds that keep a userdata partition (Pro Max);
+        # copy it if the SDK built one so per-partition flashing has it (update.img
+        # already contains it). Optional — Mini/Pi have no userdata partition.
+        if [[ -f userdata.img ]]; then
+          cp -v userdata.img "$NAND_BUNDLE_DIR/"
+          echo "  ✓ included userdata.img in NAND bundle"
+        else
+          echo "  (no userdata.img built — no userdata partition for this board)"
+        fi
+
         # Report missing files (some may be optional)
         if [[ ${#MISSING_FILES[@]} -ne 0 ]]; then
           echo "WARNING: Some files were not found: ${MISSING_FILES[*]}"
