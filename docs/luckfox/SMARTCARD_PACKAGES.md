@@ -30,13 +30,21 @@ The pyscard package requires SWIG to generate Python-C bindings. However, it inc
 1. **0001-drop-swig-from-pyproject.patch:** Removes swig from pyproject.toml build requirements since buildroot provides host-swig as a native tool
 2. **0002-skip-swig-check.patch:** Skips the runtime check for swig on PATH, trusting buildroot's dependency management
 
-### python-pysatochip v0.5-alpha
+### python-pysatochip v0.6a
 
 **Description:** Python API for Satochip hardware wallet devices  
 **Purpose:** High-level interface for Satochip, Satodime, and Seedkeeper devices  
 **Source:** https://github.com/3rdIteration/pysatochip  
 **License:** LGPL  
 **Build System:** setuptools  
+
+> **Single version on all platforms.** Every hardware platform (Luckfox/uClibc,
+> Raspberry Pi and La Frite/glibc) pins the *same* pysatochip version. Toolchain
+> compatibility is handled inside the package (e.g. `certificate_validator.py`
+> falls back from OpenSSL to pycryptodomex automatically) — never via divergent
+> per-toolchain version pins in the `.mk`. The same principle applies to all
+> external packages (see python-pgpy). Bumping a version requires a full image
+> rebuild on every platform.
 
 **Dependencies:**
 - python-pyscard (runtime, for smartcard communication)

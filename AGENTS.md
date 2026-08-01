@@ -169,6 +169,15 @@ the Pi set). Keep it in sync when the app gains a dependency.
 `python-pyscard`, `python-pysatochip`, `python-pgpy`, `python-keycard-py`, `python-specter-card`,
 `python-pygp`, `ccid-sec1210`, `pcsc-lite`, `gnupg2`, `pinentry`.
 
+**Single-version rule:** every external package in `opt/external-packages/` pins ONE version for all
+toolchains/platforms — never `ifeq (BR2_TOOLCHAIN_USES_UCLIBC…)` version splits in a `.mk` or
+`select … if BR2_TOOLCHAIN_USES_UCLIBC` dependency splits in a `Config.in`. Toolchain compatibility is
+handled *inside* the package source (e.g. pysatochip's OpenSSL→pycryptodomex fallback). Rationale: the
+Luckfox NDEF regression happened because uClibc pinned an older pysatochip (`0.5-alpha-pycryptodome`)
+than glibc (`0.6a`), so app code calling `card_get_ndef()` crashed only on Luckfox. `python-cryptography`
+(Rust) builds on uClibc now (Tier-3 Rust target patch), so the old reason for the splits is gone. A
+version bump requires a rebuild on every platform.
+
 **Optional peripherals:** `python-smbus2` (or `python-smbus-cffi`), `python-periphery`, `python-spidev`
 (battery HAT / IO; the app imports these behind `try/except`).
 
