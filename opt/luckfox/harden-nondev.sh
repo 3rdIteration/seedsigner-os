@@ -4,12 +4,27 @@
 #
 # Apply "non-dev" (production) hardening to a *built* Luckfox rootfs so the image
 # is air-gapped and headless, matching the non-dev leak-vector policy in AGENTS.md
-# (adapted to the Rockchip/Luckfox SDK, which has no HDMI and whose "networking"
-# vector is the USB gadget, not Ethernet/WiFi). It closes:
+# (adapted to the Rockchip/Luckfox SDK: no HDMI, and unlike the Pi/La Frite
+# profiles the SDK kernel keeps CONFIG_INET — so BOTH the USB gadget AND
+# Ethernet (eth0 on Pro Max / Pico Pi) are leak vectors and are closed here in
+# userspace). It closes:
 #
-#   1. Serial login    - console/tty getty | login | shell respawn lines in inittab
-#   2. USB ADB + RNDIS  - the adbd/usbdevice gadget (binaries + init.d + RkLunch.sh)
+#   1. Serial login     - console/tty getty | login | shell respawn lines in inittab
+#   2. USB ADB + RNDIS  - adbd binaries, S*adb* init scripts, gadget function
+#                         config, RkLunch.sh invocations (HARDEN_DISABLE_ADB,
+#                         default 1). NEVER touches S50usbdevice/S*usb* init
+#                         scripts: S50usbdevice is what mounts configfs, which
+#                         luckfox-config needs to enable SPI0 for the display —
+#                         removing it blanks the screen. The gadget itself is
+#                         already impossible on non-dev because the build sets
+#                         dr_mode=host (usb_mode); this is defence in depth.
 #   3. Logging daemons  - syslogd / klogd autostart
+#   4. Networking       - no interface bring-up: S*network*/S*dhcp* stubbed to
+#                         loopback-only, udhcpc neutered, /etc/network/interfaces
+#                         reduced to lo, telnet/ssh/dropbear init scripts removed
+#                         (HARDEN_DISABLE_NETWORK, default 1; build with
+#                         debug_network=on -> 0 to keep Ethernet+telnet for
+#                         debugging a non-dev image)
 #
 # (The serial *console output* bootargs are stripped separately by the build's
 #  "Configure UART2 console debug" step; the getty/login shell is closed here.)
@@ -20,7 +35,7 @@
 # the build output can be reviewed — a green build does NOT prove the vectors were
 # closed; verify on hardware / a serial capture.
 #
-# Usage:  harden-nondev.sh <ROOTFS_DIR>
+# Usage:  [HARDEN_DISABLE_ADB=0|1] [HARDEN_DISABLE_NETWORK=0|1] harden-nondev.sh <ROOTFS_DIR>
 
 set -u
 
@@ -56,12 +71,19 @@ else
 fi
 
 # --------------------------------------------------------------------------- 2
-# USB ADB + RNDIS gadget. Disabled ONLY when HARDEN_DISABLE_ADB=1. By default ADB
-# is LEFT ENABLED even on non-dev images so it stays available as a debug/recovery
-# channel (and so the SDK's RkLunch.sh usbdevice call never orphans on a missing
-# binary). When enabled, neutralization uses no-op stubs (not deletion) so callers
-# still succeed while guaranteeing no gadget/adb is configured.
-if [ "${HARDEN_DISABLE_ADB:-0}" = "1" ]; then
+# USB ADB + RNDIS gadget artifacts (HARDEN_DISABLE_ADB, default 1). The gadget
+# is already impossible on non-dev builds because the DTS sets dr_mode=host
+# (usb_mode step) — this strips the adb userspace anyway so a non-dev rootfs
+# cannot expose adb even if it were ever booted with a gadget-mode DTB.
+#
+# CRITICAL: do NOT remove /etc/init.d/S*usb* (S50usbdevice, S99usb0config).
+# S50usbdevice is the only thing on this SDK that mounts configfs, and the
+# Luckfox overlay system (luckfox-config, run by S99luckfoxconfigload) needs
+# configfs to enable SPI0 for the display — deleting it blanks the screen
+# (this, plus the host-mode hang, is what broke the original disable_adb
+# builds). S50usbdevice is separately patched host-aware by the build; the
+# no-op stubs below make its gadget path harmless either way.
+if [ "${HARDEN_DISABLE_ADB:-1}" = "1" ]; then
 removed_any_gadget=0
 for bin in \
     oem/usr/bin/usbdevice usr/bin/usbdevice usr/sbin/usbdevice \
@@ -73,9 +95,10 @@ do
     fi
 done
 
-for f in "$ROOTFS"/etc/init.d/S*usb* "$ROOTFS"/etc/init.d/S*adb* "$ROOTFS"/etc/init.d/S*gadget*; do
+# Only adb-specific init scripts; S*usb* stays (see header note above).
+for f in "$ROOTFS"/etc/init.d/S*adb*; do
     [ -e "$f" ] || continue
-    rm -f "$f" && { log "removed USB/ADB init script $(basename "$f")"; removed_any_gadget=1; }
+    rm -f "$f" && { log "removed ADB init script $(basename "$f")"; removed_any_gadget=1; }
 done
 
 # Blank any composite-gadget function-list config so nothing is exported even if
@@ -103,12 +126,12 @@ if [ -f "$RKLUNCH" ]; then
         log "RkLunch.sh: present, no gadget/adb invocation matched"
     fi
 else
-    skip "no /oem/usr/bin/RkLunch.sh staged in rootfs (gadget disabled via binaries/init.d above)"
+    skip "no /oem/usr/bin/RkLunch.sh staged in rootfs (gadget disabled via binaries above)"
 fi
 
 [ "$removed_any_gadget" -eq 1 ] || log "WARNING: no USB gadget/adb artifact found to neutralize — verify on-device that 'adb devices' and 'usb0' are absent"
 else
-    log "USB ADB left ENABLED (HARDEN_DISABLE_ADB!=1) — retained as a debug/recovery channel on non-dev"
+    log "USB ADB artifacts left in place (HARDEN_DISABLE_ADB=0) — dr_mode=host still blocks the gadget on non-dev"
 fi
 
 # --------------------------------------------------------------------------- 3
@@ -128,6 +151,51 @@ for f in "$ROOTFS/etc/init.d/rcS" "$INITTAB"; do
     fi
 done
 [ "$removed_any_log" -eq 1 ] || skip "no syslogd/klogd autostart found"
+
+# --------------------------------------------------------------------------- 4
+# Networking (HARDEN_DISABLE_NETWORK, default 1). The SDK kernel keeps
+# CONFIG_INET (unlike the Pi/La Frite non-dev kernels), so with nothing done
+# here eth0 comes up at boot and broadcasts DHCP (MAC + hostname) on any LAN
+# it's plugged into. Close it in userspace: never bring an interface up
+# (loopback only), neuter DHCP, and remove every remote-shell daemon.
+# debug_network=on builds set HARDEN_DISABLE_NETWORK=0 to keep Ethernet+telnet
+# as the debug/recovery channel on a non-dev image.
+if [ "${HARDEN_DISABLE_NETWORK:-1}" = "1" ]; then
+removed_any_net=0
+
+# Interface bring-up: stub S*network* to loopback-only (keep the filename so
+# rcS ordering is untouched; keep lo for any localhost IPC e.g. pcscd).
+for f in "$ROOTFS"/etc/init.d/S*network*; do
+    [ -e "$f" ] || continue
+    printf '#!/bin/sh\n# [nondev] stubbed by harden-nondev.sh: loopback only, no eth0/DHCP\nifconfig lo 127.0.0.1 up 2>/dev/null\nexit 0\n' > "$f" \
+        && chmod 0755 "$f" \
+        && { log "stubbed $(basename "$f") to loopback-only (no interface bring-up, no DHCP)"; removed_any_net=1; }
+done
+
+# DHCP: remove any dedicated dhcp init script and udhcpc's default action
+# script, so even a stray udhcpc invocation cannot configure an interface.
+for f in "$ROOTFS"/etc/init.d/S*dhcp* "$ROOTFS"/usr/share/udhcpc/default.script "$ROOTFS"/etc/udhcpc.script; do
+    [ -e "$f" ] || continue
+    rm -f "$f" && { log "removed DHCP helper ${f#$ROOTFS}"; removed_any_net=1; }
+done
+
+# /etc/network/interfaces: loopback only (belt-and-suspenders for ifup -a).
+IFACES="$ROOTFS/etc/network/interfaces"
+if [ -f "$IFACES" ]; then
+    printf '# [nondev] loopback only — no external interfaces are configured\nauto lo\niface lo inet loopback\n' > "$IFACES" \
+        && { log "reduced /etc/network/interfaces to loopback-only"; removed_any_net=1; }
+fi
+
+# Remote shells: telnetd / sshd / dropbear must not start on a shipped image.
+for f in "$ROOTFS"/etc/init.d/S*telnet* "$ROOTFS"/etc/init.d/S*sshd* "$ROOTFS"/etc/init.d/S*dropbear*; do
+    [ -e "$f" ] || continue
+    rm -f "$f" && { log "removed remote-shell init script $(basename "$f")"; removed_any_net=1; }
+done
+
+[ "$removed_any_net" -eq 1 ] || log "WARNING: no networking artifact found to neutralize — verify on-device that eth0 stays down and :23/:22 are closed"
+else
+    log "networking left ENABLED (HARDEN_DISABLE_NETWORK=0) — Ethernet + telnet retained as debug channel (debug_network=on)"
+fi
 
 echo "=== non-dev hardening complete ==="
 exit 0

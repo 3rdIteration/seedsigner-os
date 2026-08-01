@@ -105,6 +105,20 @@ Non-dev (production) images are **air-gapped and headless by design** — they m
 | **Serial login prompt** | `# BR2_TARGET_GENERIC_GETTY is not set` (no getty on any tty) | defconfig |
 | **System logging daemons** | `post-build.sh` removes `S01syslogd` / `S02klogd` | post-build.sh |
 
+**Luckfox Pico closes the same vectors differently** (Rockchip SDK; its kernel keeps `CONFIG_INET`, it has
+no HDMI, and its extra vectors are the USB gadget and — on Pro Max / Pico Pi — Ethernet). All of it lives in
+shared `opt/luckfox/*.sh` scripts called identically by CI (`build-luckfox.yml`) and both local Docker builds
+(`os-build.sh`, `build-local.sh`) — change the script, never one caller:
+
+| Leak vector (Luckfox) | How it's closed (non-dev) | Where |
+|---|---|---|
+| **USB gadget (adb/RNDIS)** | DTS `&usbdrd_dwc3 { dr_mode = "host"; }` (`usb_mode` auto→host) — no device gadget exists; plus adb userspace stripped (`HARDEN_DISABLE_ADB=1` stubs `adbd`/`usbdevice`, blanks gadget config; **never removes `S50usbdevice`** — it mounts configfs, which the SPI display depends on; it's made host-aware instead) | `configure-usb-mode.sh`, `harden-nondev.sh`, `patch-s50usbdevice.sh` |
+| **Ethernet / networking** | Userspace (kernel `INET` stays): no interface bring-up (`S*network*` → loopback-only stub), DHCP neutered, `/etc/network/interfaces` = `lo` only, telnet/ssh/dropbear init scripts removed (`HARDEN_DISABLE_NETWORK=1`; `debug_network=on` → 0 keeps Ethernet+telnet for debugging — never ship it) | `harden-nondev.sh` §4 |
+| **Kernel serial console** | UART2 console stripped from bootargs/DTS (`disable_uart2_console_debug` auto→on) | UART2 strip steps in all three builds |
+| **Serial login prompt** | getty/login/sulogin inittab respawn lines commented (console shells left intact — the app boot path uses one) | `harden-nondev.sh` §1 |
+| **System logging daemons** | syslogd/klogd init scripts removed + launches commented | `harden-nondev.sh` §3 |
+| **Boot recovery** | memory-backed U-Boot bootcount → rockusb Loader failover (no serial/adb needed to recover a brick) | `uboot-recovery-config.sh` |
+
 **Silencing the serial console differs by platform** — get this right per-board:
 - **Pi**: the firmware (`boot_config.txt`) doesn't route the console to the UART, so the cmdline simply omits `console=`. That also frees `/dev/ttyAMA0` (via `dtoverlay=disable-bt`) for the SEC1210 reader, which shares that UART — here serial output would actively break the reader.
 - **Lafrite**: the DTS sets `chosen/stdout-path = "serial0"` (`ttyAML0`), so **omitting `console=` is not enough** — the DT still routes the console to serial. Pass `console=ttynull` explicitly (a cmdline `console=` sets `console_set_on_cmdline`, which makes the kernel ignore the DT stdout-path), and provide `ttynull` via `CONFIG_NULL_TTY=y`. The SEC1210 reader is on a *separate* UART (`/dev/ttyAML6`), so console and reader don't collide as on the Pi — but the console is still silenced to meet the no-leak requirement.

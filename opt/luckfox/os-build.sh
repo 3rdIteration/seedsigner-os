@@ -15,6 +15,14 @@ export SEEDSIGNER_REPO_URL="https://github.com/3rdIteration/seedsigner.git"
 export SEEDSIGNER_BRANCH="dev"
 # Build variant: non-dev (hardened/air-gapped) or dev. Mirrors build-luckfox.yml's build_variant.
 export SEEDSIGNER_BUILD_VARIANT="${SEEDSIGNER_BUILD_VARIANT:-non-dev}"
+# USB role (mirrors build-luckfox.yml's usb_mode): gadget|host|otg|auto.
+# auto follows the variant: non-dev = host (no adb/RNDIS, drives USB
+# peripherals), dev = gadget (adb). Applied via opt/luckfox/configure-usb-mode.sh.
+export SEEDSIGNER_USB_MODE="${SEEDSIGNER_USB_MODE:-auto}"
+# Ethernet debug channel (mirrors build-luckfox.yml's debug_network): on|off|auto.
+# auto follows the variant: non-dev = off (no interface bring-up, no telnet),
+# dev = on. Applied via harden-nondev.sh's HARDEN_DISABLE_NETWORK.
+export SEEDSIGNER_DEBUG_NETWORK="${SEEDSIGNER_DEBUG_NETWORK:-auto}"
 # SeedSigner OS Buildroot packages now live in this same repo. build.sh mounts
 # opt/external-packages into the container at /build/external-packages, so there
 # is no seedsigner-os clone.
@@ -986,6 +994,18 @@ build_profile_artifacts() {
     apply_hwrng_crypto_kernel_patch "$board_profile" "$boot_medium"
     apply_crypto_dts_patch "$board_profile"
 
+    # USB role (the adb switch) — shared with CI via configure-usb-mode.sh.
+    print_step "Configuring USB mode (SEEDSIGNER_USB_MODE=$SEEDSIGNER_USB_MODE, variant=$SEEDSIGNER_BUILD_VARIANT)"
+    local usb_hardware
+    case "$board_profile" in
+        mini) usb_hardware="RV1103_Luckfox_Pico_Mini" ;;
+        max)  usb_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
+        pi)   usb_hardware="RV1106_Luckfox_Pico_Pi" ;;
+        *)    print_error "Unsupported board profile for USB-mode patch: $board_profile"; exit 1 ;;
+    esac
+    bash "$SEEDSIGNER_LUCKFOX_DIR/configure-usb-mode.sh" "$LUCKFOX_SDK_DIR" \
+        "$usb_hardware" "$SEEDSIGNER_USB_MODE" "$SEEDSIGNER_BUILD_VARIANT"
+
     print_step "Preparing Buildroot Configuration (${board_profile}/${boot_medium})"
     ensure_buildroot_tree
 
@@ -1155,6 +1175,13 @@ s/^endef\nendif/endef\nendif\nendif/
         print_info "Removed pip/setuptools/git packages for Mini SPI-NAND"
     fi
 
+    # Non-dev U-Boot recovery: bootdelay=0 + memory-backed bootcount → rockusb
+    # Loader failover. Shared with CI via uboot-recovery-config.sh.
+    if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
+        print_step "Applying non-dev U-Boot recovery config (bootcount → loader failover)"
+        bash "$SEEDSIGNER_LUCKFOX_DIR/uboot-recovery-config.sh" "$LUCKFOX_SDK_DIR"
+    fi
+
     print_step "Building U-Boot"
     ./build.sh uboot
 
@@ -1265,16 +1292,34 @@ s/^endef\nendif/endef\nendif\nendif/
         print_warning "rkaiq-service not found, rkaiq-service will not be available"
     fi
 
-    # Non-dev (production) rootfs hardening: serial login, USB adb/RNDIS gadget, logging daemons.
+    # USB host-mode fix (all variants; runtime no-op on gadget builds): make
+    # S50usbdevice skip the gadget — but still mount configfs (display needs
+    # it) — when dr_mode=host. Shared with CI via patch-s50usbdevice.sh.
+    if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/patch-s50usbdevice.sh" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/patch-s50usbdevice.sh" "$ROOTFS_DIR"
+    fi
+
+    # Non-dev (production) rootfs hardening: serial login, adb artifacts,
+    # logging daemons, networking (interface bring-up + DHCP + telnet/ssh).
     if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
         print_step "Applying non-dev rootfs hardening"
         if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/harden-nondev.sh" ]]; then
-            # adb is removed via USB host mode (a DTS change in the CI build), not rootfs
-            # hardening; harden-nondev.sh keeps serial-login/logging/dev-tool hardening.
-            bash "$SEEDSIGNER_LUCKFOX_DIR/harden-nondev.sh" "$ROOTFS_DIR" || print_error "non-dev hardening reported an error"
+            # ADB transport removal is the dr_mode=host DTS switch (configure-usb-mode.sh);
+            # HARDEN_DISABLE_ADB=1 additionally strips the adb userspace. Networking:
+            # SEEDSIGNER_DEBUG_NETWORK on => keep Ethernet+telnet (debug), else disable.
+            local harden_net=1
+            if [[ "$SEEDSIGNER_DEBUG_NETWORK" == "on" ]]; then harden_net=0; fi
+            HARDEN_DISABLE_ADB=1 HARDEN_DISABLE_NETWORK="$harden_net" \
+                bash "$SEEDSIGNER_LUCKFOX_DIR/harden-nondev.sh" "$ROOTFS_DIR" || print_error "non-dev hardening reported an error"
         fi
         if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/optimize-nondev.sh" ]]; then
             bash "$SEEDSIGNER_LUCKFOX_DIR/optimize-nondev.sh" "$ROOTFS_DIR" || print_error "non-dev optimization reported an error"
+        fi
+        # /etc/fw_env.config: optional fw_printenv access to the mtd0 U-Boot env
+        # (informational only — the failover env is compiled-in, see
+        # uboot-recovery-config.sh).
+        if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/files/fw_env.config" ]]; then
+            cp -v "$SEEDSIGNER_LUCKFOX_DIR/files/fw_env.config" "$ROOTFS_DIR/etc/fw_env.config"
         fi
     else
         print_info "dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"

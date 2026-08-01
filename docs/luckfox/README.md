@@ -81,22 +81,28 @@ The Luckfox implementation differs from the Pi / La Frite profiles (which have p
 directories). Luckfox is the Rockchip SDK with a single defconfig + an SDK-provided rootfs, so **non-dev is a
 set of build-time hardening steps gated on the flag**, not a second profile tree. It maps to the AGENTS.md
 [non-dev leak-vector table](../../AGENTS.md#non-dev-hardening-no-information-leakage) like so (Luckfox has no
-HDMI; its "networking" vector is the USB gadget, not Ethernet/WiFi):
+HDMI; the SDK kernel keeps `CONFIG_INET`, so it has **two** networking vectors — the USB gadget **and**
+Ethernet on Pro Max / Pico Pi — both closed in userspace):
 
 | Vector | non-dev closes it via | Where |
 |---|---|---|
-| Kernel serial console | strip `console=ttyFIQ0`/`earlycon`/`user_debug` bootargs (forced on for non-dev; the `disable_uart2_console_debug` input is the dev override) | build-luckfox.yml "Configure UART2 console debug" |
+| Kernel serial console | strip `console=ttyFIQ0`/`earlycon`/`user_debug` bootargs (forced on for non-dev; the `disable_uart2_console_debug` input is the dev override) | "Configure UART2 console debug" (all three builds) |
 | Serial **login** (getty) | `# BR2_TARGET_GENERIC_GETTY is not set` in the defconfig **and** comment console/tty getty/login/shell `respawn` lines in the rootfs `/etc/inittab` | defconfig sed + `harden-nondev.sh` |
-| **Networking** (USB ADB + RNDIS) | remove `adbd`/`usbdevice` binaries, `/etc/init.d/S*usb*`, and comment gadget/adb invocations in `RkLunch.sh` → no `adb shell`, no `usb0` | `harden-nondev.sh` |
+| **USB gadget** (ADB + RNDIS) | DTS `dr_mode = "host"` (no device gadget exists) **plus** adb userspace strip: stub `adbd`/`usbdevice`, blank the gadget function config, comment gadget lines in `RkLunch.sh`. `S*usb*` init scripts are **kept** — `S50usbdevice` mounts configfs (the SPI display depends on it) and is patched host-aware instead | `configure-usb-mode.sh` + `harden-nondev.sh` (`HARDEN_DISABLE_ADB=1`) + `patch-s50usbdevice.sh` |
+| **Ethernet / networking** | no interface bring-up: `S*network*` stubbed to loopback-only, DHCP neutered (no MAC/hostname broadcast), `/etc/network/interfaces` = `lo`, telnet/ssh/dropbear init scripts removed. `debug_network=on` keeps Ethernet+telnet for debugging — never ship it | `harden-nondev.sh` (`HARDEN_DISABLE_NETWORK`) |
 | Logging daemons | remove `syslogd`/`klogd` autostart | `harden-nondev.sh` |
 | Dev / network CLI tools | drop `python-pip`, `wget`, `libcurl`/curl from the target | defconfig sed |
 
-The rootfs surgery lives in **`opt/luckfox/harden-nondev.sh <ROOTFS_DIR>`** (called from all three build
-implementations). Because the SDK rootfs layout varies by version, every step is **guarded/no-op if the
-target is absent** and logs each file it did/didn't touch. **A green build does not prove the vectors were
-closed** — review the `[harden]` log lines, and verify on hardware / a serial capture (no console output or
-login prompt; `adb devices` and `usb0` absent; no `syslogd`/`klogd`; `which pip curl wget` empty; the app
-still works). The reboot-to-Loader Power option / `rk-reboot` is retained in **both** variants.
+The rootfs surgery lives in shared **`opt/luckfox/*.sh` scripts** (`harden-nondev.sh`,
+`configure-usb-mode.sh`, `patch-s50usbdevice.sh`, `uboot-recovery-config.sh`, `optimize-nondev.sh`) called
+identically by **all three build implementations** — the GitHub Actions workflow and both local Docker builds
+(`os-build.sh`, `build-local.sh`) — so CI and local images get the same hardening; change the script, never
+one caller. Because the SDK rootfs layout varies by version, every step is **guarded/no-op if the target is
+absent** and logs each file it did/didn't touch. **A green build does not prove the vectors were closed** —
+review the `[harden]` log lines, and verify on hardware / a serial capture (no console output or login
+prompt; `adb devices` and `usb0` absent; **eth0 down, nothing listening on :22/:23, no DHCP requests on the
+LAN**; no `syslogd`/`klogd`; `which pip curl wget` empty; the app still works). The reboot-to-Loader Power
+option / `rk-reboot` is retained in **both** variants.
 
 ### Non-dev size / boot optimizations
 
@@ -131,14 +137,25 @@ So a bad image self-heals into a flashable state without the BOOT button:
 - **USB role (`usb_mode`) — this is the ADB switch.** The RV1106 USB port is either a **device gadget**
   (`gadget` — adb + RNDIS, for debugging) or a **host** (`host` — drives external USB peripherals like a
   camera or smartcard reader; **no gadget, so no adb/RNDIS** = air-gapped on the USB axis). Set via the
-  `usb_mode` dispatch input (`auto`/`gadget`/`host`); `auto` follows the variant: **non-dev = host, dev =
-  gadget**. Implemented as a device-tree override (`&usbdrd_dwc3 { dr_mode = "host"; }`) in the
-  "Configure USB mode in DTS" build step — no rootfs surgery. adb is *not* removed by hardening (that broke
-  boot: the SDK's `/oem` `RkLunch.sh` still called the stubbed `usbdevice`). To debug a non-dev image, build
-  it with `usb_mode=gadget`. Switching to host does **not** weaken recovery: rockusb **Loader mode is a
-  U-Boot/maskrom USB mode, independent of the Linux gadget**, so KEY3→Loader and the U-Boot bootcount failover
-  still enumerate the device for re-flashing. (Host mode needs the board to supply VBUS to power bus-powered
-  peripherals; a self-powered device or powered hub always works.)
+  `usb_mode` dispatch input (`auto`/`gadget`/`host`/`otg`); `auto` follows the variant: **non-dev = host,
+  dev = gadget**. Implemented as a device-tree override (`&usbdrd_dwc3 { dr_mode = "host"; }`) via the shared
+  `opt/luckfox/configure-usb-mode.sh` (used by CI and both local builds). On non-dev the harden step
+  additionally strips the adb *userspace* (`HARDEN_DISABLE_ADB=1`: no-op stubs for `adbd`/`usbdevice`,
+  blanked gadget function config) as defence in depth — but never the `S*usb*` init scripts:
+  **`S50usbdevice` must survive** (it is what mounts configfs, which `luckfox-config` needs to enable SPI0
+  for the display); it is instead patched host-aware by `opt/luckfox/patch-s50usbdevice.sh`. To debug a
+  non-dev image, build it with `usb_mode=gadget`. Switching to host does **not** weaken recovery: rockusb
+  **Loader mode is a U-Boot/maskrom USB mode, independent of the Linux gadget**, so KEY3→Loader and the
+  U-Boot bootcount failover still enumerate the device for re-flashing. (Host mode needs the board to supply
+  VBUS to power bus-powered peripherals; a self-powered device or powered hub always works.)
+- **Ethernet debug channel (`debug_network`) — the network switch.** The Luckfox SDK kernel keeps
+  `CONFIG_INET` (unlike the Pi/La Frite non-dev kernels), and the Pro Max / Pico Pi have Ethernet — so
+  networking is closed in **userspace** by `harden-nondev.sh` (`HARDEN_DISABLE_NETWORK=1`, the non-dev
+  default): no interface bring-up (`S*network*` stubbed to loopback-only), DHCP neutered (no broadcast of
+  MAC/hostname on any LAN it's plugged into), `/etc/network/interfaces` reduced to `lo`, and every
+  telnet/ssh/dropbear init script removed. Set the `debug_network` dispatch input to `on` to build a non-dev
+  image that keeps Ethernet + telnet (root shell on `:23`, login `root`/`luckfox`) as a USB-independent
+  debug/recovery channel — invaluable for debugging host-mode images, but **never ship it**.
 
 **U-Boot boot-counter → loader (non-dev).** This is the deepest layer — for failures the userspace watchdog
 can't catch because they reboot *before* `start-seedsigner.sh` even runs (kernel panic, rootfs-mount or init

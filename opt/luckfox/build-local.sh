@@ -9,6 +9,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(dirname "$SCRIPT_DIR")"
 # Build variant: non-dev (hardened/air-gapped) or dev. Override via SEEDSIGNER_BUILD_VARIANT env.
 BUILD_VARIANT="${SEEDSIGNER_BUILD_VARIANT:-non-dev}"
+# USB role (mirrors build-luckfox.yml's usb_mode): gadget|host|otg|auto.
+# auto follows the variant: non-dev = host (no adb/RNDIS), dev = gadget (adb).
+USB_MODE="${SEEDSIGNER_USB_MODE:-auto}"
+# Ethernet debug channel (mirrors build-luckfox.yml's debug_network): on|off|auto.
+# auto follows the variant: non-dev = off (no interface bring-up, no telnet), dev = on.
+DEBUG_NETWORK="${SEEDSIGNER_DEBUG_NETWORK:-auto}"
 
 # Default Python version for buildroot (used if detection fails)
 DEFAULT_PYTHON_VERSION="3.12"
@@ -823,6 +829,23 @@ apply_crypto_dts_patch() {
     print_success "Crypto DTS node enabled in: $dts_file"
 }
 
+apply_usb_mode_config() {
+    local hardware="$1"
+
+    print_header "Configuring USB Mode (USB_MODE=$USB_MODE, variant=$BUILD_VARIANT)"
+
+    # USB role (the adb switch) — shared with CI via configure-usb-mode.sh.
+    local usb_hardware
+    case "$hardware" in
+        mini) usb_hardware="RV1103_Luckfox_Pico_Mini" ;;
+        max)  usb_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
+        pi)   usb_hardware="RV1106_Luckfox_Pico_Pi" ;;
+        *)    print_error "Unknown hardware type for USB-mode patch: $hardware"; exit 1 ;;
+    esac
+    bash "$SCRIPT_DIR/configure-usb-mode.sh" "$WORK_DIR/luckfox-pico" \
+        "$usb_hardware" "$USB_MODE" "$BUILD_VARIANT"
+}
+
 prepare_buildroot() {
     print_header "Preparing Buildroot Source Tree"
     
@@ -1179,7 +1202,14 @@ build_system() {
     
     # Restore cached Rust toolchain if available
     restore_cached_rust_toolchain
-    
+
+    # Non-dev U-Boot recovery: bootdelay=0 + memory-backed bootcount → rockusb
+    # Loader failover. Shared with CI via uboot-recovery-config.sh.
+    if [ "$BUILD_VARIANT" == "non-dev" ]; then
+        print_info "Applying non-dev U-Boot recovery config (bootcount → loader failover)..."
+        bash "$SCRIPT_DIR/uboot-recovery-config.sh" "$WORK_DIR/luckfox-pico"
+    fi
+
     print_info "Building U-Boot..."
     ./build.sh uboot
     
@@ -1328,16 +1358,34 @@ install_seedsigner_app() {
         print_warning "rkaiq-service not found, rkaiq-service will not be available"
     fi
 
-    # Non-dev (production) rootfs hardening: serial login, USB adb/RNDIS gadget, logging daemons.
+    # USB host-mode fix (all variants; runtime no-op on gadget builds): make
+    # S50usbdevice skip the gadget — but still mount configfs (display needs
+    # it) — when dr_mode=host. Shared with CI via patch-s50usbdevice.sh.
+    if [ -f "$SCRIPT_DIR/patch-s50usbdevice.sh" ]; then
+        bash "$SCRIPT_DIR/patch-s50usbdevice.sh" "$rootfs_dir"
+    fi
+
+    # Non-dev (production) rootfs hardening: serial login, adb artifacts,
+    # logging daemons, networking (interface bring-up + DHCP + telnet/ssh).
     if [ "$BUILD_VARIANT" == "non-dev" ]; then
         print_info "Applying non-dev rootfs hardening..."
         if [ -f "$SCRIPT_DIR/harden-nondev.sh" ]; then
-            # adb is removed via USB host mode (a DTS change in the CI build), not rootfs
-            # hardening; harden-nondev.sh keeps serial-login/logging/dev-tool hardening.
-            bash "$SCRIPT_DIR/harden-nondev.sh" "$rootfs_dir" || print_warning "non-dev hardening reported an error"
+            # ADB transport removal is the dr_mode=host DTS switch (configure-usb-mode.sh);
+            # HARDEN_DISABLE_ADB=1 additionally strips the adb userspace. Networking:
+            # DEBUG_NETWORK=on => keep Ethernet+telnet (debug), else disable.
+            local harden_net=1
+            if [ "$DEBUG_NETWORK" == "on" ]; then harden_net=0; fi
+            HARDEN_DISABLE_ADB=1 HARDEN_DISABLE_NETWORK="$harden_net" \
+                bash "$SCRIPT_DIR/harden-nondev.sh" "$rootfs_dir" || print_warning "non-dev hardening reported an error"
         fi
         if [ -f "$SCRIPT_DIR/optimize-nondev.sh" ]; then
             bash "$SCRIPT_DIR/optimize-nondev.sh" "$rootfs_dir" || print_warning "non-dev optimization reported an error"
+        fi
+        # /etc/fw_env.config: optional fw_printenv access to the mtd0 U-Boot env
+        # (informational only — the failover env is compiled-in, see
+        # uboot-recovery-config.sh).
+        if [ -f "$SCRIPT_DIR/files/fw_env.config" ]; then
+            cp -v "$SCRIPT_DIR/files/fw_env.config" "$rootfs_dir/etc/fw_env.config"
         fi
     else
         print_info "dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"
@@ -1629,6 +1677,7 @@ main() {
     apply_uart2_fiq_kernel_patch "$hardware" "$boot_medium"
     apply_hwrng_crypto_kernel_patch "$hardware" "$boot_medium"
     apply_crypto_dts_patch "$hardware"
+    apply_usb_mode_config "$hardware"
     apply_mini_cma_config "$hardware" "$boot_medium"
     prepare_buildroot
     install_seedsigner_packages

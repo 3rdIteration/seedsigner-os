@@ -618,54 +618,14 @@ jobs:
 
     - name: Configure USB mode in DTS
       run: |
-        cd luckfox-pico
-
-        USB_MODE="${{ inputs.usb_mode }}"
-        # Effective variant: push/PR CI has no inputs -> 'dev' (keep the USB device
-        # gadget so adb works); explicit dispatch/call keeps its build_variant default.
-        BUILD_VARIANT="${{ inputs.build_variant || 'dev' }}"
-        # USB role: explicit gadget/host/otg wins; otherwise (auto/empty) non-dev is host
-        # (air-gapped, drives peripherals, no adb/RNDIS) and dev is gadget (adb).
-        # otg = dual-role: boots as gadget (adb) but is runtime-switchable to host
-        # (echo host > /sys/kernel/debug/usb/ffb00000.usb/mode) — for testing peripherals.
-        case "$USB_MODE" in
-          gadget|host|otg) ;;
-          *) if [ "$BUILD_VARIANT" = "non-dev" ]; then USB_MODE="host"; else USB_MODE="gadget"; fi ;;
-        esac
-
-        HARDWARE="${{ matrix.hardware }}"
-        if [[ "$HARDWARE" == "RV1103_Luckfox_Pico_Mini" ]]; then
-          DTS_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1103g-luckfox-pico-mini.dts"
-        elif [[ "$HARDWARE" == "RV1106_Luckfox_Pico_Pro_Max" ]]; then
-          DTS_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-luckfox-pico-pro-max.dts"
-        elif [[ "$HARDWARE" == "RV1106_Luckfox_Pico_Pi" ]]; then
-          DTS_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-luckfox-pico-pi.dts"
-        else
-          echo "ERROR: Unknown hardware for USB-mode DTS patch: $HARDWARE"; exit 1
-        fi
-
-        echo "USB mode: $USB_MODE  (target DTS: $DTS_FILE)"
-        if [ ! -f "$DTS_FILE" ]; then
-          echo "ERROR: DTS source file not found: $DTS_FILE"; exit 1
-        fi
-        echo "USB dr_mode (before):"; grep -nE 'dr_mode' "$DTS_FILE" || echo "  (none in board DTS)"
-
-        if [ "$USB_MODE" = "gadget" ]; then
-          echo "USB left in gadget/peripheral mode (adb available) — DTS default, no change"
-        else
-          # host or otg: append a last-wins &usbdrd_dwc3 dr_mode override (device-tree:
-          # the final property assignment wins). host = no device gadget (no adb/RNDIS),
-          # drives external USB peripherals. otg = dual-role: boots as gadget but the
-          # controller allows a runtime role switch to host for live testing. Idempotent.
-          if ! grep -q 'SeedSigner USB role override' "$DTS_FILE"; then
-            printf '\n/* SeedSigner USB role override (usb_mode=%s). host: drive external USB\n * peripherals (camera/smartcard), no adb/RNDIS. otg: dual-role, runtime\n * switchable via /sys/kernel/debug/usb/ffb00000.usb/mode. */\n&usbdrd_dwc3 {\n\tdr_mode = "%s";\n};\n' "$USB_MODE" "$USB_MODE" >> "$DTS_FILE"
-          fi
-          echo "USB dr_mode (after):"; grep -nE 'dr_mode' "$DTS_FILE"
-          if ! grep -q "dr_mode = \"$USB_MODE\"" "$DTS_FILE"; then
-            echo "ERROR: failed to set USB dr_mode=$USB_MODE in $DTS_FILE"; exit 1
-          fi
-          echo "✅ USB set to $USB_MODE mode in $DTS_FILE"
-        fi
+        # Shared with the local Docker builds (os-build.sh / build-local.sh) via
+        # opt/luckfox/configure-usb-mode.sh — one source of truth for the USB
+        # role (the adb switch). Effective variant: push/PR CI has no inputs ->
+        # 'dev' (gadget/adb); dispatch/call keeps its build_variant default.
+        bash seedsigner-os/opt/luckfox/configure-usb-mode.sh luckfox-pico \
+          "${{ matrix.hardware }}" \
+          "${{ inputs.usb_mode }}" \
+          "${{ inputs.build_variant || 'dev' }}"
 
     - name: Configure UART2 FIQ debugger in kernel defconfig
       run: |
@@ -1119,74 +1079,10 @@ jobs:
     - name: Non-dev U-Boot recovery config (bootdelay + bootcount→loader failover)
       if: ${{ (inputs.build_variant || 'dev') == 'non-dev' }}
       run: |
-        cd luckfox-pico
-        echo "🔧 non-dev: U-Boot recovery config (bootdelay=0 + bootcount→loader)"
-        # bootdelay (already 0 on the Luckfox SDK; guard kept for other SDK versions).
-        for f in $(grep -rlE '^CONFIG_BOOTDELAY=[1-9]' sysdrv 2>/dev/null | grep -iE 'uboot|u-boot' || true); do
-          sed -i -E 's/^CONFIG_BOOTDELAY=[1-9][0-9]*/CONFIG_BOOTDELAY=0/' "$f"; echo "  zeroed CONFIG_BOOTDELAY in $f"
-        done
-        # U-Boot boot counter so N consecutive boots that never reach userspace
-        # auto-enter rockusb Loader. Two patches to the board header, both hardware-
-        # verified on a live Pico Pro Max:
-        #
-        #  (1) Enable a MEMORY-BACKED boot counter. This Rockchip U-Boot 2017.09 fork's
-        #      drivers/bootcount/Kconfig only has CONFIG_BOOTCOUNT / _EXT — there is NO
-        #      CONFIG_BOOTCOUNT_LIMIT / _ENV symbol, so defconfig lines are silently
-        #      dropped (proven: the compiled U-Boot had zero bootcount code). Use the
-        #      always-built generic backend (drivers/bootcount/bootcount.c is obj-y) via
-        #      board-header #defines, pointed at a FREE GRF OS_REG scratch register
-        #      (0xFF020218): survives a warm reset (kernel-panic reboot loops keep
-        #      counting), clears on a cold power-cycle, no NAND wear. autoboot.c's
-        #      bootdelay_process() runs the increment + "bootcount > bootlimit ->
-        #      altbootcmd" check every boot. Proven on hardware: the counter incremented
-        #      6 -> 7 across a reboot.
-        #
-        #  (2) Bake bootlimit + altbootcmd into the COMPILED DEFAULT ENV. This U-Boot is
-        #      built ENV_IS_NOWHERE (no CONFIG_ENV_IS_* in any defconfig), so it NEVER
-        #      reads the mtd0 env that fw_setenv writes — proven on hardware: with
-        #      bootcount forced to 7 and mtd0 bootlimit=5, U-Boot used its built-in
-        #      default bootlimit (10) and booted normally. So bootlimit/altbootcmd must
-        #      be compiled in, via CONFIG_EXTRA_ENV_SETTINGS. altbootcmd zeroes the
-        #      counter reg then writes the proven reboot-mode Loader magic (0x5242C301 at
-        #      0xFF020200, same as `rk-reboot loader`) and resets. `mw`/`reset` both exist
-        #      in this U-Boot. The OS clears the counter (`devmem 0xFF020218 32 0`) once
-        #      userspace is up, so only boots that never get that far reach the limit.
-        bc=0
-        for h in $(find sysdrv -path '*uboot*/include/configs/rv1106_common.h' 2>/dev/null || true); do
-          # (1) memory-backed bootcount #defines, inserted after CONFIG_PREBOOT
-          if ! grep -q 'CONFIG_SYS_BOOTCOUNT_ADDR' "$h"; then
-            awk '
-              { print }
-              !d && /^#define CONFIG_PREBOOT[ \t]*$/ {
-                print "";
-                print "/* SeedSigner boot-failover: memory-backed boot counter in a free GRF";
-                print " * OS_REG scratch register (survives warm reset, clears on cold power-off). */";
-                print "#define CONFIG_BOOTCOUNT_LIMIT";
-                print "#define CONFIG_SYS_BOOTCOUNT_SINGLEWORD";
-                print "#define CONFIG_SYS_BOOTCOUNT_ADDR\t0xFF020218";
-                d=1
-              }
-            ' "$h" > "$h.ssbc" && mv "$h.ssbc" "$h"
-          fi
-          # (2) bake bootlimit + altbootcmd into the default env (U-Boot is ENV_IS_NOWHERE)
-          if ! grep -q 'altbootcmd=mw.l 0xFF020218' "$h"; then
-            awk '
-              BEGIN { bs = sprintf("%c", 92); z = bs "0"; TAB = sprintf("%c", 9) }
-              /^#define CONFIG_EXTRA_ENV_SETTINGS/ {
-                tail = $0; sub(/^#define CONFIG_EXTRA_ENV_SETTINGS[ \t]*/, "", tail)
-                print "#define CONFIG_EXTRA_ENV_SETTINGS" TAB bs
-                print TAB "\"bootlimit=5" z "\"" TAB bs
-                print TAB "\"altbootcmd=mw.l 0xFF020218 0; mw.l 0xff020200 0x5242c301; reset" z "\"" TAB bs
-                if (tail ~ /[\\][ \t]*$/) { next } else { print TAB tail; next }
-              }
-              { print }
-            ' "$h" > "$h.ssenv" && mv "$h.ssenv" "$h"
-          fi
-          if grep -q 'CONFIG_SYS_BOOTCOUNT_ADDR' "$h" && grep -q 'altbootcmd=mw.l 0xFF020218' "$h"; then
-            echo "  enabled memory-backed bootcount + baked bootlimit/altbootcmd in $(basename "$h")"; bc=1
-          fi
-        done
-        [ "$bc" -eq 1 ] || echo "  ⚠️  rv1106_common.h not patched — bootcount NOT enabled (userspace watchdog still covers app failures)"
+        # Shared with the local Docker builds (os-build.sh / build-local.sh) via
+        # opt/luckfox/uboot-recovery-config.sh — memory-backed bootcount + baked
+        # bootlimit/altbootcmd (both hardware-verified; rationale in the script).
+        bash seedsigner-os/opt/luckfox/uboot-recovery-config.sh luckfox-pico
 
     - name: Build system
       run: |
@@ -1377,34 +1273,11 @@ jobs:
         chmod +x "$ROOTFS_DIR/etc/init.d/S60pcscd"
         chmod +x "$ROOTFS_DIR/etc/init.d/S99seedsigner"
 
-        # USB host-mode fix: the SDK's S50usbdevice unconditionally configures the USB
-        # *device* gadget (adb/RNDIS) and runs BEFORE S99seedsigner in rcS. In host mode
-        # there is no UDC to bind, so it hangs the boot before the app ever starts (this
-        # is the host/otg no-boot we hit; S99usb0config is already host-aware, S50usbdevice
-        # is not). Make it skip gadget setup when the controller is in host mode — a
-        # runtime dr_mode check, so it's a no-op on gadget/peripheral builds. Idempotent.
-        S50="$ROOTFS_DIR/etc/init.d/S50usbdevice"
-        if [ -f "$S50" ] && ! grep -q 'SeedSigner: host-mode skip' "$S50"; then
-          awk '
-            { print }
-            !d && /ifconfig lo up/ {
-              print "\t# SeedSigner: host-mode skip - no USB device gadget when dr_mode=host.";
-              print "\t# BUT still mount configfs: this SDK script is what mounts it (in";
-              print "\t# configfs_init below), and the Luckfox overlay system (luckfox-config,";
-              print "\t# run by S99luckfoxconfigload) needs configfs to enable SPI0 for the";
-              print "\t# display. Skipping it here left no /dev/spidev0.0 -> app crash.";
-              print "\tif grep -q host /proc/device-tree/usbdrd/usb@ffb00000/dr_mode 2>/dev/null; then";
-              print "\t\techo \"S50usbdevice: dr_mode=host, mounting configfs + skipping USB gadget\"";
-              print "\t\tmount -t configfs none /sys/kernel/config 2>/dev/null";
-              print "\t\texit 0";
-              print "\tfi";
-              d=1
-            }
-          ' "$S50" > "$S50.ssnew" && mv "$S50.ssnew" "$S50" && chmod +x "$S50"
-          echo "🔧 Patched S50usbdevice to be host-aware (skip USB gadget when dr_mode=host)"
-        else
-          echo "ℹ️  S50usbdevice not patched (absent or already host-aware)"
-        fi
+        # USB host-mode fix (shared with the local Docker builds via
+        # opt/luckfox/patch-s50usbdevice.sh): make S50usbdevice skip gadget
+        # setup — but still mount configfs (the display depends on it) — when
+        # dr_mode=host. No-op on gadget builds; idempotent.
+        bash ../seedsigner-os/opt/luckfox/patch-s50usbdevice.sh "$ROOTFS_DIR"
         if [[ -f "../seedsigner-os/opt/luckfox/files/mdev.conf" ]]; then
           cp -v ../seedsigner-os/opt/luckfox/files/mdev.conf "$ROOTFS_DIR/etc/mdev.conf"
         fi
@@ -1448,25 +1321,20 @@ jobs:
         # login shell, USB adb/RNDIS gadget, and logging daemons. Guarded/no-op on
         # dev builds. Review the [harden] log lines to confirm vectors were closed.
         if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
-          # NOTE: adb is NOT disabled via rootfs hardening — that broke boot (the SDK's
-          # RkLunch.sh on the /oem partition still called the stubbed usbdevice). adb is
-          # instead removed by switching the USB role to host (see the "Configure USB
-          # mode" DTS step): host mode has no device gadget, so no adb/RNDIS. harden here
-          # keeps the serial-login, logging, and dev-tool hardening only.
-          echo "🔒 Applying non-dev rootfs hardening ..."
-          bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
-          # Ethernet debug channel (telnet/ssh root shell over the LAN). Resolve
-          # debug_network: explicit on/off wins; otherwise (auto) non-dev = off. When off,
-          # remove the telnet/ssh daemons so a shipped air-gapped image has no remote-root
-          # shell. Build with debug_network=on for a debuggable non-dev image (telnet in).
+          # harden-nondev.sh closes serial login, adb artifacts, logging, and
+          # networking. ADB *transport* removal is the dr_mode=host DTS switch
+          # (see "Configure USB mode"); HARDEN_DISABLE_ADB=1 additionally strips
+          # the adb userspace (defence in depth — stubs only, never S*usb* init
+          # scripts, which S50usbdevice/configfs/the display depend on).
+          # Networking: resolve debug_network (explicit on/off wins; auto ->
+          # non-dev=off). off => no interface bring-up, no DHCP broadcast, no
+          # telnet/ssh. on => Ethernet+telnet retained as the debug channel.
           DEBUG_NET="${{ inputs.debug_network }}"
           case "$DEBUG_NET" in on|off) ;; *) DEBUG_NET="off" ;; esac
-          if [ "$DEBUG_NET" = "off" ]; then
-            rm -fv "$ROOTFS_DIR"/etc/init.d/S*telnet* "$ROOTFS_DIR"/etc/init.d/S*sshd* "$ROOTFS_DIR"/etc/init.d/S*dropbear* 2>/dev/null || true
-            echo "🔒 debug_network=off: removed telnet/ssh daemons (no remote shell on the LAN)"
-          else
-            echo "🌐 debug_network=on: telnet/ssh RETAINED — root shell reachable over Ethernet (debug builds only)"
-          fi
+          if [ "$DEBUG_NET" = "off" ]; then HARDEN_NET=1; else HARDEN_NET=0; fi
+          echo "🔒 Applying non-dev rootfs hardening (adb strip: on, networking: $([ "$HARDEN_NET" = 1 ] && echo 'DISABLED' || echo 'retained — debug_network=on')) ..."
+          HARDEN_DISABLE_ADB=1 HARDEN_DISABLE_NETWORK="$HARDEN_NET" \
+            bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
           echo "📦 Applying non-dev size/boot optimizations ..."
           bash ../seedsigner-os/opt/luckfox/optimize-nondev.sh "$ROOTFS_DIR"
           # /etc/fw_env.config gives fw_printenv/fw_setenv access to the U-Boot env
