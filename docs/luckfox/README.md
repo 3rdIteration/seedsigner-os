@@ -116,7 +116,8 @@ wireless `.ko` reached the oem payload.
 
 The hardening lives in shared **`opt/luckfox/*.sh` scripts** (`harden-nondev.sh`, `configure-usb-mode.sh`,
 `patch-s50usbdevice.sh`, `uboot-recovery-config.sh`, `strip-kernel-network.sh`, `assert-kernel-network.sh`,
-`optimize-nondev.sh`) called identically by **all three build implementations** — the GitHub Actions workflow
+`optimize-nondev.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`) called identically by **all three build
+implementations** — the GitHub Actions workflow
 and both local Docker builds (`os-build.sh`, `build-local.sh`) — so CI and local images get the same
 hardening; change the script, never one caller. Because the SDK rootfs layout varies by version, every
 userspace step is **guarded/no-op if the target is absent** and logs each file it did/didn't touch.
@@ -139,15 +140,29 @@ Non-dev images also get size and boot tweaks (dev keeps SDK defaults). Companion
 |---|---|---|
 | Optimize for size | defconfig `BR2_OPTIMIZE_3=y` → `BR2_OPTIMIZE_S=y` | smaller binaries, marginally slower |
 | Prune test/metadata | remove `tests/`, `*.dist-info`/`*.egg-info` under site-packages + `/opt/src`, and `/opt/tools` | `optimize-nondev.sh` |
-| Prune camera iqfiles | keep only the board's sensor (`IQFILES_KEEP`), remove the rest from `/oem` | `optimize-nondev.sh`; **verify camera** |
+| Prune camera iqfiles | keep only the board's sensor (`IQFILES_KEEP`), remove the rest from `/oem` | `prune-oem-iqfiles.sh`, run from the SDK's pre-build-OEM hook (see below); **verify camera** |
 | Quiet boot | append `quiet loglevel=3` to the DTS `bootargs` | marginal once console is stripped |
 | U-Boot bootdelay | zero any non-zero `CONFIG_BOOTDELAY`/`bootdelay=` in the SDK U-Boot | best-effort, guarded |
 | UI-first camera | `optimize-nondev.sh` drops `/etc/seedsigner-nondev`; `start-seedsigner.sh` then backgrounds the ~4s camera-graph bootstrap so the UI comes up first | **experimental — verify camera on hardware** |
 
 Same discipline as hardening: everything keys off `build_variant=non-dev`, is guarded/no-op when the SDK
-target isn't present, and logs under `[optimize]`. **iqfiles pruning and the UI-first camera reorder must be
-verified on real hardware** (scan a QR) — a green build proves nothing about the camera. Both are trivially
-revertible (widen `IQFILES_KEEP`; the reorder only triggers when the `/etc/seedsigner-nondev` marker exists).
+target isn't present, and logs under `[optimize]` / `[iqprune]`. **iqfiles pruning and the UI-first camera
+reorder must be verified on real hardware** (scan a QR) — a green build proves nothing about the camera. Both
+are trivially revertible (widen `IQFILES_KEEP`; the reorder only triggers when the `/etc/seedsigner-nondev`
+marker exists).
+
+**Why iqfiles pruning uses an SDK hook.** Anything that edits the *oem* partition cannot run from
+`optimize-nondev.sh`: oem is assembled by the SDK's `__PACKAGE_OEM`, which is called only from
+`build_firmware()` (i.e. during `build.sh firmware`), long after the rootfs/app install step. The prune lived
+there originally and therefore **silently did nothing in every build** until 2026-08-06. It now runs from
+`prune-oem-iqfiles.sh`, invoked via the SDK's `__RUN_PRE_BUILD_OEM_SCRIPT` hook — which fires after
+`__PACKAGE_OEM` but before `build_mkimg` creates `oem.img`, the one window where the staged oem tree exists
+and is still editable. `patch-oem-pre-hook.sh` installs the call by **appending** to whatever script
+`RK_PRE_BUILD_OEM_SCRIPT` names (every Luckfox board config points at the vendor's
+`luckfox-buildroot-oem-pre.sh`, which prunes unused libs there for the same reason — replacing it would drop
+those prunes). The prune decides what to delete before deleting anything and **aborts without touching a file
+if `IQFILES_KEEP` matches nothing**, so a bad keep-list can't silently ship a camera with no tuning data.
+The same hook is the right home for any future oem-partition surgery.
 
 ## Boot recovery & auto-failover to Loader
 

@@ -1394,6 +1394,17 @@ jobs:
     - name: Package firmware
       run: |
         cd luckfox-pico
+
+        # Install the oem iqfiles prune into the SDK's pre-build-OEM hook. The
+        # oem tree is assembled by __PACKAGE_OEM inside `build.sh firmware`, so
+        # this is the only window where it exists and is still editable (before
+        # build_mkimg makes oem.img). Shared with the local Docker builds.
+        if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
+          bash ../seedsigner-os/opt/luckfox/patch-oem-pre-hook.sh \
+            "$BOARD_CONFIG_PATH" \
+            "$GITHUB_WORKSPACE/seedsigner-os/opt/luckfox/prune-oem-iqfiles.sh"
+        fi
+
         ./build.sh firmware
 
         # Re-run the strip verification now that the oem partition is staged:

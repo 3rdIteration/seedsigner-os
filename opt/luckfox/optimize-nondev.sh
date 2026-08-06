@@ -14,16 +14,16 @@
 #      UI before the (backgrounded) camera-graph bootstrap.
 #
 # Env:
-#   IQFILES_KEEP - space-separated sensor-name substrings to keep in iqfiles
+#   (the iqfiles prune and its IQFILES_KEEP knob now live in
+#    prune-oem-iqfiles.sh — see section 2 below)
 #                  (default: the sensors used on Luckfox Pico boards).
 #
-# Usage:  optimize-nondev.sh <ROOTFS_DIR> [OEM_DIR]
+# Usage:  optimize-nondev.sh <ROOTFS_DIR>
 #
-#   OEM_DIR - the staged oem partition (e.g. <sdk>/output/out/oem). The oem
-#             partition is built SEPARATELY from the rootfs on this SDK, so
-#             "$ROOTFS/oem" does not exist and any prune targeting it silently
-#             no-ops. Pass the real directory. Defaults to "$ROOTFS/oem" for
-#             backwards compatibility.
+# NOTE: this script only ever sees the ROOTFS. The oem partition is assembled
+# later, by the SDK's __PACKAGE_OEM inside `build.sh firmware`, so anything
+# targeting oem must run from the __RUN_PRE_BUILD_OEM_SCRIPT hook instead (see
+# prune-oem-iqfiles.sh / patch-oem-pre-hook.sh).
 
 set -u
 
@@ -32,7 +32,6 @@ if [ -z "$ROOTFS" ] || [ ! -d "$ROOTFS" ]; then
     echo "optimize-nondev: rootfs dir '${ROOTFS:-<empty>}' not found" >&2
     exit 1
 fi
-OEM_DIR="${2:-$ROOTFS/oem}"
 
 log()  { echo "  [optimize] $*"; }
 skip() { echo "  [optimize] (skip) $*"; }
@@ -57,37 +56,16 @@ if [ -d "$ROOTFS/opt/tools" ]; then
 fi
 
 # --------------------------------------------------------------------------- 2
-# Camera ISP iqfiles prune. Rockchip ships tuning for many sensors; keep only the
-# one(s) the board actually uses. Guarded: no-op if oem isn't staged in this
-# rootfs. VERIFY THE CAMERA ON HARDWARE after changing this.
-IQDIR="$OEM_DIR/usr/share/iqfiles"
-IQFILES_KEEP="${IQFILES_KEEP:-sc3336 sc3338 sc830ai gc2093 gc2053 ov5647}"
-if [ -d "$IQDIR" ]; then
-    kept=0; removed=0
-    for f in "$IQDIR"/*; do
-        [ -f "$f" ] || continue
-        name=$(basename "$f")
-        keep=0
-        for s in $IQFILES_KEEP; do
-            case "$name" in *"$s"*) keep=1; break;; esac
-        done
-        if [ "$keep" -eq 1 ]; then
-            kept=$((kept + 1))
-        else
-            rm -f "$f" && removed=$((removed + 1))
-        fi
-    done
-    log "iqfiles: kept $kept (match: $IQFILES_KEEP), removed $removed  --  VERIFY CAMERA ON HARDWARE"
-else
-    # KNOWN LIMITATION: on this SDK the oem partition is assembled by
-    # __PACKAGE_OEM, which runs inside `build.sh firmware` — i.e. AFTER this
-    # script. So $IQDIR does not exist yet and this prune has never actually
-    # run. Fixing it properly means hooking __RUN_PRE_BUILD_OEM_SCRIPT (the
-    # SDK's extension point, which runs after __PACKAGE_OEM but before the oem
-    # image is built), not just passing a different path here. Size-only issue:
-    # no security impact.
-    skip "no $IQDIR - oem is assembled later by 'build.sh firmware'; iqfiles untouched (see note in this script)"
-fi
+# Camera ISP iqfiles prune MOVED OUT of this script (2026-08-06).
+#
+# It used to live here and silently did nothing in every build: the oem
+# partition is assembled by the SDK's __PACKAGE_OEM, which runs inside
+# `build.sh firmware` — i.e. AFTER this script — so the iqfiles directory did
+# not exist yet and the prune always hit its "not found" branch. It now runs
+# from opt/luckfox/prune-oem-iqfiles.sh, invoked via the SDK's
+# __RUN_PRE_BUILD_OEM_SCRIPT hook (installed by patch-oem-pre-hook.sh), which
+# fires after __PACKAGE_OEM and before build_mkimg creates oem.img — the one
+# window where the staged oem tree exists and is still editable.
 
 # --------------------------------------------------------------------------- 3
 # UI-first camera bring-up marker (read by start-seedsigner.sh). OPT-IN only:

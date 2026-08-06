@@ -1385,6 +1385,23 @@ s/^endef\nendif/endef\nendif\nendif/
         print_info "dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"
     fi
 
+    # Install the oem iqfiles prune into the SDK's pre-build-OEM hook. The oem
+    # tree is assembled by __PACKAGE_OEM inside `build.sh firmware`, so this is
+    # the only window where it exists and is still editable (before build_mkimg
+    # makes oem.img). Shared with CI via patch-oem-pre-hook.sh.
+    if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
+        local oem_board_config="$LUCKFOX_SDK_DIR/.BoardConfig.mk"
+        [[ -e "$oem_board_config" ]] || oem_board_config=""
+        if [[ -n "$oem_board_config" ]]; then
+            bash "$SEEDSIGNER_LUCKFOX_DIR/patch-oem-pre-hook.sh" \
+                "$(readlink -f "$oem_board_config")" \
+                "$SEEDSIGNER_LUCKFOX_DIR/prune-oem-iqfiles.sh" \
+                || print_error "oem pre-build hook patch reported an error"
+        else
+            print_info "no .BoardConfig.mk symlink — skipping oem iqfiles prune hook"
+        fi
+    fi
+
     print_step "Packaging Firmware"
     ./build.sh firmware
     # Re-verify now that the oem partition is staged: every built .ko lands in

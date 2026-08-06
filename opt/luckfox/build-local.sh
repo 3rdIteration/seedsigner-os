@@ -1454,9 +1454,24 @@ install_seedsigner_app() {
 
 package_firmware() {
     print_header "Packaging Firmware"
-    
+
     cd "$WORK_DIR/luckfox-pico"
-    
+
+    # Install the oem iqfiles prune into the SDK's pre-build-OEM hook. The oem
+    # tree is assembled by __PACKAGE_OEM inside `build.sh firmware`, so this is
+    # the only window where it exists and is still editable (before build_mkimg
+    # makes oem.img). Shared with CI via patch-oem-pre-hook.sh.
+    if [ "$BUILD_VARIANT" == "non-dev" ]; then
+        if [ -e "$WORK_DIR/luckfox-pico/.BoardConfig.mk" ]; then
+            bash "$SCRIPT_DIR/patch-oem-pre-hook.sh" \
+                "$(readlink -f "$WORK_DIR/luckfox-pico/.BoardConfig.mk")" \
+                "$SCRIPT_DIR/prune-oem-iqfiles.sh" \
+                || print_warning "oem pre-build hook patch reported an error"
+        else
+            print_info "no .BoardConfig.mk symlink — skipping oem iqfiles prune hook"
+        fi
+    fi
+
     ./build.sh firmware
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
