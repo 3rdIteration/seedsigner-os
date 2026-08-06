@@ -81,28 +81,54 @@ The Luckfox implementation differs from the Pi / La Frite profiles (which have p
 directories). Luckfox is the Rockchip SDK with a single defconfig + an SDK-provided rootfs, so **non-dev is a
 set of build-time hardening steps gated on the flag**, not a second profile tree. It maps to the AGENTS.md
 [non-dev leak-vector table](../../AGENTS.md#non-dev-hardening-no-information-leakage) like so (Luckfox has no
-HDMI; the SDK kernel keeps `CONFIG_INET`, so it has **two** networking vectors — the USB gadget **and**
-Ethernet on Pro Max / Pico Pi — both closed in userspace):
+HDMI; its extra vectors are the USB gadget and Ethernet on Pro Max / Pico Pi).
+
+**Threat model: root-level code execution.** The SeedSigner Python app runs as root, so *userspace* hardening
+is not a control by itself — root can simply `ifconfig eth0 up; udhcpc`, or `insmod` a WiFi driver from
+`/oem/usr/ko`. Anything that must genuinely hold is therefore removed from the **kernel**, with the userspace
+steps kept as defence in depth. Note that **the oem partition is part of the attack surface**: every built
+`.ko` is packaged to `/oem/usr/ko` and no rootfs hardening touches it.
 
 | Vector | non-dev closes it via | Where |
 |---|---|---|
 | Kernel serial console | strip `console=ttyFIQ0`/`earlycon`/`user_debug` bootargs (forced on for non-dev; the `disable_uart2_console_debug` input is the dev override) | "Configure UART2 console debug" (all three builds) |
 | Serial **login** (getty) | `# BR2_TARGET_GENERIC_GETTY is not set` in the defconfig **and** comment console/tty getty/login/shell `respawn` lines in the rootfs `/etc/inittab` | defconfig sed + `harden-nondev.sh` |
-| **USB gadget** (ADB + RNDIS) | DTS `dr_mode = "host"` (no device gadget exists) **plus** adb userspace strip: stub `adbd`/`usbdevice`, blank the gadget function config, comment gadget lines in `RkLunch.sh`. `S*usb*` init scripts are **kept** — `S50usbdevice` mounts configfs (the SPI display depends on it) and is patched host-aware instead | `configure-usb-mode.sh` + `harden-nondev.sh` (`HARDEN_DISABLE_ADB=1`) + `patch-s50usbdevice.sh` |
-| **Ethernet / networking** | no interface bring-up: `S*network*` stubbed to loopback-only, DHCP neutered (no MAC/hostname broadcast), `/etc/network/interfaces` = `lo`, telnet/ssh/dropbear init scripts removed. `debug_network=on` keeps Ethernet+telnet for debugging — never ship it | `harden-nondev.sh` (`HARDEN_DISABLE_NETWORK`) |
+| **Networking — kernel** | `INET`/`PACKET`/`IPV6`/`NETDEVICES` off plus the Ethernet MAC+PHY (`STMMAC_ETH`/`RK630_PHY`) and `USB_CONFIGFS_RNDIS`: root cannot create an interface or open an AF_INET socket because the stack isn't compiled in. Gated on `debug_network=off` | `strip-kernel-network.sh` (Group A) |
+| **WiFi — kernel** | `WL_ROCKCHIP` (umbrella that `select`s CFG80211+MAC80211 and sources every vendor WiFi Kconfig) + `RTL8723BS` off, so the 802.11 stack and all 8 vendor drivers are never built and can't reach `/oem/usr/ko`. Always stripped on non-dev | `strip-kernel-network.sh` (Group B) |
+| Networking — userspace *(defence in depth)* | no interface bring-up: `S*network*` stubbed to loopback-only, DHCP neutered, `/etc/network/interfaces` = `lo`, telnet/ssh/dropbear init scripts removed | `harden-nondev.sh` (`HARDEN_DISABLE_NETWORK`) |
+| **USB gadget** (ADB + RNDIS) | DTS `dr_mode = "host"`: dwc3 registers host-only so **`/sys/class/udc/` is empty and a configfs gadget has nothing to bind to** — root cannot re-enable adb at runtime. Plus adb userspace strip: stub `adbd`/`usbdevice`, blank the gadget function config, comment gadget lines in `RkLunch.sh`. `S*usb*` init scripts are **kept** — `S50usbdevice` mounts configfs (the SPI display depends on it) and is patched host-aware instead | `configure-usb-mode.sh` + `harden-nondev.sh` (`HARDEN_DISABLE_ADB=1`) + `patch-s50usbdevice.sh` |
 | Logging daemons | remove `syslogd`/`klogd` autostart | `harden-nondev.sh` |
 | Dev / network CLI tools | drop `python-pip`, `wget`, `libcurl`/curl from the target | defconfig sed |
 
-The rootfs surgery lives in shared **`opt/luckfox/*.sh` scripts** (`harden-nondev.sh`,
-`configure-usb-mode.sh`, `patch-s50usbdevice.sh`, `uboot-recovery-config.sh`, `optimize-nondev.sh`) called
-identically by **all three build implementations** — the GitHub Actions workflow and both local Docker builds
-(`os-build.sh`, `build-local.sh`) — so CI and local images get the same hardening; change the script, never
-one caller. Because the SDK rootfs layout varies by version, every step is **guarded/no-op if the target is
-absent** and logs each file it did/didn't touch. **A green build does not prove the vectors were closed** —
-review the `[harden]` log lines, and verify on hardware / a serial capture (no console output or login
-prompt; `adb devices` and `usb0` absent; **eth0 down, nothing listening on :22/:23, no DHCP requests on the
-LAN**; no `syslogd`/`klogd`; `which pip curl wget` empty; the app still works). The reboot-to-Loader Power
-option / `rk-reboot` is retained in **both** variants.
+**Kernel symbols that must stay enabled** — each would break the device:
+`CONFIG_NET`/`CONFIG_UNIX` (pcscd uses an AF_UNIX socket; dropping `NET` kills smartcards),
+`CONFIG_MODULES` (camera drivers are `=m`), and `CONFIG_USB_GADGET` — the *sole* provider of configfs here
+(`USB_CONFIGFS` → `USB_LIBCOMPOSITE` → `select CONFIGFS_FS`); without configfs `luckfox-config` cannot create
+the device-tree overlays that enable SPI0 and **the display dies**. That is why ADB is blocked via
+`dr_mode=host` rather than by disabling the gadget stack. `strip-kernel-network.sh` refuses to run if any of
+these is off, and `assert-kernel-network.sh` re-checks them after the build.
+
+**Always verify against the generated `.config`, never the defconfig** — Kconfig silently drops defconfig
+lines whose symbol doesn't exist or whose dependencies are unmet (exactly how the first U-Boot bootcount
+attempt shipped green with no bootcount code). `assert-kernel-network.sh` runs after `build.sh kernel` and
+again after `build.sh firmware`, checking the built config, a `CONFIGFS_FS=y` display canary, and that no
+wireless `.ko` reached the oem payload.
+
+The hardening lives in shared **`opt/luckfox/*.sh` scripts** (`harden-nondev.sh`, `configure-usb-mode.sh`,
+`patch-s50usbdevice.sh`, `uboot-recovery-config.sh`, `strip-kernel-network.sh`, `assert-kernel-network.sh`,
+`optimize-nondev.sh`) called identically by **all three build implementations** — the GitHub Actions workflow
+and both local Docker builds (`os-build.sh`, `build-local.sh`) — so CI and local images get the same
+hardening; change the script, never one caller. Because the SDK rootfs layout varies by version, every
+userspace step is **guarded/no-op if the target is absent** and logs each file it did/didn't touch.
+
+**A green build does not prove the vectors were closed** — review the `[harden]` / `[kstrip]` / `[kassert]`
+log lines, then verify on hardware. As root on the device: `ip link` shows no `eth0` and `ifconfig eth0 up`
+**fails**; no wifi `.ko` exists under `/oem/usr/ko` to `insmod`; `ls /sys/class/udc/` is **empty** and
+`adb devices` finds nothing; nothing listens on `:22`/`:23` and no DHCP requests appear on the LAN; no
+console output or login prompt on the serial header; no `syslogd`/`klogd`; `which pip curl wget` empty. Also
+confirm the things the strip must *not* have broken: **display** (the configfs canary), **camera** (modules
+still load from `/oem/usr/ko`) and **smartcards** (the AF_UNIX/pcscd path). The reboot-to-Loader Power option
+/ `rk-reboot` is retained in **both** variants.
 
 ### Non-dev size / boot optimizations
 

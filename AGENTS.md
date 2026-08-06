@@ -105,19 +105,41 @@ Non-dev (production) images are **air-gapped and headless by design** — they m
 | **Serial login prompt** | `# BR2_TARGET_GENERIC_GETTY is not set` (no getty on any tty) | defconfig |
 | **System logging daemons** | `post-build.sh` removes `S01syslogd` / `S02klogd` | post-build.sh |
 
-**Luckfox Pico closes the same vectors differently** (Rockchip SDK; its kernel keeps `CONFIG_INET`, it has
-no HDMI, and its extra vectors are the USB gadget and — on Pro Max / Pico Pi — Ethernet). All of it lives in
-shared `opt/luckfox/*.sh` scripts called identically by CI (`build-luckfox.yml`) and both local Docker builds
-(`os-build.sh`, `build-local.sh`) — change the script, never one caller:
+**Luckfox Pico closes the same vectors differently** (Rockchip SDK; no HDMI; its extra vectors are the USB
+gadget and — on Pro Max / Pico Pi — Ethernet). All of it lives in shared `opt/luckfox/*.sh` scripts called
+identically by CI (`build-luckfox.yml`) and both local Docker builds (`os-build.sh`, `build-local.sh`) —
+change the script, never one caller.
+
+**Threat model: root-level code execution.** The app runs as root, so *userspace* hardening is not a control
+on its own — root can just `ifconfig eth0 up; udhcpc` or `insmod` a driver. Anything that must actually hold
+is removed from the **kernel**; the userspace steps remain as defence in depth against accidental exposure
+and non-root paths. (Running the app unprivileged is separate, planned work — it shrinks blast radius but
+does not replace the kernel controls, since a privesc or any root component such as `pcscd` would restore
+them.) **The oem partition is part of the attack surface too** — every built `.ko` is packaged to
+`/oem/usr/ko`, and no rootfs hardening touches it.
 
 | Leak vector (Luckfox) | How it's closed (non-dev) | Where |
 |---|---|---|
-| **USB gadget (adb/RNDIS)** | DTS `&usbdrd_dwc3 { dr_mode = "host"; }` (`usb_mode` auto→host) — no device gadget exists; plus adb userspace stripped (`HARDEN_DISABLE_ADB=1` stubs `adbd`/`usbdevice`, blanks gadget config; **never removes `S50usbdevice`** — it mounts configfs, which the SPI display depends on; it's made host-aware instead) | `configure-usb-mode.sh`, `harden-nondev.sh`, `patch-s50usbdevice.sh` |
-| **Ethernet / networking** | Userspace (kernel `INET` stays): no interface bring-up (`S*network*` → loopback-only stub), DHCP neutered, `/etc/network/interfaces` = `lo` only, telnet/ssh/dropbear init scripts removed (`HARDEN_DISABLE_NETWORK=1`; `debug_network=on` → 0 keeps Ethernet+telnet for debugging — never ship it) | `harden-nondev.sh` §4 |
+| **Networking (kernel)** | `INET`/`PACKET`/`IPV6`/`NETDEVICES` off, plus the Ethernet MAC+PHY (`STMMAC_ETH`, `RK630_PHY`) and `USB_CONFIGFS_RNDIS`. Root cannot create an interface or open an AF_INET socket — the stack isn't compiled in. Gated on `debug_network=off`; `debug_network=on` keeps Ethernet+telnet for debugging (never ship it) | `strip-kernel-network.sh` (Group A) |
+| **WiFi (kernel)** | `WL_ROCKCHIP` (the umbrella that `select`s CFG80211+MAC80211 and sources every vendor WiFi Kconfig) + `RTL8723BS` off, so the 802.11 stack and all 8 vendor drivers are never built and cannot land in `/oem/usr/ko` to be `insmod`ed. Always stripped on non-dev — the debug channel is wired Ethernet | `strip-kernel-network.sh` (Group B) |
+| **Networking (userspace, defence in depth)** | No interface bring-up (`S*network*` → loopback-only stub), DHCP neutered, `/etc/network/interfaces` = `lo` only, telnet/ssh/dropbear init scripts removed (`HARDEN_DISABLE_NETWORK`) | `harden-nondev.sh` §4 |
+| **USB gadget (adb/RNDIS)** | DTS `&usbdrd_dwc3 { dr_mode = "host"; }` (`usb_mode` auto→host): dwc3 registers host-only, so **`/sys/class/udc/` is empty and a configfs gadget has nothing to bind to** — root cannot re-enable adb at runtime. Plus adb userspace stripped (`HARDEN_DISABLE_ADB=1`) | `configure-usb-mode.sh`, `harden-nondev.sh` §2, `patch-s50usbdevice.sh` |
 | **Kernel serial console** | UART2 console stripped from bootargs/DTS (`disable_uart2_console_debug` auto→on) | UART2 strip steps in all three builds |
 | **Serial login prompt** | getty/login/sulogin inittab respawn lines commented (console shells left intact — the app boot path uses one) | `harden-nondev.sh` §1 |
 | **System logging daemons** | syslogd/klogd init scripts removed + launches commented | `harden-nondev.sh` §3 |
 | **Boot recovery** | memory-backed U-Boot bootcount → rockusb Loader failover (no serial/adb needed to recover a brick) | `uboot-recovery-config.sh` |
+
+**Three kernel symbols must never be disabled** (each has bitten us or would break the device):
+`CONFIG_NET`/`CONFIG_UNIX` — `pcscd` uses an AF_UNIX socket, so dropping `NET` kills smartcards;
+`CONFIG_MODULES` — the camera drivers are `=m`; `CONFIG_USB_GADGET` — it is the *sole* provider of configfs
+(`USB_CONFIGFS` → `USB_LIBCOMPOSITE` → `select CONFIGFS_FS`), and without configfs `luckfox-config` cannot
+create the device-tree overlays that enable SPI0, so **the display dies**. ADB is blocked by `dr_mode=host`
+instead. `strip-kernel-network.sh` refuses to run if any of them is off.
+
+**Verify against the generated `.config`, never the defconfig.** Kconfig silently drops defconfig lines whose
+symbol doesn't exist or whose dependencies are unmet — this is exactly how the first U-Boot bootcount attempt
+shipped green with zero bootcount code. `assert-kernel-network.sh` re-checks the built kernel config (plus a
+`CONFIGFS_FS=y` display canary and the oem `.ko` payload) and fails the build.
 
 **Silencing the serial console differs by platform** — get this right per-board:
 - **Pi**: the firmware (`boot_config.txt`) doesn't route the console to the UART, so the cmdline simply omits `console=`. That also frees `/dev/ttyAMA0` (via `dtoverlay=disable-bt`) for the SEC1210 reader, which shares that UART — here serial output would actively break the reader.

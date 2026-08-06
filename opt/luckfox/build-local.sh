@@ -829,6 +829,58 @@ apply_crypto_dts_patch() {
     print_success "Crypto DTS node enabled in: $dts_file"
 }
 
+apply_kernel_network_strip() {
+    local hardware="$1"
+    local boot_medium="$2"
+
+    if [ "$BUILD_VARIANT" != "non-dev" ]; then
+        print_info "dev build: kernel networking/WiFi retained"
+        return 0
+    fi
+
+    local sdk_hardware sdk_boot_medium
+    case "$hardware" in
+        mini) sdk_hardware="RV1103_Luckfox_Pico_Mini" ;;
+        max)  sdk_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
+        pi)   sdk_hardware="RV1106_Luckfox_Pico_Pi" ;;
+        *) print_error "Unknown hardware type for kernel network strip: $hardware"; exit 1 ;;
+    esac
+    case "$boot_medium" in
+        sd)   sdk_boot_medium="SD_CARD" ;;
+        nand) sdk_boot_medium="SPI_NAND" ;;
+        emmc) sdk_boot_medium="EMMC" ;;
+        *) print_error "Unknown boot medium for kernel network strip: $boot_medium"; exit 1 ;;
+    esac
+
+    local board_config="$WORK_DIR/luckfox-pico/project/cfg/BoardConfig_IPC/BoardConfig-${sdk_boot_medium}-Buildroot-${sdk_hardware}-IPC.mk"
+    if [ ! -f "$board_config" ] && [ -L "$WORK_DIR/luckfox-pico/.BoardConfig.mk" ]; then
+        board_config="$(readlink -f "$WORK_DIR/luckfox-pico/.BoardConfig.mk")"
+    fi
+    if [ ! -f "$board_config" ]; then
+        print_error "Board config file not found for kernel network strip: $board_config"
+        exit 1
+    fi
+
+    local kernel_defconfig
+    kernel_defconfig="$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$board_config" | head -n1)"
+    [ -n "$kernel_defconfig" ] || kernel_defconfig="luckfox_rv1106_linux_defconfig"
+
+    local kernel_cfg_file="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/configs/$kernel_defconfig"
+    if [ ! -f "$kernel_cfg_file" ]; then
+        print_error "Kernel defconfig not found for network strip: $kernel_cfg_file"
+        exit 1
+    fi
+
+    # Networking gated on debug_network (off -> strip); WiFi always stripped on
+    # non-dev. Shared with CI via strip-kernel-network.sh.
+    SS_STRIP_NET=1
+    if [ "$DEBUG_NETWORK" == "on" ]; then SS_STRIP_NET=0; fi
+    export SS_STRIP_NET
+
+    print_header "Stripping Kernel Networking/WiFi (non-dev, net_strip=$SS_STRIP_NET)"
+    bash "$SCRIPT_DIR/strip-kernel-network.sh" "$kernel_cfg_file" "$SS_STRIP_NET" 1
+}
+
 apply_usb_mode_config() {
     local hardware="$1"
 
@@ -1215,7 +1267,13 @@ build_system() {
     
     print_info "Building Kernel..."
     ./build.sh kernel
-    
+
+    # Assert the strip took effect against the GENERATED .config — Kconfig
+    # silently drops defconfig lines whose symbol/deps don't resolve.
+    if [ "$BUILD_VARIANT" == "non-dev" ]; then
+        bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1
+    fi
+
     print_info "Building Rootfs..."
     ./build.sh rootfs
     
@@ -1400,8 +1458,14 @@ package_firmware() {
     cd "$WORK_DIR/luckfox-pico"
     
     ./build.sh firmware
+    # Re-verify now that the oem partition is staged: every built .ko lands in
+    # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
+    # there would be loadable by root.
+    if [ "$BUILD_VARIANT" == "non-dev" ]; then
+        bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1
+    fi
     debug_uart_bootargs_outputs
-    
+
     print_success "Firmware packaged"
 }
 
@@ -1677,6 +1741,7 @@ main() {
     apply_uart2_fiq_kernel_patch "$hardware" "$boot_medium"
     apply_hwrng_crypto_kernel_patch "$hardware" "$boot_medium"
     apply_crypto_dts_patch "$hardware"
+    apply_kernel_network_strip "$hardware" "$boot_medium"
     apply_usb_mode_config "$hardware"
     apply_mini_cma_config "$hardware" "$boot_medium"
     prepare_buildroot

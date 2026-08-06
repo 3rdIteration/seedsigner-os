@@ -657,6 +657,59 @@ apply_uart2_fiq_kernel_patch() {
     print_success "Kernel FIQ debugger disabled and serial drivers enabled in: $kernel_cfg_file"
 }
 
+apply_kernel_network_strip() {
+    local board_profile="$1"
+    local boot_medium="$2"
+
+    [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]] || {
+        print_info "dev build: kernel networking/WiFi retained"
+        return 0
+    }
+
+    local sdk_hardware sdk_boot_medium
+    case "$board_profile" in
+        mini) sdk_hardware="RV1103_Luckfox_Pico_Mini" ;;
+        max)  sdk_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
+        pi)   sdk_hardware="RV1106_Luckfox_Pico_Pi" ;;
+        *) print_error "Unsupported board profile for kernel network strip: $board_profile"; exit 1 ;;
+    esac
+    case "$boot_medium" in
+        sd)   sdk_boot_medium="SD_CARD" ;;
+        nand) sdk_boot_medium="SPI_NAND" ;;
+        emmc) sdk_boot_medium="EMMC" ;;
+        *) print_error "Unsupported boot medium for kernel network strip: $boot_medium"; exit 1 ;;
+    esac
+
+    local board_config="$LUCKFOX_SDK_DIR/project/cfg/BoardConfig_IPC/BoardConfig-${sdk_boot_medium}-Buildroot-${sdk_hardware}-IPC.mk"
+    if [[ ! -f "$board_config" && -L "$LUCKFOX_SDK_DIR/.BoardConfig.mk" ]]; then
+        board_config="$(readlink -f "$LUCKFOX_SDK_DIR/.BoardConfig.mk")"
+    fi
+    if [[ ! -f "$board_config" ]]; then
+        print_error "Board config file not found for kernel network strip: $board_config"
+        exit 1
+    fi
+
+    local kernel_defconfig
+    kernel_defconfig="$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$board_config" | head -n1)"
+    [[ -n "$kernel_defconfig" ]] || kernel_defconfig="luckfox_rv1106_linux_defconfig"
+
+    local kernel_cfg_file="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/arch/arm/configs/$kernel_defconfig"
+    if [[ ! -f "$kernel_cfg_file" ]]; then
+        print_error "Kernel defconfig not found for network strip: $kernel_cfg_file"
+        exit 1
+    fi
+
+    # Networking is gated on debug_network (off -> strip) so a non-dev image can
+    # still be built with Ethernet + telnet for debugging. WiFi is always
+    # stripped on non-dev. Shared with CI via strip-kernel-network.sh.
+    local strip_net=1
+    if [[ "$SEEDSIGNER_DEBUG_NETWORK" == "on" ]]; then strip_net=0; fi
+    export SS_STRIP_NET="$strip_net"
+
+    print_step "Stripping kernel networking/WiFi for non-dev ($kernel_defconfig, net_strip=$strip_net)"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/strip-kernel-network.sh" "$kernel_cfg_file" "$strip_net" 1
+}
+
 apply_hwrng_crypto_kernel_patch() {
     local board_profile="$1"
     local boot_medium="$2"
@@ -991,6 +1044,7 @@ build_profile_artifacts() {
     apply_uart2_console_config "$board_profile" "$boot_medium"
     apply_uart2_console_dts_patch "$board_profile"
     apply_uart2_fiq_kernel_patch "$board_profile" "$boot_medium"
+    apply_kernel_network_strip "$board_profile" "$boot_medium"
     apply_hwrng_crypto_kernel_patch "$board_profile" "$boot_medium"
     apply_crypto_dts_patch "$board_profile"
 
@@ -1188,6 +1242,12 @@ s/^endef\nendif/endef\nendif\nendif/
     print_step "Building Kernel"
     ./build.sh kernel
 
+    # Assert the strip took effect against the GENERATED .config — Kconfig
+    # silently drops defconfig lines whose symbol/deps don't resolve.
+    if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/assert-kernel-network.sh" "$LUCKFOX_SDK_DIR" "${SS_STRIP_NET:-1}" 1
+    fi
+
     print_step "Building Rootfs"
     ./build.sh rootfs
 
@@ -1327,6 +1387,12 @@ s/^endef\nendif/endef\nendif\nendif/
 
     print_step "Packaging Firmware"
     ./build.sh firmware
+    # Re-verify now that the oem partition is staged: every built .ko lands in
+    # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
+    # there would be loadable by root.
+    if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/assert-kernel-network.sh" "$LUCKFOX_SDK_DIR" "${SS_STRIP_NET:-1}" 1
+    fi
     debug_uart_bootargs_outputs
 
     cd "$LUCKFOX_SDK_DIR/output/image"

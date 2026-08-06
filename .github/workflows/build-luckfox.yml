@@ -679,6 +679,39 @@ jobs:
           echo "UART2 FIQ debugger configuration remains enabled"
         fi
 
+    - name: Strip kernel networking + WiFi (non-dev)
+      if: ${{ (inputs.build_variant || 'dev') == 'non-dev' }}
+      run: |
+        cd luckfox-pico
+        # Threat model is root-level code execution (the app runs as root), so the
+        # userspace hardening in harden-nondev.sh is not a control on its own —
+        # root can just `ifconfig eth0 up` or insmod a wifi driver from
+        # /oem/usr/ko. Remove the capability from the kernel instead. Shared with
+        # the local Docker builds via opt/luckfox/strip-kernel-network.sh.
+        #
+        # Networking is gated on debug_network (off -> strip), so a non-dev image
+        # built with debug_network=on still has Ethernet + telnet for debugging.
+        # WiFi is always stripped on non-dev: the debug channel is wired Ethernet
+        # and no Luckfox build uses WiFi.
+        DEBUG_NET="${{ inputs.debug_network }}"
+        case "$DEBUG_NET" in on|off) ;; *) DEBUG_NET="off" ;; esac
+        if [ "$DEBUG_NET" = "off" ]; then STRIP_NET=1; else STRIP_NET=0; fi
+
+        BOARD_CONFIG="$BOARD_CONFIG_PATH"
+        if [ ! -f "$BOARD_CONFIG" ] && [ -L ".BoardConfig.mk" ]; then
+          BOARD_CONFIG="$(readlink -f .BoardConfig.mk)"
+        fi
+        if [ ! -f "$BOARD_CONFIG" ]; then
+          echo "ERROR: Board config file not found for kernel network strip: $BOARD_CONFIG"; exit 1
+        fi
+        KERNEL_DEFCONFIG=$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$BOARD_CONFIG" | head -n1)
+        [ -n "$KERNEL_DEFCONFIG" ] || KERNEL_DEFCONFIG="luckfox_rv1106_linux_defconfig"
+        KERNEL_CFG_FILE="sysdrv/source/kernel/arch/arm/configs/${KERNEL_DEFCONFIG}"
+
+        bash ../seedsigner-os/opt/luckfox/strip-kernel-network.sh "$KERNEL_CFG_FILE" "$STRIP_NET" 1
+        # Record for the post-build assertion step.
+        echo "SS_STRIP_NET=$STRIP_NET" >> "$GITHUB_ENV"
+
     - name: Enable HWRNG and hardware crypto in kernel defconfig and DTS
       run: |
         cd luckfox-pico
@@ -1098,10 +1131,20 @@ jobs:
         ./build.sh kernel
         ./build.sh rootfs
         ./build.sh media
-        
+
         # Keep vendor RkLunch.sh camera bring-up behavior on all builds.
         echo "Keeping RkLunch.sh rkipc autostart enabled"
         ./build.sh app
+
+    - name: Verify kernel network/WiFi strip (non-dev)
+      if: ${{ (inputs.build_variant || 'dev') == 'non-dev' }}
+      run: |
+        # Assert against the GENERATED kernel .config, not the defconfig we wrote:
+        # Kconfig silently drops lines for symbols that don't exist or whose deps
+        # are unmet (the bootcount work proved this — a green build shipped a
+        # U-Boot with zero bootcount code). Also checks the CONFIGFS_FS display
+        # canary and that no wireless .ko reached the oem payload.
+        bash seedsigner-os/opt/luckfox/assert-kernel-network.sh luckfox-pico "${SS_STRIP_NET:-1}" 1
 
     - name: Package Rust toolchain for caching
       if: steps.rust-cache.outputs.cache-hit != 'true' || env.RUST_FROM_CACHE != 'true'
@@ -1352,6 +1395,13 @@ jobs:
       run: |
         cd luckfox-pico
         ./build.sh firmware
+
+        # Re-run the strip verification now that the oem partition is staged:
+        # every built .ko is packaged to /oem/usr/ko, which no rootfs hardening
+        # touches, so a stray wireless module there would be loadable by root.
+        if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
+          bash ../seedsigner-os/opt/luckfox/assert-kernel-network.sh . "${SS_STRIP_NET:-1}" 1
+        fi
 
         echo "UART bootargs debug (post-firmware image metadata):"
         FOUND_UART_FILES=false

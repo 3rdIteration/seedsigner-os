@@ -17,7 +17,13 @@
 #   IQFILES_KEEP - space-separated sensor-name substrings to keep in iqfiles
 #                  (default: the sensors used on Luckfox Pico boards).
 #
-# Usage:  optimize-nondev.sh <ROOTFS_DIR>
+# Usage:  optimize-nondev.sh <ROOTFS_DIR> [OEM_DIR]
+#
+#   OEM_DIR - the staged oem partition (e.g. <sdk>/output/out/oem). The oem
+#             partition is built SEPARATELY from the rootfs on this SDK, so
+#             "$ROOTFS/oem" does not exist and any prune targeting it silently
+#             no-ops. Pass the real directory. Defaults to "$ROOTFS/oem" for
+#             backwards compatibility.
 
 set -u
 
@@ -26,6 +32,7 @@ if [ -z "$ROOTFS" ] || [ ! -d "$ROOTFS" ]; then
     echo "optimize-nondev: rootfs dir '${ROOTFS:-<empty>}' not found" >&2
     exit 1
 fi
+OEM_DIR="${2:-$ROOTFS/oem}"
 
 log()  { echo "  [optimize] $*"; }
 skip() { echo "  [optimize] (skip) $*"; }
@@ -53,7 +60,7 @@ fi
 # Camera ISP iqfiles prune. Rockchip ships tuning for many sensors; keep only the
 # one(s) the board actually uses. Guarded: no-op if oem isn't staged in this
 # rootfs. VERIFY THE CAMERA ON HARDWARE after changing this.
-IQDIR="$ROOTFS/oem/usr/share/iqfiles"
+IQDIR="$OEM_DIR/usr/share/iqfiles"
 IQFILES_KEEP="${IQFILES_KEEP:-sc3336 sc3338 sc830ai gc2093 gc2053 ov5647}"
 if [ -d "$IQDIR" ]; then
     kept=0; removed=0
@@ -72,7 +79,14 @@ if [ -d "$IQDIR" ]; then
     done
     log "iqfiles: kept $kept (match: $IQFILES_KEEP), removed $removed  --  VERIFY CAMERA ON HARDWARE"
 else
-    skip "no $IQDIR (oem may be a separate stage) - iqfiles untouched"
+    # KNOWN LIMITATION: on this SDK the oem partition is assembled by
+    # __PACKAGE_OEM, which runs inside `build.sh firmware` — i.e. AFTER this
+    # script. So $IQDIR does not exist yet and this prune has never actually
+    # run. Fixing it properly means hooking __RUN_PRE_BUILD_OEM_SCRIPT (the
+    # SDK's extension point, which runs after __PACKAGE_OEM but before the oem
+    # image is built), not just passing a different path here. Size-only issue:
+    # no security impact.
+    skip "no $IQDIR - oem is assembled later by 'build.sh firmware'; iqfiles untouched (see note in this script)"
 fi
 
 # --------------------------------------------------------------------------- 3
