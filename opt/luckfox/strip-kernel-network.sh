@@ -45,9 +45,14 @@ set -eu
 DEFCONFIG="${1:-}"
 STRIP_NET="${2:-1}"
 STRIP_WIFI="${3:-1}"
+BOARD_CONFIG="${4:-}"
 
 if [ -z "$DEFCONFIG" ] || [ ! -f "$DEFCONFIG" ]; then
     echo "strip-kernel-network: kernel defconfig '${DEFCONFIG:-<empty>}' not found" >&2
+    exit 1
+fi
+if [ -n "$BOARD_CONFIG" ] && [ ! -f "$BOARD_CONFIG" ]; then
+    echo "strip-kernel-network: board config '$BOARD_CONFIG' not found" >&2
     exit 1
 fi
 
@@ -95,6 +100,45 @@ if [ "$STRIP_WIFI" = "1" ]; then
     # loadable by root. RTL8723BS is a staging driver selected independently.
     disable_sym CONFIG_WL_ROCKCHIP
     disable_sym CONFIG_RTL8723BS
+
+    # ALSO disable the SDK's OUT-OF-TREE wifi drivers. These live in
+    # sysdrv/drv_ko/wifi/* and are built by the sysdrv Makefile's `build-usb`
+    # target when RK_ENABLE_WIFI=y — completely independently of the kernel
+    # defconfig. Disabling CONFIG_WL_ROCKCHIP alone removes the in-kernel
+    # cfg80211/mac80211 those drivers link against, so they then fail modpost
+    # with hundreds of `"cfg80211_*" undefined!` errors and the whole build dies
+    # in build_rootfs. That is exactly what broke non-dev SPI_NAND on Pro Max and
+    # Mini (both set RK_ENABLE_WIFI=y); Pico Pi EMMC survived only because its
+    # board config has the line commented out.
+    #
+    # Turning it off is also the better security outcome: these are the very
+    # 8188fu/8189fs/aic8800/atbm/ssv6 modules that were being packaged to
+    # /oem/usr/ko and left loadable by root.
+    if [ -n "$BOARD_CONFIG" ]; then
+        if grep -qE '^[[:space:]]*export[[:space:]]+RK_ENABLE_WIFI=n[[:space:]]*$' "$BOARD_CONFIG"; then
+            log "RK_ENABLE_WIFI already disabled in $(basename "$BOARD_CONFIG")"
+        elif grep -qE '^[[:space:]]*export[[:space:]]+RK_ENABLE_WIFI=' "$BOARD_CONFIG"; then
+            sed -i -E 's/^([[:space:]]*export[[:space:]]+RK_ENABLE_WIFI=).*/# [seedsigner] out-of-tree wifi drivers disabled with the kernel WiFi strip\n\1n/' "$BOARD_CONFIG"
+            log "disabled RK_ENABLE_WIFI in $(basename "$BOARD_CONFIG") (no out-of-tree wifi drv_ko build)"
+        else
+            log "RK_ENABLE_WIFI not set in $(basename "$BOARD_CONFIG") — no out-of-tree wifi build to disable"
+        fi
+
+        # The wifi/BT firmware overlay only ships blobs for hardware we've just
+        # removed the drivers for. Dropping it saves space and keeps firmware for
+        # a non-existent radio off the image. Guarded: no-op if absent.
+        if grep -qE '^[[:space:]]*export[[:space:]]+RK_POST_OVERLAY=.*overlay-luckfox-wifibt-firmware' "$BOARD_CONFIG"; then
+            sed -i -E 's/([[:space:]]*)overlay-luckfox-wifibt-firmware//' "$BOARD_CONFIG"
+            log "removed overlay-luckfox-wifibt-firmware from RK_POST_OVERLAY"
+        fi
+
+        if grep -qE '^[[:space:]]*export[[:space:]]+RK_ENABLE_WIFI=y' "$BOARD_CONFIG"; then
+            echo "strip-kernel-network: failed to disable RK_ENABLE_WIFI in $BOARD_CONFIG" >&2
+            exit 1
+        fi
+    else
+        log "WARNING: no board config passed — RK_ENABLE_WIFI not checked; if this board sets it, the out-of-tree wifi build will fail modpost"
+    fi
 else
     log "WiFi drivers RETAINED"
 fi

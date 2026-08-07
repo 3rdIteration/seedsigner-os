@@ -878,7 +878,10 @@ apply_kernel_network_strip() {
     export SS_STRIP_NET
 
     print_header "Stripping Kernel Networking/WiFi (non-dev, net_strip=$SS_STRIP_NET)"
-    bash "$SCRIPT_DIR/strip-kernel-network.sh" "$kernel_cfg_file" "$SS_STRIP_NET" 1
+    # The board config is passed too: the SDK builds OUT-OF-TREE wifi drivers when
+    # RK_ENABLE_WIFI=y, and they fail modpost once the in-kernel cfg80211 is gone.
+    bash "$SCRIPT_DIR/strip-kernel-network.sh" \
+        "$kernel_cfg_file" "$SS_STRIP_NET" 1 "$board_config"
 }
 
 apply_usb_mode_config() {

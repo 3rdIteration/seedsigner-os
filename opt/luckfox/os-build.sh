@@ -707,7 +707,10 @@ apply_kernel_network_strip() {
     export SS_STRIP_NET="$strip_net"
 
     print_step "Stripping kernel networking/WiFi for non-dev ($kernel_defconfig, net_strip=$strip_net)"
-    bash "$SEEDSIGNER_LUCKFOX_DIR/strip-kernel-network.sh" "$kernel_cfg_file" "$strip_net" 1
+    # The board config is passed too: the SDK builds OUT-OF-TREE wifi drivers when
+    # RK_ENABLE_WIFI=y, and they fail modpost once the in-kernel cfg80211 is gone.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/strip-kernel-network.sh" \
+        "$kernel_cfg_file" "$strip_net" 1 "$board_config"
 }
 
 apply_hwrng_crypto_kernel_patch() {

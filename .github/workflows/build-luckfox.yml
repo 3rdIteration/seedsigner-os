@@ -708,7 +708,12 @@ jobs:
         [ -n "$KERNEL_DEFCONFIG" ] || KERNEL_DEFCONFIG="luckfox_rv1106_linux_defconfig"
         KERNEL_CFG_FILE="sysdrv/source/kernel/arch/arm/configs/${KERNEL_DEFCONFIG}"
 
-        bash ../seedsigner-os/opt/luckfox/strip-kernel-network.sh "$KERNEL_CFG_FILE" "$STRIP_NET" 1
+        # The board config is passed too: disabling CONFIG_WL_ROCKCHIP alone
+        # removes the in-kernel cfg80211 that the SDK's OUT-OF-TREE wifi drivers
+        # (built when RK_ENABLE_WIFI=y) link against, so they fail modpost and
+        # kill the build. The script turns RK_ENABLE_WIFI off as part of the strip.
+        bash ../seedsigner-os/opt/luckfox/strip-kernel-network.sh \
+          "$KERNEL_CFG_FILE" "$STRIP_NET" 1 "$BOARD_CONFIG"
         # Record for the post-build assertion step.
         echo "SS_STRIP_NET=$STRIP_NET" >> "$GITHUB_ENV"
 

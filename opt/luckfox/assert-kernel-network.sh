@@ -82,6 +82,27 @@ if is_on CONFIG_NET;         then log "✅ NET=y (AF_UNIX for pcscd)";        el
 if is_on CONFIG_UNIX;        then log "✅ UNIX=y (pcscd socket)";            else fail "CONFIG_UNIX is not =y — pcscd socket will break"; fi
 if is_on CONFIG_MODULES;     then log "✅ MODULES=y (camera drivers are =m)"; else fail "CONFIG_MODULES is not =y — the camera modules cannot load"; fi
 
+# ------------------------------------------------- out-of-tree wifi drv_ko
+# The SDK builds wifi drivers from sysdrv/drv_ko/wifi/* when RK_ENABLE_WIFI=y,
+# independently of the kernel defconfig. With the in-kernel cfg80211 stripped
+# they fail modpost ("cfg80211_* undefined!") and kill build_rootfs — this is
+# what broke non-dev SPI_NAND on Pro Max and Mini. If any built wifi .ko is
+# sitting here, RK_ENABLE_WIFI was not disabled and the strip is incoherent.
+if [ "$EXPECT_WIFI_OFF" = "1" ]; then
+    DRVKO="$LUCKFOX_DIR/sysdrv/drv_ko/wifi"
+    if [ -d "$DRVKO" ]; then
+        built="$(find "$DRVKO" -name '*.ko' 2>/dev/null | head -20 || true)"
+        if [ -n "$built" ]; then
+            fail "out-of-tree wifi modules were built despite the WiFi strip (RK_ENABLE_WIFI not disabled?):"
+            echo "$built" | sed 's|^|        |' >&2
+        else
+            log "✅ no out-of-tree wifi .ko built"
+        fi
+    else
+        log "✅ no sysdrv/drv_ko/wifi tree (out-of-tree wifi build disabled)"
+    fi
+fi
+
 # ---------------------------------------------------------------- oem payload
 # The SDK packages every built .ko to the oem partition at /oem/usr/ko
 # (build.sh __PACKAGE_RESOURCES -> __COPY_FILES kernel_drv_ko/ $OEM/usr/ko).
