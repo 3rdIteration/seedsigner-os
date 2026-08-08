@@ -24,6 +24,7 @@ It also must not keep the display: SPI/GPIO are released before exit so the app
 can open the panel afterwards.
 """
 
+import os
 import sys
 
 DEFAULT_WIDTH = 240
@@ -32,6 +33,23 @@ LINE_HEIGHT = 11
 MARGIN = 6
 # Default PIL bitmap font is ~6px wide per char.
 CHAR_WIDTH = 6
+
+# The splash is read across a desk on a 240x240 panel, so it uses the app's own
+# TrueType face at roughly 3x the PIL bitmap default (~11px). The failure screen
+# deliberately does NOT scale its body text: its job is to carry a reason string
+# (often a Python exception), and tripling that would truncate the one piece of
+# information the screen exists to deliver. Only its heading is enlarged.
+LOADING_TITLE_SIZE = 34
+LOADING_BODY_SIZE = 26
+FAILED_HEADING_SIZE = 20
+
+# Shipped with the app; survives the non-dev prune (only translations are cut).
+FONT_DIRS = (
+    "/opt/src/seedsigner/resources/fonts",
+    os.path.join(os.path.dirname(__file__), "seedsigner", "resources", "fonts"),
+)
+FONT_TITLE = "OpenSans-SemiBold.ttf"
+FONT_BODY = "OpenSans-Regular.ttf"
 
 
 def _log(message: str) -> None:
@@ -61,6 +79,45 @@ def _wrap(text: str, max_chars: int) -> list[str]:
     if current:
         lines.append(current)
     return lines
+
+
+def _font(name: str, size: int):
+    """A TrueType face at `size`, or PIL's bitmap default. Never raises.
+
+    Falling back rather than failing matters here: a missing font must degrade
+    the splash to small text, never turn the diagnostic aid into the thing that
+    stops the boot.
+    """
+    from PIL import ImageFont
+
+    for directory in FONT_DIRS:
+        path = os.path.join(directory, name)
+        try:
+            if os.path.isfile(path):
+                return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    _log(f"{name} unavailable - falling back to the default bitmap font")
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _draw_centered(draw, text: str, y: int, font, fill: str, width: int) -> int:
+    """Draw `text` horizontally centred at `y`; return the y below it."""
+    try:
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        text_width = right - left
+        height = bottom - top
+        # textbbox includes the font's internal top bearing, so subtract it to
+        # place the glyphs where the caller asked rather than a few px lower.
+        draw.text(((width - text_width) // 2 - left, y - top), text, font=font, fill=fill)
+        return y + height
+    except Exception:
+        # Any measurement failure still gets text on screen, just left-aligned.
+        draw.text((MARGIN, y), text, font=font, fill=fill)
+        return y + LINE_HEIGHT
 
 
 def _resolve_display():
@@ -115,7 +172,10 @@ def _draw(mode: str, reason: str) -> None:
         y = MARGIN
 
         if mode == "failed":
-            draw.text((MARGIN, y), "STARTUP FAILED", fill="red")
+            # Heading enlarged; body left at the bitmap font on purpose so the
+            # reason string still fits (see the note by FAILED_HEADING_SIZE).
+            heading_font = _font(FONT_TITLE, FAILED_HEADING_SIZE)
+            y = _draw_centered(draw, "STARTUP FAILED", y, heading_font, "red", width)
             y += LINE_HEIGHT * 2
             for line in _wrap(reason, max_chars):
                 if y > height - LINE_HEIGHT * 3:
@@ -125,11 +185,18 @@ def _draw(mode: str, reason: str) -> None:
             y += LINE_HEIGHT
             draw.text((MARGIN, y), "Rebooting to flash mode", fill="yellow")
         else:
-            draw.text((MARGIN, y), "SeedSigner", fill="orange")
-            y += LINE_HEIGHT * 2
-            draw.text((MARGIN, y), "Loading...", fill="white")
-            y += LINE_HEIGHT * 2
-            draw.text((MARGIN, y), "Please wait", fill="grey")
+            title_font = _font(FONT_TITLE, LOADING_TITLE_SIZE)
+            body_font = _font(FONT_BODY, LOADING_BODY_SIZE)
+            # Centred as a block rather than pinned to the top margin: at this
+            # size three left-aligned lines look like a truncated error, which
+            # is the opposite of what a "things are fine, please wait" screen
+            # should convey.
+            y = (height // 2) - LOADING_TITLE_SIZE - LOADING_BODY_SIZE
+            y = _draw_centered(draw, "SeedSigner", y, title_font, "orange", width)
+            y += LOADING_BODY_SIZE
+            y = _draw_centered(draw, "Loading...", y, body_font, "white", width)
+            y += LOADING_BODY_SIZE // 2
+            _draw_centered(draw, "Please wait", y, body_font, "grey", width)
 
         # ST7735/ST7789 declare show_image(Image, Xstart, Ystart) with no
         # defaults (the other drivers default both to 0), so the origin must be
