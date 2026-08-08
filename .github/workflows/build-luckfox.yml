@@ -64,6 +64,14 @@ on:
           - 'on'
           - 'off'
         default: 'auto'
+      harden_adb:
+        description: 'Strip the adb userspace on non-dev (stubs adbd/usbdevice, blanks gadget config). on = strip (default); off = leave it. Bisect lever: dr_mode=host already blocks adb, so off is still adb-free but skips the rootfs surgery.'
+        required: false
+        type: choice
+        options:
+          - 'on'
+          - 'off'
+        default: 'on'
       build_variant:
         description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell). Automatic push/PR CI always builds dev.'
         required: false
@@ -128,6 +136,10 @@ on:
         required: false
         type: string
         default: 'auto'
+      harden_adb:
+        required: false
+        type: string
+        default: 'on'
       build_variant:
         required: false
         type: string
@@ -1383,8 +1395,14 @@ jobs:
           DEBUG_NET="${{ inputs.debug_network }}"
           case "$DEBUG_NET" in on|off) ;; *) DEBUG_NET="off" ;; esac
           if [ "$DEBUG_NET" = "off" ]; then HARDEN_NET=1; else HARDEN_NET=0; fi
-          echo "🔒 Applying non-dev rootfs hardening (adb strip: on, networking: $([ "$HARDEN_NET" = 1 ] && echo 'DISABLED' || echo 'retained — debug_network=on')) ..."
-          HARDEN_DISABLE_ADB=1 HARDEN_DISABLE_NETWORK="$HARDEN_NET" \
+          # harden_adb is a bisect lever. The adb *transport* is already gone via
+          # dr_mode=host regardless, so 'off' is still adb-free — it only skips
+          # the rootfs surgery (stubbing usbdevice/adbd, blanking gadget config),
+          # which is the code path that first started running in d1141ef.
+          HARDEN_ADB=1
+          if [ "${{ inputs.harden_adb }}" = "off" ]; then HARDEN_ADB=0; fi
+          echo "🔒 Applying non-dev rootfs hardening (adb strip: $([ "$HARDEN_ADB" = 1 ] && echo 'on' || echo 'OFF — bisect'), networking: $([ "$HARDEN_NET" = 1 ] && echo 'DISABLED' || echo 'retained — debug_network=on')) ..."
+          HARDEN_DISABLE_ADB="$HARDEN_ADB" HARDEN_DISABLE_NETWORK="$HARDEN_NET" \
             bash ../seedsigner-os/opt/luckfox/harden-nondev.sh "$ROOTFS_DIR"
           echo "📦 Applying non-dev size/boot optimizations ..."
           bash ../seedsigner-os/opt/luckfox/optimize-nondev.sh "$ROOTFS_DIR"
