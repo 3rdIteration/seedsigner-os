@@ -333,14 +333,20 @@ jobs:
         fi
         echo ""
         
-        # Apply Mini SPI-NAND partition optimization using sed (more reliable than patches)
-        echo "📦 Applying Mini SPI-NAND partition optimization..."
+        # Apply Mini SPI-NAND partition layout using sed (more reliable than patches)
+        echo "📦 Applying Mini SPI-NAND partition layout..."
         MINI_FILE="project/cfg/BoardConfig_IPC/BoardConfig-SPI_NAND-Buildroot-RV1103_Luckfox_Pico_Mini-IPC.mk"
-        # Remove userdata from partition table and shrink OEM, expand rootfs (Mini has 128MB flash)
-        sed -i 's/30M(oem),6M(userdata),85M(rootfs)/20M(oem),99M(rootfs)/' "$MINI_FILE"
-        # Remove userdata from filesystem config  
-        sed -i 's/,userdata@\/userdata@ubifs//' "$MINI_FILE"
-        echo "  ✓ Mini SPI-NAND partition modified (sed)"
+        # Keep a 6M userdata partition BEFORE rootfs, matching the Max layout: the app
+        # persists settings to /userdata, and resolve_seedsigner_os_data_dir() will only
+        # use a real MOUNTPOINT (never a directory on the rootfs), so without this
+        # partition the Mini has no persistent settings unless a card is inserted.
+        # Shrink OEM 30M->20M and give the rest to rootfs, keeping rootfs LAST so it can
+        # grow later without moving userdata's fixed offset. Same 119M total as the
+        # previous userdata-less layout (20M oem + 99M rootfs), just 6M carved out of
+        # rootfs. Mini has 128MB flash.
+        sed -i 's/30M(oem),6M(userdata),85M(rootfs)/20M(oem),6M(userdata),93M(rootfs)/' "$MINI_FILE"
+        # Keep the userdata@/userdata@ubifs fs config so the SDK builds + auto-mounts it.
+        echo "  ✓ Mini SPI-NAND partition: oem 20M, userdata 6M, rootfs 93M (userdata retained)"
         echo ""
         
         # Apply Max SPI-NAND partition layout using sed.
@@ -358,13 +364,16 @@ jobs:
         echo "  ✓ Max SPI-NAND partition: oem 20M, userdata 10M, rootfs 217M (userdata retained)"
         echo ""
 
-        # Apply Pi eMMC partition update to remove userdata.img expectation
-        echo "📦 Applying Pi eMMC partition update..."
+        # Apply Pi eMMC partition layout.
+        echo "📦 Applying Pi eMMC partition layout..."
         PI_FILE="project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Pi-IPC.mk"
         if [ -f "$PI_FILE" ]; then
-          sed -i 's/,256M(userdata),/,/' "$PI_FILE"
-          sed -i 's/,userdata@\/userdata@ext4//' "$PI_FILE"
-          echo "  ✓ Pi eMMC userdata removed from partition/fs config (sed)"
+          # Keep the SDK's userdata partition (same reason as Mini/Max: it is the only
+          # non-rootfs persistent store the app will write settings to). The Pi boots
+          # from eMMC where space is not tight, so the SDK's 256M is left as-is rather
+          # than resized. Its filesystem is ext4, not UBIFS - that is the SDK default
+          # for eMMC and the app does not care which, only that it is a real mountpoint.
+          echo "  ✓ Pi eMMC userdata retained (256M, ext4)"
         else
           echo "  ⚠ Pi eMMC BoardConfig not found, skipping"
         fi
@@ -382,11 +391,14 @@ jobs:
         echo "  $MAX_PARTITION"
         echo ""
         
-        # Check if patches actually modified the files
-        if echo "$MINI_PARTITION" | grep -q "99M(rootfs)"; then
-          echo "✅ Mini partition optimization VERIFIED (rootfs = 99MB for 128MB flash)"
+        # Check if patches actually modified the files. These are hard failures, not
+        # warnings: a silently unpatched table ships a board with no userdata partition,
+        # which loses persistent settings without any visible symptom at build time.
+        if echo "$MINI_PARTITION" | grep -q "6M(userdata),93M(rootfs)"; then
+          echo "✅ Mini partition VERIFIED (oem 20M, userdata 6M, rootfs 93M)"
         else
-          echo "⚠️  WARNING: Mini partition may not be optimized!"
+          echo "❌ ERROR: Mini partition layout unexpected: $MINI_PARTITION"
+          exit 1
         fi
         
         if echo "$MAX_PARTITION" | grep -q "10M(userdata),217M(rootfs)"; then
@@ -399,8 +411,8 @@ jobs:
         echo "✅ Partition layout optimized:"
         echo "  Mini (128MB flash):"
         echo "    - OEM: 30MB → 20MB (save 10MB)"
-        echo "    - Userdata: 6MB → Removed (save 6MB)"
-        echo "    - Rootfs: 85MB → 99MB (gain 14MB, fits 128MB with margin)"
+        echo "    - Userdata: 6MB (retained, before rootfs — persistent settings)"
+        echo "    - Rootfs: 85MB → 93MB (last partition, fits 128MB with margin)"
         echo "  Max (256MB flash):"
         echo "    - OEM: 30MB → 20MB (save 10MB)"
         echo "    - Userdata: 10MB (retained, before rootfs — persistent settings + boot log)"
@@ -417,7 +429,8 @@ jobs:
         echo "  │ uboot       │   512 KB │ 0x80000    │ U-Boot      │"
         echo "  │ boot        │     4 MB │ 0x100000   │ Kernel+DTB  │"
         echo "  │ oem         │    20 MB │ 0x500000   │ OEM data    │"
-        echo "  │ rootfs      │    99 MB │ 0x1900000  │ Root FS     │"
+        echo "  │ userdata    │     6 MB │ 0x1900000  │ Settings    │"
+        echo "  │ rootfs      │    93 MB │ 0x1F00000  │ Root FS     │"
         echo "  └─────────────┴──────────┴────────────┴─────────────┘"
         echo "  Total allocated: ~124 MB (fits 128MB with 4MB margin)"
         echo ""
@@ -838,6 +851,60 @@ jobs:
         else
           echo "Warning: Board config file not found: $BOARD_CONFIG"
         fi
+
+    - name: Pin spidev buffer size (display SPI open)
+      run: |
+        cd luckfox-pico
+        # spidev_open() kmallocs its tx and rx buffers at `bufsiz` EACH, physically
+        # contiguous. The vendor default is large enough to be an order-6 (256 KB)
+        # allocation, which on the 64 MB Mini fails once memory is fragmented:
+        #
+        #   python: page allocation failure: order:6 ... spidev_open+0x65/0x94
+        #   SPIError: [Errno 12] Opening SPI device: Cannot allocate memory
+        #
+        # ...so the display never opens even though the panel, overlays and wiring are
+        # all fine (the pre-app splash draws correctly on the same boot).
+        #
+        # 8 KB is ample: ST7789._chunked_transfer() caps a single transfer at
+        # CHUNK_SIZE = 4096 and halves on EMSGSIZE, so nothing ever asks for more.
+        # This makes the buffer an order-1 allocation that succeeds under pressure.
+        #
+        # Applied to every board, not just Mini: it costs the larger boards nothing and
+        # pins a value that otherwise silently inherits whatever the vendor kernel picks.
+        # spidev's bufsiz is module_param(..., S_IRUGO) - read-only at runtime - so the
+        # kernel command line is the only place it can be set.
+        SPIDEV_BUFSIZ=8192
+
+        if [ "$HARDWARE" = "RV1103_Luckfox_Pico_Mini" ]; then
+          DTS_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1103g-luckfox-pico-mini.dts"
+          DTSI_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1103-luckfox-pico-ipc.dtsi"
+        elif [ "$HARDWARE" = "RV1106_Luckfox_Pico_Pro_Max" ]; then
+          DTS_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-luckfox-pico-pro-max.dts"
+          DTSI_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1106-luckfox-pico-pro-max-ipc.dtsi"
+        else
+          DTS_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-luckfox-pico-pi.dts"
+          DTSI_FILE="sysdrv/source/kernel/arch/arm/boot/dts/rv1106-luckfox-pico-pi-ipc.dtsi"
+        fi
+
+        PATCHED=0
+        for target in "$DTS_FILE" "$DTSI_FILE"; do
+          [ -f "$target" ] || continue
+          # Append inside an existing chosen bootargs="..." only; no-op otherwise.
+          if grep -Eq 'bootargs[[:space:]]*=' "$target" && ! grep -q 'spidev.bufsiz' "$target"; then
+            sed -i -E "/bootargs[[:space:]]*=/ s/(bootargs[[:space:]]*=[[:space:]]*\"[^\"]*)\"/\1 spidev.bufsiz=${SPIDEV_BUFSIZ}\"/" "$target"
+            echo "  ✓ spidev.bufsiz=${SPIDEV_BUFSIZ} added to $target"
+            PATCHED=1
+          fi
+        done
+
+        # Assert rather than warn: a silent miss reintroduces the order-6 allocation and
+        # the Mini loses its display again with no build-time signal.
+        if [ "$PATCHED" -ne 1 ]; then
+          echo "ERROR: could not add spidev.bufsiz to any bootargs in $DTS_FILE / $DTSI_FILE"
+          grep -nE 'bootargs' "$DTS_FILE" "$DTSI_FILE" 2>/dev/null || echo "  (no bootargs found at all)"
+          exit 1
+        fi
+        grep -nE 'bootargs' "$DTS_FILE" "$DTSI_FILE" 2>/dev/null || true
 
     - name: Prepare buildroot source tree
       run: |
@@ -1553,9 +1620,10 @@ jobs:
           fi
         done
 
-        # userdata.img exists only on builds that keep a userdata partition (Pro Max);
-        # copy it if the SDK built one so per-partition flashing has it (update.img
-        # already contains it). Optional — Mini/Pi have no userdata partition.
+        # userdata.img is built for every board now that Mini/Pi/Max all keep a userdata
+        # partition; copy it if the SDK produced one so per-partition flashing has it
+        # (update.img already contains it). Still optional: the SDK only emits the image
+        # when the partition is present, so a missing file is not an error here.
         if [[ -f userdata.img ]]; then
           cp -v userdata.img "$NAND_BUNDLE_DIR/"
           echo "  ✓ included userdata.img in NAND bundle"

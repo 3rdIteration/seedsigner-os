@@ -276,6 +276,38 @@ ensure_gpiochip_symlinks() {
     log_message "WARNING: GPIO4 bank gpiochip not found; /dev/gpiochip4 unavailable — KEY1 may not work on Pi"
 }
 
+stop_rkipc() {
+    # `killall rkipc` followed by a fixed sleep is NOT enough. When the encoder never
+    # came up (as on the 64 MB Mini, where a 1 MB CMA cannot satisfy the vendor camera
+    # app) rkipc sits in a tight retry loop emitting thousands of
+    # "RK_MPI_VENC_GetStream timeout" per second, and either takes seconds to act on
+    # SIGTERM or never acts on it at all. While it lives it holds DMA/CMA buffers and
+    # fragments the little memory there is - which is what makes spidev_open()'s
+    # contiguous allocation fail, so the display never opens even though the panel is
+    # fine. Wait for it to actually exit, then escalate to SIGKILL.
+    pidof rkipc >/dev/null 2>&1 || return 0
+
+    killall rkipc 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 5 ]; do
+        pidof rkipc >/dev/null 2>&1 || { log_message "rkipc stopped"; return 0; }
+        sleep 1
+        i=$((i + 1))
+    done
+
+    log_message "WARNING: rkipc ignored SIGTERM after 5s; sending SIGKILL"
+    killall -9 rkipc 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 3 ]; do
+        pidof rkipc >/dev/null 2>&1 || { log_message "rkipc killed"; return 0; }
+        sleep 1
+        i=$((i + 1))
+    done
+
+    log_message "ERROR: rkipc still running after SIGKILL — display open may fail (ENOMEM)"
+    return 1
+}
+
 bootstrap_camera_graph() {
     # Some builds only create a usable ISP graph after rkipc performs early init.
     if ls /dev/v4l-subdev* >/dev/null 2>&1; then
@@ -294,8 +326,7 @@ bootstrap_camera_graph() {
         rkipc >/tmp/rkipc-bootstrap.log 2>&1 &
     fi
     sleep 3
-    killall rkipc 2>/dev/null || true
-    sleep 1
+    stop_rkipc || true
 }
 
 # Set up signal handlers
@@ -329,8 +360,8 @@ if command -v devmem >/dev/null 2>&1; then
     fi
 fi
 
-# Kill any existing rkipc processes
-killall rkipc 2>/dev/null
+# Kill any existing rkipc processes (and wait for them to actually go away)
+stop_rkipc || true
 # Non-dev (production) images carry /etc/seedsigner-nondev (see optimize-nondev.sh):
 # background the ~4s camera-graph bootstrap so the display/UI comes up first. Dev
 # images have no marker and keep the SDK-default foreground ordering.
@@ -392,8 +423,10 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
 
     log_message "Starting SeedSigner (attempt $((retry_count + 1))/$MAX_RETRIES)"
 
-    # Always clear camera-related processes before launching the app.
-    killall rkipc 2>/dev/null || true
+    # Always clear camera-related processes before launching the app. This must WAIT for
+    # rkipc to exit, not just signal it: the app opens /dev/spidev0.0 moments later and
+    # that open needs a contiguous kernel allocation which fails while rkipc is thrashing.
+    stop_rkipc || true
     stop_camera_service
     release_conflicting_gpio_lines
 
