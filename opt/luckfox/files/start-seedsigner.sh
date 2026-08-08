@@ -8,14 +8,104 @@ CAMERA_POLL_INTERVAL=1   # seconds
 CAMERA_POST_SPI_DELAY=10  # seconds to wait after SPI init detection
 BOOT_WATCHDOG_TIMEOUT=120  # seconds; fall into Loader mode if the app never signals ready
 LOG_FILE="/tmp/startup.log"
+APP_LOG="/tmp/seedsigner-app.log"   # the app's own stdout/stderr (Python tracebacks)
+APP_TAIL_LINES=40                   # how much of it to copy into the logs on failure
 READY_FILE="/tmp/seedsigner-ready"  # written by the app (MainMenuView) once it is up
 APP_PID=""
 CAMERA_HELPER_PID=""
 BOOT_WATCHDOG_PID=""
 
+# Persistent copy of the startup log. /tmp is a tmpfs, so on a non-dev image —
+# no serial console, no adb, no network — a boot failure destroys the only
+# record of why on the next reboot, leaving a device that looks bricked and
+# says nothing. /userdata is a separate partition that survives both reboot and
+# a firmware reflash, which is what it was restored for.
+PERSIST_DIR="/userdata"
+PERSIST_LOG="$PERSIST_DIR/seedsigner-boot.log"
+PERSIST_LOG_PREV="$PERSIST_DIR/seedsigner-boot.log.prev"
+PERSIST_LOG_MAX_BYTES=131072  # 128 KiB, rotated once => 256 KiB worst case on a 10M partition
+PERSIST_OK=0
+
+# Set up the persistent log. Entirely best-effort: /userdata may be absent (Mini
+# and Pico Pi drop it), unmounted, full, or read-only once the rootfs hardening
+# lands. Any failure just leaves PERSIST_OK=0 and logging continues to /tmp.
+init_persistent_log() {
+    [ -d "$PERSIST_DIR" ] || return 0
+    # Rotate a previous boot's log aside so a crash loop cannot bury the first
+    # failure, which is usually the informative one.
+    if [ -f "$PERSIST_LOG" ]; then
+        mv -f "$PERSIST_LOG" "$PERSIST_LOG_PREV" 2>/dev/null || true
+    fi
+    if : > "$PERSIST_LOG" 2>/dev/null; then
+        PERSIST_OK=1
+        printf '===== boot %s =====\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" >> "$PERSIST_LOG" 2>/dev/null || PERSIST_OK=0
+    fi
+}
+
+persist_line() {
+    [ "$PERSIST_OK" = "1" ] || return 0
+    printf '%s\n' "$1" >> "$PERSIST_LOG" 2>/dev/null || { PERSIST_OK=0; return 0; }
+    # Cap the size so a fast crash loop cannot fill the partition.
+    local size
+    size=$(wc -c < "$PERSIST_LOG" 2>/dev/null || echo 0)
+    if [ "${size:-0}" -gt "$PERSIST_LOG_MAX_BYTES" ]; then
+        printf '%s\n' "--- log truncated at ${PERSIST_LOG_MAX_BYTES} bytes ---" >> "$PERSIST_LOG" 2>/dev/null || true
+        PERSIST_OK=0
+    fi
+}
+
 # Function to log messages
 log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+    local line
+    line="$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo "$line" | tee -a "$LOG_FILE"
+    persist_line "$line"
+}
+
+# Copy the tail of the app's own output into the startup log (and thus the
+# persistent log). Without this the reason for a failed start is invisible on a
+# non-dev image: no console, no adb, no network, and /tmp is gone after reboot.
+log_app_output_tail() {
+    [ -s "$APP_LOG" ] || { log_message "app produced no output"; return 0; }
+    log_message "--- last ${APP_TAIL_LINES} lines of app output ---"
+    # Read via a pipe so a huge file can't be slurped into memory.
+    tail -n "$APP_TAIL_LINES" "$APP_LOG" 2>/dev/null | while IFS= read -r app_line; do
+        log_message "  | $app_line"
+    done
+    log_message "--- end app output ---"
+}
+
+# Draw a static message on the panel via the app's display driver. Strictly
+# best-effort and time-boxed: this is a diagnostic aid and must never delay the
+# boot or the Loader failover. Backgrounding is not an option because it must
+# release SPI before the app opens the panel, so it is bounded with `timeout`.
+SCREEN_MSG="/usr/bin/show-screen-message.py"
+SCREEN_MSG_TIMEOUT=20
+show_screen_message() {
+    [ -f "$SCREEN_MSG" ] || return 0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$SCREEN_MSG_TIMEOUT" python "$SCREEN_MSG" "$@" 2>&1 | while IFS= read -r msg_line; do
+            log_message "$msg_line"
+        done
+    else
+        python "$SCREEN_MSG" "$@" 2>&1 | while IFS= read -r msg_line; do
+            log_message "$msg_line"
+        done
+    fi
+    return 0
+}
+
+# Best-effort one-line summary of why the app died, for the on-screen message.
+# Prefers the last Python exception line, which is the informative one.
+app_failure_summary() {
+    local line=""
+    if [ -s "$APP_LOG" ]; then
+        line=$(grep -aE '^[A-Za-z_.]+(Error|Exception|Warning):' "$APP_LOG" 2>/dev/null | tail -n 1)
+        [ -n "$line" ] || line=$(grep -av '^[[:space:]]*$' "$APP_LOG" 2>/dev/null | tail -n 1)
+    fi
+    [ -n "$line" ] || line="app exited without output"
+    # Keep it short enough to be readable on a 240x240 panel.
+    printf '%.120s' "$line"
 }
 
 # Function to cleanup on exit
@@ -197,6 +287,10 @@ bootstrap_camera_graph() {
 # Set up signal handlers
 trap cleanup SIGTERM SIGINT
 
+# Start the persistent log before anything else can fail, so an early failure is
+# still recorded somewhere that survives the reboot.
+init_persistent_log
+
 # Ensure the kernel hostname matches what the SeedSigner app expects. This is a
 # sethostname() call (no disk write) so it is safe even on a full rootfs, and it
 # guarantees SeedSigner-OS platform detection regardless of whether the SDK init
@@ -240,6 +334,13 @@ ensure_gpiochip_symlinks
 # Change to SeedSigner directory (Raspberry Pi SeedSigner-OS layout: app at /opt/src)
 cd /opt/src
 
+# Early splash. The panel is dark until the app finishes starting, so the device
+# looks dead for ~20s. This also splits the two failure classes on a non-dev
+# image at a glance: splash then nothing => display/SPI is fine and the app is
+# at fault; screen never lights => suspect the display chain (no
+# /dev/spidev0.0 from the configfs / device-tree overlay path).
+show_screen_message loading
+
 # Boot watchdog: recover a bad boot without the BOOT button. If the app never
 # signals readiness (the app writes $READY_FILE from MainMenuView) within the
 # window, reboot into rockusb Loader mode so the device stays re-flashable. This
@@ -255,6 +356,11 @@ rm -f "$READY_FILE" 2>/dev/null || true
     done
     if [ ! -f "$READY_FILE" ]; then
         log_message "Boot watchdog: app not ready after ${BOOT_WATCHDOG_TIMEOUT}s — rebooting into Loader mode"
+        # Deliberately no on-screen message here, unlike the retry-exhausted
+        # path below: this fires while the app is still RUNNING (just not
+        # ready), so it probably holds /dev/spidev0.0. A second process opening
+        # the panel would contend for SPI and could itself wedge the boot. The
+        # persistent log records the reason instead.
         rk-reboot loader
     fi
 ) &
@@ -285,7 +391,18 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
 
     # Start SeedSigner first. On Mini, camera ISP start before display init can
     # exhaust memory and cause SPI open failures.
-    python main.py &
+    #
+    # Capture the app's own stdout/stderr to a file. Previously it inherited the
+    # console, which non-dev images strip — so a Python traceback went nowhere
+    # and a crash-looping app was completely silent. This is the only place the
+    # actual reason for a failed start exists.
+    #
+    # Deliberately a plain redirect rather than `| tee`: piping would make $!
+    # the tee PID, breaking `wait "$APP_PID"` and the camera helper that keys
+    # off it. Live console output is traded for a durable record; on dev images
+    # use `tail -f $APP_LOG`, and the tail is echoed on failure below.
+    : > "$APP_LOG" 2>/dev/null || true
+    python main.py >>"$APP_LOG" 2>&1 &
     APP_PID="$!"
     start_camera_service_later "$APP_PID" "$camera_post_spi_delay"
 
@@ -303,12 +420,16 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
     else
         retry_count=$((retry_count + 1))
         log_message "SeedSigner failed with exit code $exit_code"
-        
+        log_app_output_tail
+
         if [ $retry_count -lt $MAX_RETRIES ]; then
             log_message "Retrying in $RETRY_DELAY seconds..."
             sleep $RETRY_DELAY
         else
             log_message "Maximum retries reached. SeedSigner failed to start — rebooting into Loader mode."
+            # Say why on the panel before the device disappears into Loader mode,
+            # so a bricked-looking device is not also a silent one.
+            show_screen_message failed "$(app_failure_summary)"
             rk-reboot loader
             exit 1
         fi

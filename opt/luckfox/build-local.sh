@@ -1383,6 +1383,9 @@ install_seedsigner_app() {
     cp -v "$SCRIPT_DIR/files/start-seedsigner.sh" "$rootfs_dir/"
     cp -v "$SCRIPT_DIR/files/configure-gpio.sh" "$rootfs_dir/usr/bin/configure-gpio.sh"
     chmod +x "$rootfs_dir/usr/bin/configure-gpio.sh"
+    # Early boot splash + startup-failure message on the panel.
+    cp -v "$SCRIPT_DIR/files/show-screen-message.py" "$rootfs_dir/usr/bin/show-screen-message.py"
+    chmod +x "$rootfs_dir/usr/bin/show-screen-message.py"
     cp -v "$SCRIPT_DIR/files/rk-reboot" "$rootfs_dir/usr/bin/rk-reboot"
     chmod +x "$rootfs_dir/usr/bin/rk-reboot"
     cp -v "$SCRIPT_DIR/files/S02fsck" "$rootfs_dir/etc/init.d/"

@@ -106,19 +106,35 @@ fi
 # ---------------------------------------------------------------- oem payload
 # The SDK packages every built .ko to the oem partition at /oem/usr/ko
 # (build.sh __PACKAGE_RESOURCES -> __COPY_FILES kernel_drv_ko/ $OEM/usr/ko).
-# No rootfs hardening touches /oem, so a wireless .ko landing there is directly
-# loadable by root. Fail if any survived the strip.
+# No rootfs hardening touches /oem, so a stray .ko landing there is directly
+# loadable by root.
+#
+# Wireless and networking modules are checked SEPARATELY against their own
+# expectation. They were originally lumped together, which failed a
+# debug_network=on build over ipv6.ko — correctly retained there, because that
+# build deliberately keeps networking. A false failure on an intended
+# configuration is as bad as a missed real one.
+WIFI_KO_PATTERN='cfg80211|mac80211|8188fu|8189fs|aic8800|atbm|r8723bs|ssv6'
+NET_KO_PATTERN='ipv6'
 KO_DIR="$LUCKFOX_DIR/output/out/oem/usr/ko"
-if [ "$EXPECT_WIFI_OFF" = "1" ] && [ -d "$KO_DIR" ]; then
-    stray="$(find "$KO_DIR" -maxdepth 1 -name '*.ko' 2>/dev/null \
-        | grep -EI 'cfg80211|mac80211|ipv6|8188fu|8189fs|aic8800|atbm|r8723bs|ssv6' || true)"
+
+check_oem_payload() {
+    local label="$1" pattern="$2"
+    local stray
+    stray="$(find "$KO_DIR" -maxdepth 1 -name '*.ko' 2>/dev/null | grep -EI "$pattern" || true)"
     if [ -n "$stray" ]; then
-        fail "wireless/network modules present in /oem/usr/ko (loadable by root):"
+        fail "$label modules present in /oem/usr/ko (loadable by root):"
         echo "$stray" | sed 's|^|        |' >&2
     else
-        log "✅ no wireless/network .ko in oem payload ($(find "$KO_DIR" -maxdepth 1 -name '*.ko' | wc -l) modules total)"
+        log "✅ no $label .ko in oem payload"
     fi
-elif [ "$EXPECT_WIFI_OFF" = "1" ]; then
+}
+
+if [ -d "$KO_DIR" ]; then
+    [ "$EXPECT_WIFI_OFF" = "1" ] && check_oem_payload "wireless" "$WIFI_KO_PATTERN"
+    [ "$EXPECT_NET_OFF" = "1" ] && check_oem_payload "networking" "$NET_KO_PATTERN"
+    log "oem payload: $(find "$KO_DIR" -maxdepth 1 -name '*.ko' | wc -l) modules total"
+elif [ "$EXPECT_WIFI_OFF" = "1" ] || [ "$EXPECT_NET_OFF" = "1" ]; then
     log "(skip) oem dir not staged yet: ${KO_DIR#$LUCKFOX_DIR/}"
 fi
 

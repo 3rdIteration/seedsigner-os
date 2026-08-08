@@ -1315,6 +1315,11 @@ s/^endef\nendif/endef\nendif\nendif/
         cp -v "/build/files/configure-gpio.sh" "$ROOTFS_DIR/usr/bin/configure-gpio.sh"
         chmod +x "$ROOTFS_DIR/usr/bin/configure-gpio.sh"
     fi
+    # Early boot splash + startup-failure message on the panel.
+    if [[ -f "/build/files/show-screen-message.py" ]]; then
+        cp -v "/build/files/show-screen-message.py" "$ROOTFS_DIR/usr/bin/show-screen-message.py"
+        chmod +x "$ROOTFS_DIR/usr/bin/show-screen-message.py"
+    fi
     if [[ -f "/build/files/rk-reboot" ]]; then
         cp -v "/build/files/rk-reboot" "$ROOTFS_DIR/usr/bin/rk-reboot"
         chmod +x "$ROOTFS_DIR/usr/bin/rk-reboot"

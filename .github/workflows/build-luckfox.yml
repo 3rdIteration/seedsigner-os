@@ -1310,6 +1310,9 @@ jobs:
         cp -v ../seedsigner-os/opt/luckfox/files/start-seedsigner.sh "$ROOTFS_DIR/"
         cp -v ../seedsigner-os/opt/luckfox/files/configure-gpio.sh "$ROOTFS_DIR/usr/bin/configure-gpio.sh"
         chmod +x "$ROOTFS_DIR/usr/bin/configure-gpio.sh"
+        # Early boot splash + startup-failure message on the panel.
+        cp -v ../seedsigner-os/opt/luckfox/files/show-screen-message.py "$ROOTFS_DIR/usr/bin/show-screen-message.py"
+        chmod +x "$ROOTFS_DIR/usr/bin/show-screen-message.py"
         cp -v ../seedsigner-os/opt/luckfox/files/rk-reboot "$ROOTFS_DIR/usr/bin/rk-reboot"
         chmod +x "$ROOTFS_DIR/usr/bin/rk-reboot"
         cp -v ../seedsigner-os/opt/luckfox/files/S02fsck "$ROOTFS_DIR/etc/init.d/"
