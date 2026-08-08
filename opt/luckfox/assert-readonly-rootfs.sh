@@ -128,8 +128,47 @@ if [ -f "$IMG" ]; then
         UBI*)  log "rootfs.img is a UBI image wrapping the squashfs volume ($(du -h "$IMG" | cut -f1))" ;;
         *)     fail "rootfs.img has unexpected magic '$MAGIC' — expected squashfs (hsqs) or UBI" ;;
     esac
+
+    # The bootargs are what the kernel actually acts on, so read them back rather
+    # than trusting the generator. A squashfs rootfs.img that the bootloader
+    # still tells the kernel to mount as ubifs is an unbootable board.
+    #
+    # The SDK writes them to output/image/.env.txt -- a DOTFILE, which an earlier
+    # version of this check missed by globbing *.txt, so it silently skipped and
+    # verified nothing. env.img is the packed binary form and is grepped as a
+    # fallback. Not finding them at all is a failure, not a skip: both boards
+    # declare an env partition, so "no bootargs anywhere" means this check has
+    # stopped working rather than that there is nothing to check.
+    BOOTARGS=""
+    ENV_TXT="$LUCKFOX_DIR/output/image/.env.txt"
+    ENV_IMG="$LUCKFOX_DIR/output/image/env.img"
+    if [ -f "$ENV_TXT" ]; then
+        BOOTARGS="$(grep -aoE 'sys_bootargs=.*' "$ENV_TXT" 2>/dev/null | head -n1 || true)"
+    fi
+    if [ -z "$BOOTARGS" ] && [ -f "$ENV_IMG" ]; then
+        BOOTARGS="$(grep -aoE 'sys_bootargs=[^\x00]*' "$ENV_IMG" 2>/dev/null | head -n1 || true)"
+    fi
+
+    if [ -z "$BOOTARGS" ]; then
+        fail "could not read sys_bootargs from .env.txt or env.img — the bootargs check did not run"
+    else
+        log "bootargs: $BOOTARGS"
+        case "$BOOTARGS" in
+            *rootfstype=squashfs*) log "bootargs select a squashfs root" ;;
+            *) fail "bootargs do not set rootfstype=squashfs — the kernel will not mount the image we built" ;;
+        esac
+        # NAND mounts the squashfs through ubiblock; eMMC/SD use a plain block
+        # device, so only assert this where it applies.
+        if [ -n "$BOARD_CONFIG" ] && [ -f "$BOARD_CONFIG" ] \
+           && grep -qiE 'RK_BOOT_MEDIUM=.*(spi_nand|slc_nand)' "$BOARD_CONFIG"; then
+            case "$BOOTARGS" in
+                *root=/dev/ubiblock*) log "bootargs use a ubiblock root device" ;;
+                *) fail "NAND board without root=/dev/ubiblock* in bootargs: $BOOTARGS" ;;
+            esac
+        fi
+    fi
 else
-    log "(rootfs.img not built yet — skipping image check)"
+    log "(rootfs.img not built yet — skipping image and bootargs checks)"
 fi
 
 # The overlay init script has to be present, or a read-only root ships with

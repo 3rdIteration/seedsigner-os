@@ -1603,24 +1603,6 @@ jobs:
         bash ../seedsigner-os/opt/luckfox/assert-readonly-rootfs.sh \
           . "$RO_BOARD_CONFIG" "${SS_RO_ROOTFS:-0}"
 
-        # The bootargs the SDK derived from the filesystem type are the thing the
-        # kernel actually acts on, so read them back rather than trusting the
-        # generator. A squashfs rootfs.img that the bootloader still tells the
-        # kernel to mount as ubifs is an unbootable board.
-        if [ "${SS_RO_ROOTFS:-0}" = "1" ]; then
-          echo "Read-only rootfs bootargs check:"
-          RO_ARGS="$(grep -rhoE 'sys_bootargs=[^\"]*' output/image/*.txt output/image/env.txt 2>/dev/null | head -1 || true)"
-          if [ -n "$RO_ARGS" ]; then
-            echo "  $RO_ARGS"
-            case "$RO_ARGS" in
-              *rootfstype=squashfs*) echo "  ✅ bootargs select a squashfs root" ;;
-              *) echo "  ❌ ERROR: bootargs do not set rootfstype=squashfs"; exit 1 ;;
-            esac
-          else
-            echo "  (no sys_bootargs found in image metadata — skipping)"
-          fi
-        fi
-
         echo "UART bootargs debug (post-firmware image metadata):"
         FOUND_UART_FILES=false
         for f in output/image/*.txt output/image/*.cfg output/image/*.ini output/image/parameter*; do
