@@ -109,6 +109,46 @@ show_screen_message() {
     return 0
 }
 
+# Sweep SPI bus configurations against the panel, in place of the boot splash.
+#
+# Diagnosing "the panel is black but every layer reports success" needs the panel
+# driven several different ways in one boot, and the only instrument is the
+# operator's eye. A hardened image has no shell to run the probe from, so it is
+# triggered by dropping an empty file named `display-probe` on the microSD card
+# or in /userdata.
+#
+# The marker is consumed on use. A probe that latched on would replace the splash
+# on every subsequent boot and delay the app each time, turning a diagnostic into
+# a permanent defect; deleting it first also means a probe that hangs and gets
+# killed still cannot repeat. Removal is best-effort: on a read-only card the
+# probe simply runs again, which is harmless.
+DISPLAY_PROBE="/usr/bin/probe-display.py"
+DISPLAY_PROBE_TIMEOUT=90
+run_display_probe_if_requested() {
+    [ -f "$DISPLAY_PROBE" ] || return 1
+    marker=""
+    for dir in /mnt/microsd /mnt/sdcard "$PERSIST_DIR"; do
+        if [ -f "$dir/display-probe" ]; then
+            marker="$dir/display-probe"
+            break
+        fi
+    done
+    [ -n "$marker" ] || return 1
+
+    log_message "display probe requested via $marker"
+    rm -f "$marker" 2>/dev/null || log_message "WARNING: could not remove $marker"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$DISPLAY_PROBE_TIMEOUT" python "$DISPLAY_PROBE" 2>&1 | while IFS= read -r probe_line; do
+            log_message "$probe_line"
+        done
+    else
+        python "$DISPLAY_PROBE" 2>&1 | while IFS= read -r probe_line; do
+            log_message "$probe_line"
+        done
+    fi
+    return 0
+}
+
 # Best-effort one-line summary of why the app died, for the on-screen message.
 # Prefers the last Python exception line, which is the informative one.
 app_failure_summary() {
@@ -384,7 +424,11 @@ cd /opt/src
 # image at a glance: splash then nothing => display/SPI is fine and the app is
 # at fault; screen never lights => suspect the display chain (no
 # /dev/spidev0.0 from the configfs / device-tree overlay path).
-show_screen_message loading
+# The probe drives the panel itself and takes the place of the splash when
+# requested; running both would fight over the SPI bus for no benefit.
+if ! run_display_probe_if_requested; then
+    show_screen_message loading
+fi
 
 # Boot watchdog: recover a bad boot without the BOOT button. If the app never
 # signals readiness (the app writes $READY_FILE from MainMenuView) within the

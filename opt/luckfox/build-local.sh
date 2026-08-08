@@ -1386,6 +1386,9 @@ install_seedsigner_app() {
     # Early boot splash + startup-failure message on the panel.
     cp -v "$SCRIPT_DIR/files/show-screen-message.py" "$rootfs_dir/usr/bin/show-screen-message.py"
     chmod +x "$rootfs_dir/usr/bin/show-screen-message.py"
+    # SPI bus-configuration sweep, triggered by a `display-probe` marker file.
+    cp -v "$SCRIPT_DIR/files/probe-display.py" "$rootfs_dir/usr/bin/probe-display.py"
+    chmod +x "$rootfs_dir/usr/bin/probe-display.py"
     cp -v "$SCRIPT_DIR/files/rk-reboot" "$rootfs_dir/usr/bin/rk-reboot"
     chmod +x "$rootfs_dir/usr/bin/rk-reboot"
     cp -v "$SCRIPT_DIR/files/S02fsck" "$rootfs_dir/etc/init.d/"

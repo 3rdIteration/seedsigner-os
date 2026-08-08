@@ -373,9 +373,25 @@ jobs:
           # from eMMC where space is not tight, so the SDK's 256M is left as-is rather
           # than resized. Its filesystem is ext4, not UBIFS - that is the SDK default
           # for eMMC and the app does not care which, only that it is a real mountpoint.
-          echo "  ✓ Pi eMMC userdata retained (256M, ext4)"
+          #
+          # Because nothing is *edited* here, this block used to just announce success.
+          # An unconditional echo is not a check: it reported a userdata partition that
+          # a future SDK bump could remove, and the build would keep claiming it shipped.
+          # Assert both halves instead -- the partition and its mount config.
+          PI_PARTITION=$(grep "RK_PARTITION_CMD_IN_ENV=" "$PI_FILE" | head -1)
+          PI_FS_TYPE=$(grep "RK_PARTITION_FS_TYPE_CFG=" "$PI_FILE" | head -1)
+          if ! echo "$PI_PARTITION" | grep -q "(userdata)"; then
+            echo "❌ ERROR: Pi eMMC partition table has no userdata partition: $PI_PARTITION"
+            exit 1
+          fi
+          if ! echo "$PI_FS_TYPE" | grep -q "userdata@/userdata@"; then
+            echo "❌ ERROR: Pi eMMC fs config does not mount userdata: $PI_FS_TYPE"
+            exit 1
+          fi
+          echo "  ✓ Pi eMMC userdata VERIFIED: $PI_PARTITION"
         else
-          echo "  ⚠ Pi eMMC BoardConfig not found, skipping"
+          echo "❌ ERROR: Pi eMMC BoardConfig not found at $PI_FILE"
+          exit 1
         fi
         echo ""
 
@@ -401,10 +417,13 @@ jobs:
           exit 1
         fi
         
+        # Hard failure, matching Mini above and the policy stated in the comment:
+        # a warning here scrolls past in the log and still ships the board.
         if echo "$MAX_PARTITION" | grep -q "10M(userdata),217M(rootfs)"; then
           echo "✅ Max partition VERIFIED (oem 20M, userdata 10M, rootfs 217M)"
         else
-          echo "⚠️  WARNING: Max partition layout unexpected!"
+          echo "❌ ERROR: Max partition layout unexpected: $MAX_PARTITION"
+          exit 1
         fi
         echo ""
         
@@ -1392,6 +1411,9 @@ jobs:
         # Early boot splash + startup-failure message on the panel.
         cp -v ../seedsigner-os/opt/luckfox/files/show-screen-message.py "$ROOTFS_DIR/usr/bin/show-screen-message.py"
         chmod +x "$ROOTFS_DIR/usr/bin/show-screen-message.py"
+        # SPI bus-configuration sweep, triggered by a `display-probe` marker file.
+        cp -v ../seedsigner-os/opt/luckfox/files/probe-display.py "$ROOTFS_DIR/usr/bin/probe-display.py"
+        chmod +x "$ROOTFS_DIR/usr/bin/probe-display.py"
         cp -v ../seedsigner-os/opt/luckfox/files/rk-reboot "$ROOTFS_DIR/usr/bin/rk-reboot"
         chmod +x "$ROOTFS_DIR/usr/bin/rk-reboot"
         cp -v ../seedsigner-os/opt/luckfox/files/S02fsck "$ROOTFS_DIR/etc/init.d/"
@@ -1620,15 +1642,19 @@ jobs:
           fi
         done
 
-        # userdata.img is built for every board now that Mini/Pi/Max all keep a userdata
-        # partition; copy it if the SDK produced one so per-partition flashing has it
-        # (update.img already contains it). Still optional: the SDK only emits the image
-        # when the partition is present, so a missing file is not an error here.
+        # userdata.img is required, not optional. Mini/Max/Pi all keep a userdata
+        # partition now, and /userdata is the only non-rootfs writable store the app
+        # will save settings to. A bundle without it flashes a board that boots, looks
+        # healthy, and silently discards every setting -- a failure with no symptom
+        # until a user loses state, so it has to stop the build here.
         if [[ -f userdata.img ]]; then
           cp -v userdata.img "$NAND_BUNDLE_DIR/"
           echo "  ✓ included userdata.img in NAND bundle"
         else
-          echo "  (no userdata.img built — no userdata partition for this board)"
+          echo "❌ ERROR: userdata.img was not built for this board."
+          echo "   Every board's partition table declares a userdata partition, so the"
+          echo "   SDK should have emitted it. Check the partition patch step above."
+          exit 1
         fi
 
         # Report missing files (some may be optional)
@@ -1715,8 +1741,9 @@ jobs:
           boot.img
           oem.img
           rootfs.img
+          userdata.img
         )
-        
+
         for file in "${EMMC_FILES[@]}"; do
           if [[ -f "$file" ]]; then
             cp -v "$file" "$EMMC_BUNDLE_DIR/"
@@ -1724,7 +1751,20 @@ jobs:
             echo "Optional file not found, skipping: $file"
           fi
         done
-        
+
+        # userdata.img is not optional on any board. /userdata is the only
+        # non-rootfs writable store the app will save settings to, and shipping a
+        # bundle without it produces a board that boots, looks healthy, and
+        # silently discards every setting -- a failure with no symptom until a
+        # user loses state. The build must not be able to omit it quietly.
+        if [[ ! -f "$EMMC_BUNDLE_DIR/userdata.img" ]]; then
+          echo "❌ ERROR: userdata.img missing from the eMMC bundle."
+          echo "   The Pi BoardConfig declares 256M(userdata) and userdata@/userdata@ext4,"
+          echo "   so the SDK should have emitted it. Check RK_PRE_BUILD_USERDATA_SCRIPT"
+          echo "   and the partition patch step above."
+          exit 1
+        fi
+
         # Create README for eMMC bundle
         cat > "$EMMC_BUNDLE_DIR/README.txt" << 'EOF'
         SeedSigner Luckfox eMMC Flash Bundle

@@ -1320,6 +1320,11 @@ s/^endef\nendif/endef\nendif\nendif/
         cp -v "/build/files/show-screen-message.py" "$ROOTFS_DIR/usr/bin/show-screen-message.py"
         chmod +x "$ROOTFS_DIR/usr/bin/show-screen-message.py"
     fi
+    # SPI bus-configuration sweep, triggered by a `display-probe` marker file.
+    if [[ -f "/build/files/probe-display.py" ]]; then
+        cp -v "/build/files/probe-display.py" "$ROOTFS_DIR/usr/bin/probe-display.py"
+        chmod +x "$ROOTFS_DIR/usr/bin/probe-display.py"
+    fi
     if [[ -f "/build/files/rk-reboot" ]]; then
         cp -v "/build/files/rk-reboot" "$ROOTFS_DIR/usr/bin/rk-reboot"
         chmod +x "$ROOTFS_DIR/usr/bin/rk-reboot"
