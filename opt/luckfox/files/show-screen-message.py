@@ -131,7 +131,11 @@ def _draw(mode: str, reason: str) -> None:
             y += LINE_HEIGHT * 2
             draw.text((MARGIN, y), "Please wait", fill="grey")
 
-        driver.show_image(image)
+        # ST7735/ST7789 declare show_image(Image, Xstart, Ystart) with no
+        # defaults (the other drivers default both to 0), so the origin must be
+        # passed explicitly or the call raises TypeError and the splash never
+        # draws — which is exactly how this probe silently failed before.
+        driver.show_image(image, 0, 0)
         _log(f"drew '{mode}' message")
     except Exception as exc:
         _log(f"draw failed ({exc})")
