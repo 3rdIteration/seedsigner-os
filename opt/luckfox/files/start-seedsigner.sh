@@ -49,6 +49,40 @@ init_persistent_log() {
 clear_persistent_log() {
     rm -f "$PERSIST_LOG" "$PERSIST_LOG_PREV" 2>/dev/null || true
     PERSIST_OK=0
+    sweep_core_dumps
+}
+
+# Delete any core dumps left on writable storage. Defence in depth behind the
+# kernel-level strip (CONFIG_COREDUMP=n, see opt/luckfox/strip-kernel-network.sh):
+# a core dump is a verbatim copy of a process's memory, and the SeedSigner app
+# runs as root holding seed material, so a dump is a direct path from a crash to
+# secrets sitting in flash or on the user's removable card.
+#
+# The kernel strip stops NEW dumps. This sweeps up ones that already exist:
+# written by an earlier firmware, by a build made before the strip, or by stock
+# Luckfox images — none of which the kernel config can retroactively undo.
+#
+# Called from clear_persistent_log, so it runs on a SUCCESSFUL boot, on the same
+# reasoning: a dump is only of any diagnostic value while the device is failing,
+# and once it is up there is no reason to keep one on storage.
+#
+# Patterns are deliberately narrow. This deletes from the user's removable card,
+# so it matches only what a kernel core_pattern produces — `core-<pid>-<exe>`
+# (the SDK's /data/core-%p-%e), `core.<pid>`, and the bare `core` default — at
+# the top level only, never recursively, and only regular files.
+sweep_core_dumps() {
+    for dir in /mnt/microsd /mnt/sdcard "$PERSIST_DIR" /data; do
+        [ -d "$dir" ] || continue
+        for f in "$dir"/core "$dir"/core-* "$dir"/core.*; do
+            # An unmatched glob stays literal in sh, so -f also filters that.
+            [ -f "$f" ] || continue
+            if rm -f "$f" 2>/dev/null; then
+                log_message "removed core dump $f"
+            else
+                log_message "WARNING: could not remove core dump $f"
+            fi
+        done
+    done
 }
 
 persist_line() {

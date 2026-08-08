@@ -25,11 +25,23 @@
 # Group C (core dumps) is likewise applied to every non-dev build. A core dump is
 # a verbatim copy of a process's memory written to disk by the kernel. On this
 # device the SeedSigner app runs as ROOT and holds seed material, so a dump is a
-# direct path from a crash to secrets on storage — and in practice the SDK writes
-# them to whatever core_pattern points at, which has been observed to be the
-# user's removable microSD (48 dumps / 815 MB of rkaiq_3A_server and rkipc cores
-# were found on one card, alongside the FAT corruption that repeated
-# power-cycling mid-write produces).
+# direct path from a crash to secrets on storage.
+#
+# WHAT IS AND IS NOT ESTABLISHED HERE. 48 dumps / 815 MB of rkaiq_3A_server and
+# rkipc cores were found on one user's microSD — but that card had been in the
+# device for months, so those files cannot be attributed to any particular
+# image, and this comment previously claimed they came from the SDK's
+# core_pattern without evidence. That path looks unlikely: RkLunch.sh sets
+# core_pattern to /data/core-%p-%e, and /data does not exist anywhere in the SDK
+# rootfs, so the kernel would fail to write there. The dumps were real; the
+# mechanism that produced them is unknown, and may be stock Luckfox firmware.
+#
+# The control is justified regardless, on the default alone: CONFIG_COREDUMP is
+# ABSENT from the stock defconfig and its Kconfig default is `y`, so every image
+# built so far could dump a root process holding seed material. That is worth
+# closing whether or not it has already happened. start-seedsigner.sh also
+# sweeps any pre-existing dumps off writable storage on a successful boot, which
+# covers the files a kernel config change cannot retroactively undo.
 #
 # It is stripped at the KERNEL level for the same reason as the network stack:
 # userspace settings (core_pattern, `ulimit -c`) are not a control against root,
