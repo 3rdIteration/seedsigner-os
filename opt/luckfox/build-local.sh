@@ -882,6 +882,26 @@ apply_kernel_network_strip() {
     # RK_ENABLE_WIFI=y, and they fail modpost once the in-kernel cfg80211 is gone.
     bash "$SCRIPT_DIR/strip-kernel-network.sh" \
         "$kernel_cfg_file" "$SS_STRIP_NET" 1 "$board_config"
+
+    # Read-only rootfs (squashfs + tmpfs overlays). Shared with CI via
+    # readonly-rootfs.sh. Runs here because it also edits the kernel defconfig
+    # (CONFIG_OVERLAY_FS) and so must land before the kernel is built.
+    SS_RO_ROOTFS=1
+    case "${READONLY_ROOTFS:-auto}" in
+        on)  SS_RO_ROOTFS=1 ;;
+        off) SS_RO_ROOTFS=0 ;;
+        # auto: this function only runs for non-dev, where an immutable root is
+        # the point; a dev image keeps a writable one for poking at over serial.
+        *)   SS_RO_ROOTFS=1 ;;
+    esac
+    export SS_RO_ROOTFS
+
+    # Recorded for the post-build assertions, which need the same board config.
+    export SS_BOARD_CONFIG="$board_config"
+
+    print_header "Configuring Read-Only Rootfs (enabled=$SS_RO_ROOTFS)"
+    bash "$SCRIPT_DIR/readonly-rootfs.sh" \
+        "$board_config" "$kernel_cfg_file" "$SS_RO_ROOTFS"
 }
 
 apply_usb_mode_config() {
@@ -1275,6 +1295,7 @@ build_system() {
     # silently drops defconfig lines whose symbol/deps don't resolve.
     if [ "$BUILD_VARIANT" == "non-dev" ]; then
         bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1
+        bash "$SCRIPT_DIR/assert-readonly-rootfs.sh" "$WORK_DIR/luckfox-pico" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
 
     print_info "Building Rootfs..."
@@ -1391,10 +1412,14 @@ install_seedsigner_app() {
     chmod +x "$rootfs_dir/usr/bin/probe-display.py"
     cp -v "$SCRIPT_DIR/files/rk-reboot" "$rootfs_dir/usr/bin/rk-reboot"
     chmod +x "$rootfs_dir/usr/bin/rk-reboot"
+    # Must sort before every other init script: luckfox-config rewrites
+    # /etc/luckfox.cfg at S99 and needs /etc writable by then.
+    cp -v "$SCRIPT_DIR/files/S01overlay" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S02fsck" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S10mdev" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S60pcscd" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S99seedsigner" "$rootfs_dir/etc/init.d/"
+    chmod +x "$rootfs_dir/etc/init.d/S01overlay"
     chmod +x "$rootfs_dir/etc/init.d/S02fsck"
     chmod +x "$rootfs_dir/etc/init.d/S10mdev"
     chmod +x "$rootfs_dir/etc/init.d/S60pcscd"
@@ -1487,6 +1512,7 @@ package_firmware() {
     # there would be loadable by root.
     if [ "$BUILD_VARIANT" == "non-dev" ]; then
         bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1
+        bash "$SCRIPT_DIR/assert-readonly-rootfs.sh" "$WORK_DIR/luckfox-pico" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
     debug_uart_bootargs_outputs
 

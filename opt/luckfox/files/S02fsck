@@ -126,6 +126,12 @@ start() {
                 fi
             fi
             ;;
+        squashfs)
+            # Nothing to check and nothing that can go wrong: squashfs has no
+            # journal and no write path, which is the whole point of using it
+            # for / (see opt/luckfox/readonly-rootfs.sh).
+            log_fsck "Root ($root_dev) is squashfs (read-only); no fsck needed"
+            ;;
         *)
             log_fsck "Root ($root_dev) is $root_fstype (likely UBIFS/SPI-NAND); skipping root fsck"
             ;;

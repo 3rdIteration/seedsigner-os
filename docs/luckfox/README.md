@@ -164,6 +164,49 @@ those prunes). The prune decides what to delete before deleting anything and **a
 if `IQFILES_KEEP` matches nothing**, so a bad keep-list can't silently ship a camera with no tuning data.
 The same hook is the right home for any future oem-partition surgery.
 
+## Read-only root filesystem
+
+Non-dev images mount `/` as **squashfs** with **tmpfs overlays** on `/etc`, `/var`, `/root` and `/home`.
+A dirty unmount cannot corrupt the rootfs (squashfs has no journal, no allocator and no write path) and no
+runtime change to `/` survives a reboot, because none can be committed in the first place.
+
+This replaces a writable UBIFS root that was **self-damaging in normal operation**, via two confirmed writers:
+
+- `luckfox-config` does `sed -i` on `/etc/luckfox.cfg` on **every boot**. A power cut mid-write truncates or
+  loses the file; `luckfox_load_cfg` then silently `touch`es an empty one, zero device-tree overlays are
+  created, there is no `/dev/spidev0.0` — and the board comes up with a **black screen and no way to report
+  why**. That failure is indistinguishable on the bench from a display bug.
+- the shipped Python bytecode sits on the same filesystem. A truncated `.pyc` surfaced as
+  `EOFError: marshal data is too short` and needed a reflash.
+
+Neither is fixable in application code: the damage happens during UBIFS journal replay, to files nobody was
+deliberately writing.
+
+| Path | State | Notes |
+|---|---|---|
+| `/` | squashfs, read-only | immutable after flash |
+| `/etc` `/var` `/root` `/home` | overlayfs, tmpfs upper | writable; **discarded at reboot** |
+| `/opt` | read-only | app + bytecode; deliberately not overlaid |
+| `/userdata` | **read-write, persistent** | the only persistent store — settings live here |
+| `/oem` | read-write | **not yet covered** — see below |
+
+**Moving parts.** `readonly-rootfs.sh` (build time) sets `rootfs@IGNORE@squashfs` in the board config plus
+`RK_SQUASHFS_COMP=xz`, and enables `CONFIG_OVERLAY_FS` in the kernel defconfig. Bootargs are **not** patched:
+the SDK derives `root=`/`rootfstype=` from the filesystem type (`ubi.block=0,rootfs root=/dev/ubiblock0_0` on
+NAND, `root=/dev/mmcblk0p<n>` on eMMC). `files/S01overlay` mounts the overlays at runtime, and is a **no-op on
+a writable root**, so dev images are unaffected. Controlled by the `readonly_rootfs` build input
+(`auto`/`on`/`off`; auto = on for non-dev).
+
+**Why the assertion matters.** `assert-readonly-rootfs.sh` checks the **generated** kernel `.config`, never
+the defconfig written — Kconfig silently drops lines for symbols whose dependencies are unmet. A squashfs root
+on a kernel without overlayfs boots fine and then fails the first write to `/etc`, which presents as exactly
+the black screen described above. That has to fail the build, not the board.
+
+**Not yet covered:** the `oem` partition is still read-write. Its surface is much smaller (no equivalent of
+the per-boot `luckfox.cfg` rewrite has been observed), but it is the remaining writable filesystem that is
+mounted on every boot. The SDK does support `oem@/oem@squashfs`; converting it is a separate change needing
+its own hardware verification.
+
 ## Boot recovery & auto-failover to Loader
 
 So a bad image self-heals into a flashable state without the BOOT button:

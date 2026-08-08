@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
 # strip-kernel-network.sh <KERNEL_DEFCONFIG_PATH> [STRIP_NET] [STRIP_WIFI]
+#                         [BOARD_CONFIG] [STRIP_COREDUMP]
 #
-# Remove networking and/or the WiFi stack from the Luckfox kernel at BUILD time,
-# for non-dev (production) images. Shared by the GitHub Actions build and both
-# local Docker builds (os-build.sh / build-local.sh) — change this script, never
-# one caller. Must run BEFORE `./build.sh kernel`.
+# Remove networking, the WiFi stack and/or core-dump support from the Luckfox
+# kernel at BUILD time, for non-dev (production) images. Shared by the GitHub
+# Actions build and both local Docker builds (os-build.sh / build-local.sh) —
+# change this script, never one caller. Must run BEFORE `./build.sh kernel`.
 #
 # WHY KERNEL-LEVEL: the threat model is root-level code execution (the SeedSigner
 # Python app runs as root). Userspace hardening (harden-nondev.sh's loopback-only
@@ -14,11 +15,28 @@
 # removing the capability from the kernel is a real control: a capability that
 # was never compiled in cannot be restored at runtime.
 #
-#   STRIP_NET  1|0 (default 1) — Group A, gate on: non-dev AND debug_network=off
-#   STRIP_WIFI 1|0 (default 1) — Group B, gate on: non-dev
+#   STRIP_NET      1|0 (default 1) — Group A, gate on: non-dev AND debug_network=off
+#   STRIP_WIFI     1|0 (default 1) — Group B, gate on: non-dev
+#   STRIP_COREDUMP 1|0 (default 1) — Group C, gate on: non-dev
 #
 # Group B is applied even to debug_network=on builds: the Ethernet debug channel
 # is wired Ethernet, no Luckfox build ever uses WiFi.
+#
+# Group C (core dumps) is likewise applied to every non-dev build. A core dump is
+# a verbatim copy of a process's memory written to disk by the kernel. On this
+# device the SeedSigner app runs as ROOT and holds seed material, so a dump is a
+# direct path from a crash to secrets on storage — and in practice the SDK writes
+# them to whatever core_pattern points at, which has been observed to be the
+# user's removable microSD (48 dumps / 815 MB of rkaiq_3A_server and rkipc cores
+# were found on one card, alongside the FAT corruption that repeated
+# power-cycling mid-write produces).
+#
+# It is stripped at the KERNEL level for the same reason as the network stack:
+# userspace settings (core_pattern, `ulimit -c`) are not a control against root,
+# and the SDK's RkLunch.sh sets `ulimit -c unlimited` and its own core_pattern
+# late in boot, after any rootfs-level hardening has run. harden-nondev.sh still
+# sets the userspace knobs as defence in depth, but CONFIG_COREDUMP=n is the
+# control: with no do_coredump() in the kernel, nothing can re-enable dumping.
 #
 # DO NOT ADD (verified constraints — breaking these breaks the device):
 #   * CONFIG_NET / CONFIG_UNIX must stay =y. pcscd talks over an AF_UNIX socket

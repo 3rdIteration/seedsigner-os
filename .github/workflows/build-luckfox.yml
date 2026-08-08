@@ -72,6 +72,15 @@ on:
           - 'on'
           - 'off'
         default: 'on'
+      readonly_rootfs:
+        description: 'Read-only root filesystem: squashfs + tmpfs overlays on /etc /var /root /home, so a dirty unmount cannot corrupt / and no change to / survives a reboot. /userdata stays writable. auto follows build_variant (non-dev=on, dev=off).'
+        required: false
+        type: choice
+        options:
+          - 'auto'
+          - 'on'
+          - 'off'
+        default: 'auto'
       build_variant:
         description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell). Automatic push/PR CI always builds dev.'
         required: false
@@ -140,6 +149,10 @@ on:
         required: false
         type: string
         default: 'on'
+      readonly_rootfs:
+        required: false
+        type: string
+        default: 'auto'
       build_variant:
         required: false
         type: string
@@ -761,6 +774,21 @@ jobs:
         # Record for the post-build assertion step.
         echo "SS_STRIP_NET=$STRIP_NET" >> "$GITHUB_ENV"
 
+        # Read-only rootfs: squashfs + tmpfs overlays. Runs here because it also
+        # edits the kernel defconfig (CONFIG_OVERLAY_FS) and so must land before
+        # `./build.sh kernel`, alongside the other defconfig surgery.
+        RO_ROOTFS="${{ inputs.readonly_rootfs || 'auto' }}"
+        case "$RO_ROOTFS" in
+          on)  SS_RO_ROOTFS=1 ;;
+          off) SS_RO_ROOTFS=0 ;;
+          # auto: hardened images get an immutable root; dev images keep a
+          # writable one so the rootfs can be poked at over the serial console.
+          *)   if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then SS_RO_ROOTFS=1; else SS_RO_ROOTFS=0; fi ;;
+        esac
+        bash ../seedsigner-os/opt/luckfox/readonly-rootfs.sh \
+          "$BOARD_CONFIG" "$KERNEL_CFG_FILE" "$SS_RO_ROOTFS"
+        echo "SS_RO_ROOTFS=$SS_RO_ROOTFS" >> "$GITHUB_ENV"
+
     - name: Enable HWRNG and hardware crypto in kernel defconfig and DTS
       run: |
         cd luckfox-pico
@@ -1249,6 +1277,21 @@ jobs:
         # canary and that no wireless .ko reached the oem payload.
         bash seedsigner-os/opt/luckfox/assert-kernel-network.sh luckfox-pico "${SS_STRIP_NET:-1}" 1
 
+    - name: Verify read-only rootfs
+      run: |
+        # Same reasoning as above, and the same failure mode to guard against:
+        # CONFIG_OVERLAY_FS silently dropped by Kconfig gives a squashfs root
+        # whose /etc cannot be written, which presents on the bench as a black
+        # screen rather than as an obvious filesystem error.
+        BOARD_CONFIG="$BOARD_CONFIG_PATH"
+        if [ ! -f "luckfox-pico/$BOARD_CONFIG" ] && [ -L "luckfox-pico/.BoardConfig.mk" ]; then
+          BOARD_CONFIG="$(readlink -f luckfox-pico/.BoardConfig.mk)"
+        else
+          BOARD_CONFIG="luckfox-pico/$BOARD_CONFIG"
+        fi
+        bash seedsigner-os/opt/luckfox/assert-readonly-rootfs.sh \
+          luckfox-pico "$BOARD_CONFIG" "${SS_RO_ROOTFS:-0}"
+
     - name: Package Rust toolchain for caching
       if: steps.rust-cache.outputs.cache-hit != 'true' || env.RUST_FROM_CACHE != 'true'
       run: |
@@ -1416,10 +1459,14 @@ jobs:
         chmod +x "$ROOTFS_DIR/usr/bin/probe-display.py"
         cp -v ../seedsigner-os/opt/luckfox/files/rk-reboot "$ROOTFS_DIR/usr/bin/rk-reboot"
         chmod +x "$ROOTFS_DIR/usr/bin/rk-reboot"
+        # Must sort before every other init script: luckfox-config rewrites
+        # /etc/luckfox.cfg at S99 and needs /etc writable by then.
+        cp -v ../seedsigner-os/opt/luckfox/files/S01overlay "$ROOTFS_DIR/etc/init.d/"
         cp -v ../seedsigner-os/opt/luckfox/files/S02fsck "$ROOTFS_DIR/etc/init.d/"
         cp -v ../seedsigner-os/opt/luckfox/files/S10mdev "$ROOTFS_DIR/etc/init.d/"
         cp -v ../seedsigner-os/opt/luckfox/files/S60pcscd "$ROOTFS_DIR/etc/init.d/"
         cp -v ../seedsigner-os/opt/luckfox/files/S99seedsigner "$ROOTFS_DIR/etc/init.d/"
+        chmod +x "$ROOTFS_DIR/etc/init.d/S01overlay"
         chmod +x "$ROOTFS_DIR/etc/init.d/S02fsck"
         chmod +x "$ROOTFS_DIR/etc/init.d/S10mdev"
         chmod +x "$ROOTFS_DIR/etc/init.d/S60pcscd"
@@ -1527,6 +1574,31 @@ jobs:
         # touches, so a stray wireless module there would be loadable by root.
         if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
           bash ../seedsigner-os/opt/luckfox/assert-kernel-network.sh . "${SS_STRIP_NET:-1}" 1
+        fi
+
+        # Re-run with the images built so the rootfs.img format is checked too;
+        # the earlier run could only see the kernel config.
+        RO_BOARD_CONFIG="$BOARD_CONFIG_PATH"
+        [ -f "$RO_BOARD_CONFIG" ] || RO_BOARD_CONFIG="$(readlink -f .BoardConfig.mk 2>/dev/null || true)"
+        bash ../seedsigner-os/opt/luckfox/assert-readonly-rootfs.sh \
+          . "$RO_BOARD_CONFIG" "${SS_RO_ROOTFS:-0}"
+
+        # The bootargs the SDK derived from the filesystem type are the thing the
+        # kernel actually acts on, so read them back rather than trusting the
+        # generator. A squashfs rootfs.img that the bootloader still tells the
+        # kernel to mount as ubifs is an unbootable board.
+        if [ "${SS_RO_ROOTFS:-0}" = "1" ]; then
+          echo "Read-only rootfs bootargs check:"
+          RO_ARGS="$(grep -rhoE 'sys_bootargs=[^\"]*' output/image/*.txt output/image/env.txt 2>/dev/null | head -1 || true)"
+          if [ -n "$RO_ARGS" ]; then
+            echo "  $RO_ARGS"
+            case "$RO_ARGS" in
+              *rootfstype=squashfs*) echo "  ✅ bootargs select a squashfs root" ;;
+              *) echo "  ❌ ERROR: bootargs do not set rootfstype=squashfs"; exit 1 ;;
+            esac
+          else
+            echo "  (no sys_bootargs found in image metadata — skipping)"
+          fi
         fi
 
         echo "UART bootargs debug (post-firmware image metadata):"

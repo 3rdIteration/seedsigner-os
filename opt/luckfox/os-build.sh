@@ -23,6 +23,9 @@ export SEEDSIGNER_USB_MODE="${SEEDSIGNER_USB_MODE:-auto}"
 # auto follows the variant: non-dev = off (no interface bring-up, no telnet),
 # dev = on. Applied via harden-nondev.sh's HARDEN_DISABLE_NETWORK.
 export SEEDSIGNER_DEBUG_NETWORK="${SEEDSIGNER_DEBUG_NETWORK:-auto}"
+# Read-only (squashfs) rootfs with tmpfs overlays: auto|on|off. auto follows the
+# build variant, matching the CI input of the same name.
+export SEEDSIGNER_READONLY_ROOTFS="${SEEDSIGNER_READONLY_ROOTFS:-auto}"
 # SeedSigner OS Buildroot packages now live in this same repo. build.sh mounts
 # opt/external-packages into the container at /build/external-packages, so there
 # is no seedsigner-os clone.
@@ -711,6 +714,26 @@ apply_kernel_network_strip() {
     # RK_ENABLE_WIFI=y, and they fail modpost once the in-kernel cfg80211 is gone.
     bash "$SEEDSIGNER_LUCKFOX_DIR/strip-kernel-network.sh" \
         "$kernel_cfg_file" "$strip_net" 1 "$board_config"
+
+    # Read-only rootfs (squashfs + tmpfs overlays). Shared with CI via
+    # readonly-rootfs.sh. Runs here because it also edits the kernel defconfig
+    # (CONFIG_OVERLAY_FS) and so must land before the kernel is built.
+    local ro_rootfs=1
+    case "$SEEDSIGNER_READONLY_ROOTFS" in
+        on)  ro_rootfs=1 ;;
+        off) ro_rootfs=0 ;;
+        # auto: this function only runs for non-dev, where an immutable root is
+        # the point; a dev image keeps a writable one for poking at over serial.
+        *)   ro_rootfs=1 ;;
+    esac
+    export SS_RO_ROOTFS="$ro_rootfs"
+
+    # Recorded for the post-build assertions, which need the same board config.
+    export SS_BOARD_CONFIG="$board_config"
+
+    print_step "Configuring read-only rootfs (enabled=$ro_rootfs)"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/readonly-rootfs.sh" \
+        "$board_config" "$kernel_cfg_file" "$ro_rootfs"
 }
 
 apply_hwrng_crypto_kernel_patch() {
@@ -1249,6 +1272,7 @@ s/^endef\nendif/endef\nendif\nendif/
     # silently drops defconfig lines whose symbol/deps don't resolve.
     if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
         bash "$SEEDSIGNER_LUCKFOX_DIR/assert-kernel-network.sh" "$LUCKFOX_SDK_DIR" "${SS_STRIP_NET:-1}" 1
+        bash "$SEEDSIGNER_LUCKFOX_DIR/assert-readonly-rootfs.sh" "$LUCKFOX_SDK_DIR" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
 
     print_step "Building Rootfs"
@@ -1329,10 +1353,14 @@ s/^endef\nendif/endef\nendif\nendif/
         cp -v "/build/files/rk-reboot" "$ROOTFS_DIR/usr/bin/rk-reboot"
         chmod +x "$ROOTFS_DIR/usr/bin/rk-reboot"
     fi
+    # Must sort before every other init script: luckfox-config rewrites
+    # /etc/luckfox.cfg at S99 and needs /etc writable by then.
+    [[ -f "/build/files/S01overlay" ]] && cp -v "/build/files/S01overlay" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S02fsck" ]] && cp -v "/build/files/S02fsck" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S10mdev" ]] && cp -v "/build/files/S10mdev" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S60pcscd" ]] && cp -v "/build/files/S60pcscd" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S99seedsigner" ]] && cp -v "/build/files/S99seedsigner" "$ROOTFS_DIR/etc/init.d/"
+    [[ -f "$ROOTFS_DIR/etc/init.d/S01overlay" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S01overlay"
     [[ -f "$ROOTFS_DIR/etc/init.d/S02fsck" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S02fsck"
     [[ -f "$ROOTFS_DIR/etc/init.d/S10mdev" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S10mdev"
     [[ -f "$ROOTFS_DIR/etc/init.d/S60pcscd" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S60pcscd"
@@ -1422,6 +1450,7 @@ s/^endef\nendif/endef\nendif\nendif/
     # there would be loadable by root.
     if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
         bash "$SEEDSIGNER_LUCKFOX_DIR/assert-kernel-network.sh" "$LUCKFOX_SDK_DIR" "${SS_STRIP_NET:-1}" 1
+        bash "$SEEDSIGNER_LUCKFOX_DIR/assert-readonly-rootfs.sh" "$LUCKFOX_SDK_DIR" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
     debug_uart_bootargs_outputs
 
