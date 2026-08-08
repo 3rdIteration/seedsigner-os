@@ -770,13 +770,33 @@ jobs:
         # (built when RK_ENABLE_WIFI=y) link against, so they fail modpost and
         # kill the build. The script turns RK_ENABLE_WIFI off as part of the strip.
         bash ../seedsigner-os/opt/luckfox/strip-kernel-network.sh \
-          "$KERNEL_CFG_FILE" "$STRIP_NET" 1 "$BOARD_CONFIG"
+          "$KERNEL_CFG_FILE" "$STRIP_NET" 1 "$BOARD_CONFIG" 1
         # Record for the post-build assertion step.
         echo "SS_STRIP_NET=$STRIP_NET" >> "$GITHUB_ENV"
 
-        # Read-only rootfs: squashfs + tmpfs overlays. Runs here because it also
-        # edits the kernel defconfig (CONFIG_OVERLAY_FS) and so must land before
-        # `./build.sh kernel`, alongside the other defconfig surgery.
+    # Deliberately NOT gated on non-dev, unlike the strip above: readonly_rootfs
+    # is independently settable, and a dev image with a read-only root is the
+    # only configuration where the property can actually be TESTED — a hardened
+    # image has no shell to check `mount` or prove a write to /etc is discarded.
+    # Gating this on non-dev would silently ignore `readonly_rootfs=on` for
+    # exactly the build you would use to verify it.
+    - name: Configure read-only rootfs
+      run: |
+        cd luckfox-pico
+
+        BOARD_CONFIG="$BOARD_CONFIG_PATH"
+        if [ ! -f "$BOARD_CONFIG" ] && [ -L ".BoardConfig.mk" ]; then
+          BOARD_CONFIG="$(readlink -f .BoardConfig.mk)"
+        fi
+        if [ ! -f "$BOARD_CONFIG" ]; then
+          echo "ERROR: Board config file not found for read-only rootfs: $BOARD_CONFIG"; exit 1
+        fi
+        KERNEL_DEFCONFIG=$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$BOARD_CONFIG" | head -n1)
+        [ -n "$KERNEL_DEFCONFIG" ] || KERNEL_DEFCONFIG="luckfox_rv1106_linux_defconfig"
+        KERNEL_CFG_FILE="sysdrv/source/kernel/arch/arm/configs/${KERNEL_DEFCONFIG}"
+
+        # Must land before `./build.sh kernel`: this also edits the kernel
+        # defconfig (CONFIG_OVERLAY_FS), not just the partition config.
         RO_ROOTFS="${{ inputs.readonly_rootfs || 'auto' }}"
         case "$RO_ROOTFS" in
           on)  SS_RO_ROOTFS=1 ;;
@@ -1275,7 +1295,7 @@ jobs:
         # are unmet (the bootcount work proved this — a green build shipped a
         # U-Boot with zero bootcount code). Also checks the CONFIGFS_FS display
         # canary and that no wireless .ko reached the oem payload.
-        bash seedsigner-os/opt/luckfox/assert-kernel-network.sh luckfox-pico "${SS_STRIP_NET:-1}" 1
+        bash seedsigner-os/opt/luckfox/assert-kernel-network.sh luckfox-pico "${SS_STRIP_NET:-1}" 1 1
 
     - name: Verify read-only rootfs
       run: |
@@ -1573,7 +1593,7 @@ jobs:
         # every built .ko is packaged to /oem/usr/ko, which no rootfs hardening
         # touches, so a stray wireless module there would be loadable by root.
         if [ "${{ inputs.build_variant || 'dev' }}" = "non-dev" ]; then
-          bash ../seedsigner-os/opt/luckfox/assert-kernel-network.sh . "${SS_STRIP_NET:-1}" 1
+          bash ../seedsigner-os/opt/luckfox/assert-kernel-network.sh . "${SS_STRIP_NET:-1}" 1 1
         fi
 
         # Re-run with the images built so the rootfs.img format is checked too;

@@ -881,21 +881,63 @@ apply_kernel_network_strip() {
     # The board config is passed too: the SDK builds OUT-OF-TREE wifi drivers when
     # RK_ENABLE_WIFI=y, and they fail modpost once the in-kernel cfg80211 is gone.
     bash "$SCRIPT_DIR/strip-kernel-network.sh" \
-        "$kernel_cfg_file" "$SS_STRIP_NET" 1 "$board_config"
+        "$kernel_cfg_file" "$SS_STRIP_NET" 1 "$board_config" 1
 
-    # Read-only rootfs (squashfs + tmpfs overlays). Shared with CI via
-    # readonly-rootfs.sh. Runs here because it also edits the kernel defconfig
-    # (CONFIG_OVERLAY_FS) and so must land before the kernel is built.
-    SS_RO_ROOTFS=1
+}
+
+# Read-only rootfs (squashfs + tmpfs overlays). Shared with CI via
+# readonly-rootfs.sh.
+#
+# Deliberately NOT gated on non-dev, unlike apply_kernel_network_strip: a dev
+# image with a read-only root is the only configuration where the property can
+# actually be TESTED, because a hardened image has no shell to check `mount` or
+# prove that a write to /etc is discarded. Gating this would silently ignore
+# READONLY_ROOTFS=on for exactly the build used to verify it.
+apply_readonly_rootfs() {
+    local hardware="$1"
+    local boot_medium="$2"
+
+    local sdk_hardware sdk_boot_medium
+    case "$hardware" in
+        mini) sdk_hardware="RV1103_Luckfox_Pico_Mini" ;;
+        max)  sdk_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
+        pi)   sdk_hardware="RV1106_Luckfox_Pico_Pi" ;;
+        *) print_error "Unknown hardware type for read-only rootfs: $hardware"; exit 1 ;;
+    esac
+    case "$boot_medium" in
+        sd)   sdk_boot_medium="SD_CARD" ;;
+        nand) sdk_boot_medium="SPI_NAND" ;;
+        emmc) sdk_boot_medium="EMMC" ;;
+        *) print_error "Unknown boot medium for read-only rootfs: $boot_medium"; exit 1 ;;
+    esac
+
+    local board_config="$WORK_DIR/luckfox-pico/project/cfg/BoardConfig_IPC/BoardConfig-${sdk_boot_medium}-Buildroot-${sdk_hardware}-IPC.mk"
+    if [ ! -f "$board_config" ] && [ -L "$WORK_DIR/luckfox-pico/.BoardConfig.mk" ]; then
+        board_config="$(readlink -f "$WORK_DIR/luckfox-pico/.BoardConfig.mk")"
+    fi
+    if [ ! -f "$board_config" ]; then
+        print_error "Board config file not found for read-only rootfs: $board_config"
+        exit 1
+    fi
+
+    local kernel_defconfig
+    kernel_defconfig="$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$board_config" | head -n1)"
+    [ -n "$kernel_defconfig" ] || kernel_defconfig="luckfox_rv1106_linux_defconfig"
+
+    local kernel_cfg_file="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/configs/$kernel_defconfig"
+    if [ ! -f "$kernel_cfg_file" ]; then
+        print_error "Kernel defconfig not found for read-only rootfs: $kernel_cfg_file"
+        exit 1
+    fi
+
     case "${READONLY_ROOTFS:-auto}" in
         on)  SS_RO_ROOTFS=1 ;;
         off) SS_RO_ROOTFS=0 ;;
-        # auto: this function only runs for non-dev, where an immutable root is
-        # the point; a dev image keeps a writable one for poking at over serial.
-        *)   SS_RO_ROOTFS=1 ;;
+        # auto: hardened images get an immutable root; dev images keep a writable
+        # one so the rootfs can be poked at over the serial console.
+        *)   if [ "$BUILD_VARIANT" = "non-dev" ]; then SS_RO_ROOTFS=1; else SS_RO_ROOTFS=0; fi ;;
     esac
     export SS_RO_ROOTFS
-
     # Recorded for the post-build assertions, which need the same board config.
     export SS_BOARD_CONFIG="$board_config"
 
@@ -1294,7 +1336,7 @@ build_system() {
     # Assert the strip took effect against the GENERATED .config — Kconfig
     # silently drops defconfig lines whose symbol/deps don't resolve.
     if [ "$BUILD_VARIANT" == "non-dev" ]; then
-        bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1
+        bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1 1
         bash "$SCRIPT_DIR/assert-readonly-rootfs.sh" "$WORK_DIR/luckfox-pico" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
 
@@ -1511,7 +1553,7 @@ package_firmware() {
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.
     if [ "$BUILD_VARIANT" == "non-dev" ]; then
-        bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1
+        bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1 1
         bash "$SCRIPT_DIR/assert-readonly-rootfs.sh" "$WORK_DIR/luckfox-pico" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
     debug_uart_bootargs_outputs
@@ -1792,6 +1834,7 @@ main() {
     apply_hwrng_crypto_kernel_patch "$hardware" "$boot_medium"
     apply_crypto_dts_patch "$hardware"
     apply_kernel_network_strip "$hardware" "$boot_medium"
+    apply_readonly_rootfs "$hardware" "$boot_medium"
     apply_usb_mode_config "$hardware"
     apply_mini_cma_config "$hardware" "$boot_medium"
     prepare_buildroot

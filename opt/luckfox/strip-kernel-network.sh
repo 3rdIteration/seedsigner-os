@@ -34,9 +34,10 @@
 # It is stripped at the KERNEL level for the same reason as the network stack:
 # userspace settings (core_pattern, `ulimit -c`) are not a control against root,
 # and the SDK's RkLunch.sh sets `ulimit -c unlimited` and its own core_pattern
-# late in boot, after any rootfs-level hardening has run. harden-nondev.sh still
-# sets the userspace knobs as defence in depth, but CONFIG_COREDUMP=n is the
-# control: with no do_coredump() in the kernel, nothing can re-enable dumping.
+# (/data/core-%p-%e) late in boot, after any rootfs-level hardening has run —
+# so a userspace knob set earlier is simply overwritten. CONFIG_COREDUMP=n is
+# the whole control: with no do_coredump() in the kernel, nothing can re-enable
+# dumping, and RkLunch.sh's two lines become inert rather than needing patching.
 #
 # DO NOT ADD (verified constraints — breaking these breaks the device):
 #   * CONFIG_NET / CONFIG_UNIX must stay =y. pcscd talks over an AF_UNIX socket
@@ -64,6 +65,7 @@ DEFCONFIG="${1:-}"
 STRIP_NET="${2:-1}"
 STRIP_WIFI="${3:-1}"
 BOARD_CONFIG="${4:-}"
+STRIP_COREDUMP="${5:-1}"
 
 if [ -z "$DEFCONFIG" ] || [ ! -f "$DEFCONFIG" ]; then
     echo "strip-kernel-network: kernel defconfig '${DEFCONFIG:-<empty>}' not found" >&2
@@ -94,7 +96,7 @@ disable_sym() {
     [ "$after" -ge 1 ] || { echo "strip-kernel-network: failed to disable $sym" >&2; exit 1; }
 }
 
-echo "=== Stripping kernel network/WiFi in $(basename "$DEFCONFIG") (net=$STRIP_NET wifi=$STRIP_WIFI) ==="
+echo "=== Stripping kernel network/WiFi/coredump in $(basename "$DEFCONFIG") (net=$STRIP_NET wifi=$STRIP_WIFI coredump=$STRIP_COREDUMP) ==="
 
 if [ "$STRIP_NET" = "1" ]; then
     # Group A — no TCP/IP and no network devices of any kind. Root cannot create
@@ -161,6 +163,26 @@ else
     log "WiFi drivers RETAINED"
 fi
 
+if [ "$STRIP_COREDUMP" = "1" ]; then
+    # Group C — no process core dumps. A core dump is a verbatim copy of a
+    # process's memory written to storage by the kernel. The SeedSigner app runs
+    # as ROOT and holds seed material, so a dump is a direct path from a crash to
+    # secrets in flash (or on the user's removable card, which is where 48 dumps
+    # / 815 MB of rkaiq_3A_server and rkipc cores were actually found).
+    #
+    # CONFIG_COREDUMP is ABSENT from the stock defconfig, and its Kconfig default
+    # is `y` — so leaving it alone leaves dumping ON. It has to be set explicitly.
+    #
+    # This is the only real control. The SDK's RkLunch.sh runs `ulimit -c
+    # unlimited` and points core_pattern at /data/core-%p-%e late in boot, after
+    # any userspace hardening; with do_coredump() compiled out, both are inert.
+    disable_sym CONFIG_COREDUMP
+    # depends on COREDUMP, so Kconfig drops it anyway — explicit for the reader.
+    disable_sym CONFIG_ELF_CORE
+else
+    log "core dumps RETAINED"
+fi
+
 # Guard the constraints above: this script must never be the reason NET/UNIX/
 # MODULES/USB_GADGET got turned off.
 for keep in CONFIG_NET CONFIG_UNIX CONFIG_MODULES CONFIG_USB_GADGET; do
@@ -171,4 +193,4 @@ for keep in CONFIG_NET CONFIG_UNIX CONFIG_MODULES CONFIG_USB_GADGET; do
 done
 
 log "kept CONFIG_NET/CONFIG_UNIX (AF_UNIX for pcscd), CONFIG_MODULES (camera), CONFIG_USB_GADGET (configfs/display)"
-echo "=== kernel network/WiFi strip complete ==="
+echo "=== kernel network/WiFi/coredump strip complete ==="

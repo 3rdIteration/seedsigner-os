@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # assert-kernel-network.sh <LUCKFOX_PICO_DIR> [EXPECT_NET_OFF] [EXPECT_WIFI_OFF]
+#                          [EXPECT_COREDUMP_OFF]
 #
 # Post-build verification that the non-dev kernel network/WiFi strip actually
 # took effect. Shared by the GitHub Actions build and both local Docker builds.
@@ -14,14 +15,16 @@
 # stayed green. A green build must NOT be able to ship a networked kernel, so we
 # assert on the GENERATED .config, never on the defconfig we wrote.
 #
-#   EXPECT_NET_OFF   1|0 (default 1)
-#   EXPECT_WIFI_OFF  1|0 (default 1)
+#   EXPECT_NET_OFF       1|0 (default 1)
+#   EXPECT_WIFI_OFF      1|0 (default 1)
+#   EXPECT_COREDUMP_OFF  1|0 (default 1)
 
 set -eu
 
 LUCKFOX_DIR="${1:-}"
 EXPECT_NET_OFF="${2:-1}"
 EXPECT_WIFI_OFF="${3:-1}"
+EXPECT_COREDUMP_OFF="${4:-1}"
 
 if [ -z "$LUCKFOX_DIR" ] || [ ! -d "$LUCKFOX_DIR" ]; then
     echo "assert-kernel-network: luckfox-pico dir '${LUCKFOX_DIR:-<empty>}' not found" >&2
@@ -32,7 +35,7 @@ log()  { echo "  [kassert] $*"; }
 fail() { echo "  [kassert] ❌ $*" >&2; FAILED=1; }
 FAILED=0
 
-echo "=== Verifying non-dev kernel network/WiFi strip ==="
+echo "=== Verifying non-dev kernel network/WiFi/coredump strip ==="
 
 # ---------------------------------------------------------------- generated .config
 # Locate the .config the kernel was actually built with.
@@ -71,6 +74,19 @@ if [ "$EXPECT_WIFI_OFF" = "1" ]; then
     done
 else
     log "(skip) WiFi expected ON"
+fi
+
+# Core dumps. Asserted separately because this one is easy to get silently
+# wrong: CONFIG_COREDUMP is ABSENT from the stock defconfig and defaults to `y`,
+# so "not mentioned anywhere" means ENABLED, not disabled. The strip must set it
+# explicitly, and this is the check that proves it did. A dump is a verbatim
+# copy of the memory of a root process holding seed material.
+if [ "$EXPECT_COREDUMP_OFF" = "1" ]; then
+    for sym in CONFIG_COREDUMP CONFIG_ELF_CORE; do
+        if is_off "$sym"; then log "✅ $sym off"; else fail "$sym is ENABLED in the built kernel ($(grep -E "^$sym=" "$CFG")) — a crash can write seed material to storage"; fi
+    done
+else
+    log "(skip) core dumps expected ON"
 fi
 
 # Canaries: things the strip must NOT have taken down as collateral.
