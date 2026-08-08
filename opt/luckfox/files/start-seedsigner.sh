@@ -42,8 +42,22 @@ init_persistent_log() {
     fi
 }
 
+# Remove the persistent log. Called as soon as the boot is known to have
+# succeeded: the log exists ONLY to explain a failure, and anything that
+# outlives a good boot is a liability — an app traceback can quote paths,
+# arguments or other material we would rather not leave sitting in flash.
+clear_persistent_log() {
+    rm -f "$PERSIST_LOG" "$PERSIST_LOG_PREV" 2>/dev/null || true
+    PERSIST_OK=0
+}
+
 persist_line() {
     [ "$PERSIST_OK" = "1" ] || return 0
+    # Stop persisting the moment the app reports ready. The boot succeeded, so
+    # there is nothing left to diagnose and no reason to keep writing to flash.
+    # Checked here (rather than via a variable) because the watchdog that
+    # observes readiness runs in a subshell and cannot change our state.
+    [ -f "$READY_FILE" ] && return 0
     printf '%s\n' "$1" >> "$PERSIST_LOG" 2>/dev/null || { PERSIST_OK=0; return 0; }
     # Cap the size so a fast crash loop cannot fill the partition.
     local size
@@ -350,7 +364,12 @@ rm -f "$READY_FILE" 2>/dev/null || true
 (
     waited=0
     while [ "$waited" -lt "$BOOT_WATCHDOG_TIMEOUT" ]; do
-        [ -f "$READY_FILE" ] && exit 0
+        if [ -f "$READY_FILE" ]; then
+            # Boot succeeded: drop the persistent log rather than leave a
+            # record of a healthy boot sitting in flash.
+            clear_persistent_log
+            exit 0
+        fi
         sleep 5
         waited=$((waited + 5))
     done
@@ -416,6 +435,8 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
 
     if [ $exit_code -eq 0 ]; then
         log_message "SeedSigner exited successfully"
+        # Clean exit is not a failure either — leave nothing behind.
+        clear_persistent_log
         exit 0
     else
         retry_count=$((retry_count + 1))
