@@ -42,16 +42,31 @@ GNUPG_SKEL="/usr/share/seedsigner/gnupg"   # staged by opt/luckfox/install-gnupg
 # record of why on the next reboot, leaving a device that looks bricked and
 # says nothing. /userdata is a separate partition that survives both reboot and
 # a firmware reflash, which is what it was restored for.
+#
+# OFF BY DEFAULT. A production device writes nothing to flash: /userdata
+# survives a reflash, and on a failed boot this log captures app output
+# (log_app_output_tail below) — tracebacks, paths, possibly values — that would
+# then sit in NVS long after the failure, on a device meant to be air-gapped.
+# The log is therefore gated on the /etc/seedsigner-boot-log marker, which only
+# a build with the boot-log flag enabled bakes in (see build-luckfox.yml,
+# os-build.sh, build-local.sh). Default images never initialize it, so PERSIST_OK
+# stays 0 and persist_line writes nothing to flash. The /tmp logs, the on-screen
+# failure message and the Loader failover are all unaffected.
+BOOT_LOG_MARKER="/etc/seedsigner-boot-log"
 PERSIST_DIR="/userdata"
 PERSIST_LOG="$PERSIST_DIR/seedsigner-boot.log"
 PERSIST_LOG_PREV="$PERSIST_DIR/seedsigner-boot.log.prev"
 PERSIST_LOG_MAX_BYTES=131072  # 128 KiB, rotated once => 256 KiB worst case on a 10M partition
 PERSIST_OK=0
 
-# Set up the persistent log. Entirely best-effort: /userdata may be absent (Mini
-# and Pico Pi drop it), unmounted, full, or read-only once the rootfs hardening
-# lands. Any failure just leaves PERSIST_OK=0 and logging continues to /tmp.
+# Set up the persistent log. Gated on the build-baked marker: without it we
+# return immediately and PERSIST_OK stays 0, so persist_line no-ops and a
+# default image performs zero /userdata writes for logging. Entirely
+# best-effort: /userdata may be absent (Mini and Pico Pi drop it), unmounted,
+# full, or read-only once the rootfs hardening lands. Any failure just leaves
+# PERSIST_OK=0 and logging continues to /tmp.
 init_persistent_log() {
+    [ -f "$BOOT_LOG_MARKER" ] || return 0
     [ -d "$PERSIST_DIR" ] || return 0
     # Rotate a previous boot's log aside so a crash loop cannot bury the first
     # failure, which is usually the informative one.
@@ -68,6 +83,11 @@ init_persistent_log() {
 # succeeded: the log exists ONLY to explain a failure, and anything that
 # outlives a good boot is a liability — an app traceback can quote paths,
 # arguments or other material we would rather not leave sitting in flash.
+#
+# Runs on every successful boot regardless of the marker: when the log is
+# disabled the rm -f below costs nothing, and this is also what sweeps a stale
+# log/.prev left by an earlier firmware or a boot-log-enabled image, plus any
+# pre-existing core dumps, from writable storage.
 clear_persistent_log() {
     rm -f "$PERSIST_LOG" "$PERSIST_LOG_PREV" 2>/dev/null || true
     PERSIST_OK=0

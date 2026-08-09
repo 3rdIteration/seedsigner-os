@@ -293,6 +293,14 @@ So a bad image self-heals into a flashable state without the BOOT button:
   builds green, boots *looking* completely healthy, and reboots into Loader 120 s later, on every boot;
   `assert-app-watchdog-signal.sh` therefore fails the build after the app clone when the signal is absent
   (escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`).
+- **Persistent boot log** (`start-seedsigner.sh`, both variants, **off by default**): when enabled, every boot
+  is recorded to `/userdata/seedsigner-boot.log` (rotated once, capped at 128 KiB, deleted as soon as the app
+  signals ready) so a boot failure that leaves a "bricked-looking" device still explains itself — `/tmp` is a
+  tmpfs and is gone on the next reboot. It is **off unless the build bakes `/etc/seedsigner-boot-log`**
+  (`boot_log` dispatch input / `--boot-log on` / `SEEDSIGNER_BOOT_LOG=on`): a production device must write
+  nothing to flash, and `/userdata` survives a reflash, so a persisted app traceback would be app output left
+  in NVS on a device meant to be air-gapped. Even when disabled, a successful boot still sweeps any stale
+  log/`.prev` and core dumps from writable storage.
 - **`panic=5`** (non-dev bootargs): a kernel panic reboots instead of hanging, giving the failover another
   shot. Dev keeps panics visible for debugging.
 - **USB role (`usb_mode`) — this is the ADB switch.** The RV1106 USB port is either a **device gadget**

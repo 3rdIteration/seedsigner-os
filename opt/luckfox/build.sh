@@ -47,6 +47,9 @@ name, so a local build can reproduce what CI ships):
                           (default: non-dev)
   --readonly-rootfs V   - auto|on|off. Read-only squashfs root with tmpfs
                           overlays; auto = on for non-dev (default: auto)
+  --boot-log V          - on|off. Bake /etc/seedsigner-boot-log so
+                          start-seedsigner.sh records every boot to /userdata
+                          (default: off — the device writes nothing to flash)
   --usb-mode V          - auto|gadget|host|otg (default: auto)
   --debug-network V     - auto|on|off (default: auto)
   --seedsigner-ref R    - SeedSigner app branch, RELEASE TAG or commit
@@ -168,7 +171,8 @@ run_build() {
     for passthrough in SEEDSIGNER_BUILD_VARIANT SEEDSIGNER_READONLY_ROOTFS \
                        SEEDSIGNER_USB_MODE SEEDSIGNER_DEBUG_NETWORK \
                        SEEDSIGNER_HARDEN_ADB SEEDSIGNER_REPO_URL \
-                       SEEDSIGNER_REF SEEDSIGNER_BRANCH; do
+                       SEEDSIGNER_REF SEEDSIGNER_BRANCH \
+                       SEEDSIGNER_BOOT_LOG; do
         if [[ -n "${!passthrough:-}" ]]; then
             env_args="$env_args -e $passthrough=${!passthrough}"
             print_success "$passthrough=${!passthrough}"
@@ -420,6 +424,13 @@ main() {
                     export SEEDSIGNER_READONLY_ROOTFS="$2"; shift 2
                 else
                     print_error "Invalid or missing argument for --readonly-rootfs (use: auto|on|off)"; exit 1
+                fi
+                ;;
+            --boot-log)
+                if [[ -n "$2" && "$2" =~ ^(on|off)$ ]]; then
+                    export SEEDSIGNER_BOOT_LOG="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --boot-log (use: on|off)"; exit 1
                 fi
                 ;;
             --usb-mode)

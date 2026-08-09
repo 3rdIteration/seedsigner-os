@@ -81,6 +81,14 @@ on:
           - 'on'
           - 'off'
         default: 'auto'
+      boot_log:
+        description: 'Persistent boot log (/userdata/seedsigner-boot.log): on = the build bakes /etc/seedsigner-boot-log and start-seedsigner.sh records every boot (rotated, 128 KiB cap, deleted on a successful boot); off = the log is never initialized and the device writes nothing to flash (default). Off by default so production images stay write-free; enable only for an instrumented/debug build.'
+        required: false
+        type: choice
+        options:
+          - 'on'
+          - 'off'
+        default: 'off'
       build_variant:
         description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell). Automatic push/PR CI always builds dev.'
         required: false
@@ -153,6 +161,10 @@ on:
         required: false
         type: string
         default: 'auto'
+      boot_log:
+        required: false
+        type: string
+        default: 'off'
       build_variant:
         required: false
         type: string
@@ -1351,6 +1363,20 @@ jobs:
         SEEDSIGNER_APP_GIT_DIR="$GITHUB_WORKSPACE/seedsigner" \
           bash ../seedsigner-os/opt/gen-os-release.sh "$ROOTFS_DIR/etc/seedsigner-os-release" \
           || echo "⚠️  Warning: could not generate seedsigner-os-release"
+
+        # Persistent boot log (start-seedsigner.sh) is OFF by default: a
+        # production device must write nothing to flash, and the log captures
+        # app output that would otherwise sit in /userdata (which survives a
+        # reflash) long after the failure. Bake the marker only when explicitly
+        # requested, so an instrumented/debug image can still diagnose a boot
+        # failure.
+        if [ "${{ inputs.boot_log || 'off' }}" = "on" ]; then
+          : > "$ROOTFS_DIR/etc/seedsigner-boot-log"
+          echo "📝 Persistent boot log ENABLED (/etc/seedsigner-boot-log)"
+        else
+          rm -f "$ROOTFS_DIR/etc/seedsigner-boot-log" 2>/dev/null || true
+          echo "persistent boot log disabled (default)"
+        fi
 
         # Non-dev (production) hardening of the built rootfs: remove the serial
         # login shell, USB adb/RNDIS gadget, and logging daemons. Guarded/no-op on

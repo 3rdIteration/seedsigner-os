@@ -17,6 +17,10 @@ USB_MODE="${SEEDSIGNER_USB_MODE:-auto}"
 DEBUG_NETWORK="${SEEDSIGNER_DEBUG_NETWORK:-auto}"
 # Read-only squashfs rootfs (mirrors build-luckfox.yml's readonly_rootfs): auto|on|off.
 READONLY_ROOTFS="${READONLY_ROOTFS:-${SEEDSIGNER_READONLY_ROOTFS:-auto}}"
+# Persistent boot log (mirrors build-luckfox.yml's boot_log): on|off. on bakes
+# /etc/seedsigner-boot-log so start-seedsigner.sh records every boot to /userdata.
+# Default off: a production device must write nothing to flash.
+SEEDSIGNER_BOOT_LOG="${SEEDSIGNER_BOOT_LOG:-off}"
 # The SeedSigner application repo/branch (mirrors build-luckfox.yml's
 # seedsigner_repo_url / seedsigner_branch). The app is the one component this
 # repo does not pin, so it has to be selectable or a local build cannot
@@ -1384,6 +1388,18 @@ install_seedsigner_app() {
     SEEDSIGNER_APP_GIT_DIR="$WORK_DIR/seedsigner" \
       bash "$SCRIPT_DIR/../gen-os-release.sh" "$rootfs_dir/etc/seedsigner-os-release" \
       || print_warning "Could not generate seedsigner-os-release"
+
+    # Persistent boot log is OFF by default: a production device writes nothing
+    # to flash, and the log captures app output that would otherwise sit in
+    # /userdata (which survives a reflash) long after the failure. Bake the
+    # marker only when explicitly requested (SEEDSIGNER_BOOT_LOG=on).
+    if [ "$SEEDSIGNER_BOOT_LOG" = "on" ]; then
+        : > "$rootfs_dir/etc/seedsigner-boot-log"
+        print_info "Persistent boot log ENABLED (/etc/seedsigner-boot-log)"
+    else
+        rm -f "$rootfs_dir/etc/seedsigner-boot-log" 2>/dev/null || true
+        print_info "persistent boot log disabled (default)"
+    fi
 
     # Clean up non-essential files from rootfs
     print_info "Cleaning up non-essential files from rootfs..."
