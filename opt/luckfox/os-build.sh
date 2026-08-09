@@ -1555,10 +1555,47 @@ start_interactive_mode() {
     exec /bin/bash
 }
 
+# Fail immediately if any shared script is missing from the image.
+#
+# These live in opt/luckfox/ next to this file and are copied in by the
+# Dockerfile. When they were NOT copied, the call sites guarded with
+# `[[ -f ... ]]` silently skipped — a Docker build produced an image with the
+# hardening, USB-mode config and translations simply absent, reported success,
+# and looked identical to a good one until the device was in someone's hands.
+#
+# Checking up front turns that into a five-second failure instead: the guards
+# exist to tolerate an optional script, not to tolerate a broken image.
+assert_shared_scripts_present() {
+    local missing=()
+    local checked=0
+    local s
+    for s in apply-partition-layout.sh pin-spidev-bufsiz.sh readonly-rootfs.sh \
+             assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
+             harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
+             patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
+             uboot-recovery-config.sh compile-translations.sh; do
+        checked=$((checked + 1))
+        [[ -f "$SEEDSIGNER_LUCKFOX_DIR/$s" ]] || missing+=("$s")
+    done
+
+    if [[ ${#missing[@]} -ne 0 ]]; then
+        print_error "Shared build scripts missing from $SEEDSIGNER_LUCKFOX_DIR:"
+        for s in "${missing[@]}"; do echo "    - $s"; done
+        print_error "The Docker image is stale or incomplete. Rebuild it:"
+        print_error "  ./build.sh --luckfox build --force ..."
+        exit 1
+    fi
+    print_info "All $checked shared build scripts present"
+}
+
 # Main entry point
 main() {
     local mode="${1:-auto}"
-    
+
+    case "${1:-auto}" in
+        auto|auto-nand|auto-nand-only) assert_shared_scripts_present ;;
+    esac
+
     case "$mode" in
         "auto")
             print_info "Starting automated MicroSD build mode..."

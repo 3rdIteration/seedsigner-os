@@ -49,9 +49,19 @@ RUN touch /root/.bash_profile
 
 SHELL ["/bin/bash", "-c"]
 
-# Copy build automation script
-COPY os-build.sh /build/
-RUN chmod +x /build/os-build.sh
+# Copy build automation script AND every shared *.sh alongside it.
+#
+# Only os-build.sh used to be copied, so none of the scripts it calls
+# (apply-partition-layout.sh, strip-kernel-network.sh, readonly-rootfs.sh,
+# harden-nondev.sh, optimize-nondev.sh, ...) existed inside the container. The
+# call sites wrapped in `[[ -f ... ]]` therefore SILENTLY SKIPPED — a Docker
+# build produced an image with the hardening simply absent and said nothing.
+# The unguarded ones failed outright, which is how this was finally noticed.
+#
+# A glob, not a list, so adding a shared script cannot silently fail to reach
+# the container. Copied last to keep the expensive apt layers cached.
+COPY *.sh /build/
+RUN chmod +x /build/*.sh
 
 # Set the entrypoint
 ENTRYPOINT ["/build/os-build.sh"]
