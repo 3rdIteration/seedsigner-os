@@ -1018,6 +1018,32 @@ export_official_nand_image_dir() {
     print_success "Exported official SDK NAND image directory: $OUTPUT_DIR/$bundle_name"
 }
 
+# Set BUILDROOT_DIR and everything derived from it, together.
+#
+# PACKAGE_DIR, CONFIG_IN and PYZBAR_PATCH are all computed from BUILDROOT_DIR at
+# file scope, where its value is still the UNRESOLVED placeholder. Updating
+# BUILDROOT_DIR alone therefore leaves them pointing at a path that does not
+# exist, and the failure surfaces hundreds of lines later in whichever step
+# happens to use one of them first. They are set in one place so they cannot
+# drift apart again.
+_set_buildroot_paths() {
+    export BUILDROOT_DIR="$1"
+    export PACKAGE_DIR="${BUILDROOT_DIR}/package"
+    export CONFIG_IN="${PACKAGE_DIR}/Config.in"
+    export PYZBAR_PATCH="${PACKAGE_DIR}/python-pyzbar/0001-PATH-fixed-by-hand.patch"
+
+    # Prove the paths point at a real buildroot tree. Without this, a bad resolve
+    # is only discovered by whichever later step happens to touch one of these
+    # first -- which is how the UNRESOLVED placeholder got as far as "Adding
+    # SeedSigner Menu to Buildroot" before anything complained.
+    if [[ ! -f "$CONFIG_IN" ]]; then
+        print_error "Buildroot paths do not resolve to a real tree:"
+        print_error "  BUILDROOT_DIR=$BUILDROOT_DIR"
+        print_error "  expected package index at $CONFIG_IN"
+        exit 1
+    fi
+}
+
 ensure_buildroot_tree() {
     # Resolve rather than assume. The version in the SDK's buildroot tarball is
     # the SDK's business and changes between revisions; this used to be pinned to
@@ -1026,8 +1052,7 @@ ensure_buildroot_tree() {
     # the breakage stayed invisible until the Docker path was run.
     local resolved
     if resolved="$(bash "$SEEDSIGNER_LUCKFOX_DIR/resolve-buildroot-dir.sh" "$LUCKFOX_SDK_DIR" 2>/dev/null)"; then
-        export BUILDROOT_DIR="$resolved"
-        export PACKAGE_DIR="${BUILDROOT_DIR}/package"
+        _set_buildroot_paths "$resolved"
         print_info "Using buildroot directory: $BUILDROOT_DIR"
         return
     fi
@@ -1039,8 +1064,7 @@ ensure_buildroot_tree() {
         print_error "Buildroot tree still not found after buildroot_create"
         exit 1
     fi
-    export BUILDROOT_DIR="$resolved"
-    export PACKAGE_DIR="${BUILDROOT_DIR}/package"
+    _set_buildroot_paths "$resolved"
     print_success "Using buildroot directory: $BUILDROOT_DIR"
 }
 
