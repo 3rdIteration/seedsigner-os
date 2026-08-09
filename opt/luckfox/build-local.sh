@@ -22,7 +22,7 @@ READONLY_ROOTFS="${READONLY_ROOTFS:-${SEEDSIGNER_READONLY_ROOTFS:-auto}}"
 # repo does not pin, so it has to be selectable or a local build cannot
 # reproduce a CI image.
 SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner.git}"
-SEEDSIGNER_BRANCH="${SEEDSIGNER_BRANCH:-dev}"
+SEEDSIGNER_REF="${SEEDSIGNER_REF:-${SEEDSIGNER_BRANCH:-dev}}"
 
 # Default Python version for buildroot (used if detection fails)
 DEFAULT_PYTHON_VERSION="3.12"
@@ -143,7 +143,7 @@ Options:
   --boot MEDIUM      - Boot medium: sd|nand|emmc (default: sd)
   --variant V        - non-dev (hardened) | dev (default: non-dev)
   --readonly-rootfs V - auto|on|off; read-only squashfs root (default: auto)
-  --seedsigner-branch B - SeedSigner app branch (default: dev)
+  --seedsigner-ref R - SeedSigner app branch, release tag or commit (default: dev)
   --seedsigner-repo URL - SeedSigner app repo
   --enable-uart2-console - Keep UART2 console/debug enabled (default: disabled)
   --build-rust-from-source - Build Rust toolchain from source (ignore cached binary)
@@ -256,6 +256,38 @@ check_and_install_dependencies() {
     fi
 }
 
+# Describe the seedsigner checkout in a way that works for a branch AND a tag.
+# `rev-parse --abbrev-ref HEAD` returns the literal string "HEAD" on a detached
+# checkout, which is what a tag clone produces -- so comparing that against the
+# requested ref reports a mismatch on every single tag build.
+seedsigner_checkout_desc() {
+    local dir="$WORK_DIR/seedsigner"
+    local sha ref
+    sha="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    ref="$(git -C "$dir" describe --tags --exact-match 2>/dev/null || true)"
+    if [ -z "$ref" ]; then
+        ref="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+        [ "$ref" = "HEAD" ] && ref="detached"
+    fi
+    echo "ref=$ref commit=$sha"
+}
+
+# Does the existing checkout correspond to $1? True when it is that branch, that
+# tag, or that exact commit -- a ref can legitimately be any of the three.
+seedsigner_checkout_matches() {
+    local want="$1"
+    local dir="$WORK_DIR/seedsigner"
+    local head branch tag
+    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo none)"
+    branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo none)"
+    tag="$(git -C "$dir" describe --tags --exact-match 2>/dev/null || true)"
+
+    [ "$branch" = "$want" ] && return 0
+    [ -n "$tag" ] && [ "$tag" = "$want" ] && return 0
+    case "$head" in "$want"*) return 0 ;; esac
+    return 1
+}
+
 clone_repositories() {
     print_header "Cloning Required Repositories"
     
@@ -278,19 +310,24 @@ clone_repositories() {
     # produce the image CI produces whenever CI was pointed at another branch --
     # and the app is the one component this repo does not pin.
     if [ ! -d "seedsigner" ]; then
-        print_info "Cloning seedsigner application ($SEEDSIGNER_BRANCH)..."
-        git clone "$SEEDSIGNER_REPO_URL" --depth=1 -b "$SEEDSIGNER_BRANCH" \
-            --single-branch --recurse-submodules
-        print_success "seedsigner cloned ($SEEDSIGNER_BRANCH)"
+        print_info "Cloning seedsigner application ($SEEDSIGNER_REF)..."
+        # `-b` takes a branch OR a tag, so a release tag needs no special handling
+        # here -- it just checks out detached at the tag.
+        if ! git clone "$SEEDSIGNER_REPO_URL" --depth=1 -b "$SEEDSIGNER_REF" \
+                --single-branch --recurse-submodules; then
+            print_error "Could not clone $SEEDSIGNER_REPO_URL at ref '$SEEDSIGNER_REF'"
+            print_error "Check the branch or tag exists: git ls-remote $SEEDSIGNER_REPO_URL '*$SEEDSIGNER_REF*'"
+            exit 1
+        fi
+        print_success "seedsigner cloned at $(seedsigner_checkout_desc)"
     else
-        # An existing checkout is silently reused, so say which branch it is on:
-        # otherwise a --seedsigner-branch on a second run looks like it worked
-        # while the build keeps using whatever was cloned first.
-        existing_branch="$(git -C seedsigner rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-        existing_sha="$(git -C seedsigner rev-parse --short HEAD 2>/dev/null || echo unknown)"
-        print_info "seedsigner already exists (branch=$existing_branch commit=$existing_sha) — REUSED, not re-cloned"
-        if [ "$existing_branch" != "$SEEDSIGNER_BRANCH" ] && [ "$existing_branch" != "unknown" ]; then
-            print_warning "requested branch '$SEEDSIGNER_BRANCH' != checked-out '$existing_branch'; delete $WORK_DIR/seedsigner to switch"
+        # An existing checkout is silently REUSED, so report what it actually is:
+        # otherwise --seedsigner-ref on a second run looks like it worked while
+        # the build quietly keeps using whatever was cloned first.
+        print_info "seedsigner already exists ($(seedsigner_checkout_desc)) — REUSED, not re-cloned"
+        if ! seedsigner_checkout_matches "$SEEDSIGNER_REF"; then
+            print_warning "requested ref '$SEEDSIGNER_REF' does not match the checkout above"
+            print_warning "delete $WORK_DIR/seedsigner to switch"
         fi
     fi
 
@@ -1701,11 +1738,14 @@ main() {
                 ;;
             # Mirror the GitHub Actions inputs of the same names, so this script
             # can build the same image CI builds.
-            --seedsigner-branch)
+            # A ref is a branch, a release tag, or a commit -- `git clone -b`
+            # accepts all three. --seedsigner-branch is kept as an alias because
+            # it is what the CI input is still called.
+            --seedsigner-ref|--seedsigner-branch)
                 if [[ -n "$2" ]]; then
-                    SEEDSIGNER_BRANCH="$2"; shift 2
+                    SEEDSIGNER_REF="$2"; shift 2
                 else
-                    print_error "Missing argument for --seedsigner-branch"; exit 1
+                    print_error "Missing argument for $1"; exit 1
                 fi
                 ;;
             --seedsigner-repo)

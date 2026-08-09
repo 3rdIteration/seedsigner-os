@@ -192,9 +192,27 @@ both copies drifted into shipping a different device:
 Neither had a build-time signal. Both are now single scripts that hard-fail if their result is wrong.
 
 `opt/luckfox/build.sh` (the Docker wrapper) mirrors the CI workflow inputs: `--variant`,
-`--readonly-rootfs`, `--usb-mode`, `--debug-network`, `--seedsigner-branch`, and `--model mini|max|pi|both`.
+`--readonly-rootfs`, `--usb-mode`, `--debug-network`, `--seedsigner-ref`, and `--model mini|max|pi|both`.
 Previously only `BUILD_MODEL`/`BUILD_JOBS` crossed the container boundary, so a Docker build silently took
 the defaults no matter what was asked for.
+
+### Pinning the SeedSigner app
+
+The app is **the only component this repo does not pin** — the SDK is fetched at a fixed revision, but the
+app is cloned from a ref. `--seedsigner-ref` accepts a branch, a **release tag**, or a commit (anything
+`git clone -b` takes), and a tag is the only one of those that is a fixed target:
+
+```bash
+./build.sh --luckfox build --model max --microsd --seedsigner-ref SeSi-0.8.7+ShSi-B11
+```
+
+The same value goes in the workflow's `seedsigner_branch` input. Whatever is used, the resolved ref and
+commit are stamped into `/etc/seedsigner-os-release` (`SEEDSIGNER_APP_BRANCH` / `SEEDSIGNER_APP_COMMIT`), so
+a built image always records what it contains — including the tag name, which `gen-os-release.sh` now
+prefers over the branch, since a tag build is a detached checkout that would otherwise record nothing useful.
+
+`build-local.sh` **reuses an existing `seedsigner/` checkout rather than re-cloning**, so it reports the ref
+and commit it found and warns when they do not match what was requested. Delete the checkout to switch refs.
 
 ## Read-only root filesystem
 

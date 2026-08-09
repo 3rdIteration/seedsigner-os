@@ -46,7 +46,8 @@ name, so a local build can reproduce what CI ships):
                           overlays; auto = on for non-dev (default: auto)
   --usb-mode V          - auto|gadget|host|otg (default: auto)
   --debug-network V     - auto|on|off (default: auto)
-  --seedsigner-branch B - SeedSigner app branch to build
+  --seedsigner-ref R    - SeedSigner app branch, RELEASE TAG or commit
+                          (default: dev). --seedsigner-branch is an alias.
 
 Examples:
   ./build.sh build             # Standard build (artifacts in ./build-output)
@@ -56,6 +57,9 @@ Examples:
 
   # Reproduce the CI shipping image for the Pro Max on MicroSD:
   ./build.sh build --model max --microsd --variant non-dev --readonly-rootfs on
+
+  # Build against a release tag:
+  ./build.sh build --model max --microsd --seedsigner-ref SeSi-0.8.7+ShSi-B11
 
 Build Output:
   - Build artifacts are automatically available in the output directory
@@ -157,7 +161,8 @@ run_build() {
     local passthrough
     for passthrough in SEEDSIGNER_BUILD_VARIANT SEEDSIGNER_READONLY_ROOTFS \
                        SEEDSIGNER_USB_MODE SEEDSIGNER_DEBUG_NETWORK \
-                       SEEDSIGNER_HARDEN_ADB SEEDSIGNER_REPO_URL SEEDSIGNER_BRANCH; do
+                       SEEDSIGNER_HARDEN_ADB SEEDSIGNER_REPO_URL \
+                       SEEDSIGNER_REF SEEDSIGNER_BRANCH; do
         if [[ -n "${!passthrough:-}" ]]; then
             env_args="$env_args -e $passthrough=${!passthrough}"
             print_success "$passthrough=${!passthrough}"
@@ -409,11 +414,14 @@ main() {
                     print_error "Invalid or missing argument for --debug-network (use: auto|on|off)"; exit 1
                 fi
                 ;;
-            --seedsigner-branch)
+            # A ref is a branch, a release tag, or a commit -- `git clone -b`
+            # accepts all three. --seedsigner-branch is kept as an alias because
+            # it is what the CI input is still called.
+            --seedsigner-ref|--seedsigner-branch)
                 if [[ -n "$2" ]]; then
-                    export SEEDSIGNER_BRANCH="$2"; shift 2
+                    export SEEDSIGNER_REF="$2"; shift 2
                 else
-                    print_error "Missing argument for --seedsigner-branch"; exit 1
+                    print_error "Missing argument for $1"; exit 1
                 fi
                 ;;
             *)

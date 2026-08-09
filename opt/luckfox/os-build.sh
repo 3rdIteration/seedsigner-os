@@ -18,7 +18,8 @@ export LUCKFOX_REPO_URL="https://github.com/3rdIteration/luckfox-pico.git"
 # component that is not pinned by this repo. See also: the build records the app
 # branch, not its commit, so "dev" is not a fixed target either.
 export SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner.git}"
-export SEEDSIGNER_BRANCH="${SEEDSIGNER_BRANCH:-dev}"
+# May be a branch, a release tag or a commit -- `git clone -b` accepts all three.
+export SEEDSIGNER_BRANCH="${SEEDSIGNER_REF:-${SEEDSIGNER_BRANCH:-dev}}"
 # Build variant: non-dev (hardened/air-gapped) or dev. Mirrors build-luckfox.yml's build_variant.
 export SEEDSIGNER_BUILD_VARIANT="${SEEDSIGNER_BUILD_VARIANT:-non-dev}"
 # USB role (mirrors build-luckfox.yml's usb_mode): gadget|host|otg|auto.
@@ -202,7 +203,7 @@ clone_repositories() {
 
     # Clone SeedSigner code (specific branch)
     if [[ ! -d "seedsigner" ]]; then
-        print_info "Cloning seedsigner code (branch: $SEEDSIGNER_BRANCH)..."
+        print_info "Cloning seedsigner code (ref: $SEEDSIGNER_BRANCH)..."
         git clone "$SEEDSIGNER_REPO_URL" --depth=1 -b "$SEEDSIGNER_BRANCH" --single-branch --recurse-submodules seedsigner
         print_success "seedsigner cloned"
     else

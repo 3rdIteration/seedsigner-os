@@ -27,9 +27,15 @@ git_log_field() {  # <git-dir> <format>
 
 git_branch() {  # <git-dir>
     [ -n "$1" ] || return 1
-    local b
+    local b t
+    # A release-tag build checks out detached at the tag, so ask for the tag
+    # first: recording "unknown" for an image built from a named release would
+    # throw away the single most useful piece of provenance it has.
+    t="$(git -C "$1" describe --tags --exact-match 2>/dev/null)"
+    if [ -n "$t" ]; then printf '%s' "$t"; return; fi
     b="$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-    # Detached HEAD (e.g. a commit-id checkout) is not a useful branch name.
+    # Detached HEAD at a bare commit is not a useful branch name; the commit is
+    # recorded separately anyway.
     [ "$b" = "HEAD" ] && return 1
     printf '%s' "$b"
 }

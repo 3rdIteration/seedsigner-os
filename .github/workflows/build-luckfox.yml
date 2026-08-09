@@ -105,7 +105,7 @@ on:
         type: string
         default: 'https://github.com/3rdIteration/seedsigner.git'
       seedsigner_branch:
-        description: 'SeedSigner Branch'
+        description: 'SeedSigner app ref: a branch, a RELEASE TAG (e.g. SeSi-0.8.7+ShSi-B11), or a commit. Anything `git clone -b` accepts. A tag is the only way to pin the app, which is the one component this repo does not fix — the resolved tag and commit are recorded in /etc/seedsigner-os-release.'
         required: false
         type: string
         default: 'dev'
