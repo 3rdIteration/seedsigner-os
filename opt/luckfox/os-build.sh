@@ -45,7 +45,11 @@ export SEEDSIGNER_OS_PACKAGES_DIR="${SEEDSIGNER_OS_PACKAGES_DIR:-/build/external
 export SEEDSIGNER_LUCKFOX_DIR="/build"
 
 # Common paths (computed after SDK directory is determined)
-export BUILDROOT_DIR="${LUCKFOX_SDK_DIR}/sysdrv/source/buildroot/buildroot-2023.02.6"
+# Placeholder only. The real path is resolved from the unpacked SDK by
+# ensure_buildroot_tree() via resolve-buildroot-dir.sh, because the buildroot
+# version is chosen by the SDK revision, not by us. Hard-coding it here is what
+# broke every Docker build when the SDK moved to buildroot-2024.11.4.
+export BUILDROOT_DIR="${LUCKFOX_SDK_DIR}/sysdrv/source/buildroot/UNRESOLVED"
 export PACKAGE_DIR="${BUILDROOT_DIR}/package"
 export CONFIG_IN="${PACKAGE_DIR}/Config.in"
 export PYZBAR_PATCH="${PACKAGE_DIR}/python-pyzbar/0001-PATH-fixed-by-hand.patch"
@@ -1015,17 +1019,29 @@ export_official_nand_image_dir() {
 }
 
 ensure_buildroot_tree() {
-    if [[ -d "$BUILDROOT_DIR" ]]; then
+    # Resolve rather than assume. The version in the SDK's buildroot tarball is
+    # the SDK's business and changes between revisions; this used to be pinned to
+    # buildroot-2023.02.6 while the SDK shipped 2024.11.4, so every Docker build
+    # died here. CI discovered the directory all along, which is precisely why
+    # the breakage stayed invisible until the Docker path was run.
+    local resolved
+    if resolved="$(bash "$SEEDSIGNER_LUCKFOX_DIR/resolve-buildroot-dir.sh" "$LUCKFOX_SDK_DIR" 2>/dev/null)"; then
+        export BUILDROOT_DIR="$resolved"
+        export PACKAGE_DIR="${BUILDROOT_DIR}/package"
+        print_info "Using buildroot directory: $BUILDROOT_DIR"
         return
     fi
 
     print_step "Preparing Buildroot Source Tree"
     make buildroot_create -C "$LUCKFOX_SDK_DIR/sysdrv"
 
-    if [[ ! -d "$BUILDROOT_DIR" ]]; then
-        print_error "Buildroot directory not found after buildroot_create: $BUILDROOT_DIR"
+    if ! resolved="$(bash "$SEEDSIGNER_LUCKFOX_DIR/resolve-buildroot-dir.sh" "$LUCKFOX_SDK_DIR")"; then
+        print_error "Buildroot tree still not found after buildroot_create"
         exit 1
     fi
+    export BUILDROOT_DIR="$resolved"
+    export PACKAGE_DIR="${BUILDROOT_DIR}/package"
+    print_success "Using buildroot directory: $BUILDROOT_DIR"
 }
 
 build_profile_artifacts() {
@@ -1499,35 +1515,55 @@ run_automated_build() {
 
     cd "$LUCKFOX_SDK_DIR"
 
-    if [[ "$build_sd_image" == "true" ]]; then
-        if [[ "$BUILD_MODEL" == "mini" || "$BUILD_MODEL" == "both" ]]; then
-            build_profile_artifacts "mini" "sd" "false"
-        fi
-        if [[ "$BUILD_MODEL" == "max" || "$BUILD_MODEL" == "both" ]]; then
-            build_profile_artifacts "max" "sd" "false"
-        fi
+    # The five valid hardware/boot combinations, in the same order and with the
+    # same membership as the CI matrix in build-luckfox.yml. Mini and Max boot
+    # from SD or SPI-NAND; the Pico Pi is eMMC-only, because the SDK ships no
+    # SD_CARD board config for it.
+    #
+    # Table-driven rather than an if-chain per board: the old chain had "both"
+    # meaning mini+max only, silently excluding the Pi, and there was no way to
+    # ask for everything at all.
+    local combos=(mini:sd mini:nand max:sd max:nand pi:emmc)
+    local built=0 skipped=0
+    local combo profile medium is_nand
+
+    for combo in "${combos[@]}"; do
+        profile="${combo%%:*}"
+        medium="${combo##*:}"
+
+        # Model filter. "all" is every board; "both" is kept as the historical
+        # spelling for mini+max so existing invocations behave unchanged.
+        case "$BUILD_MODEL" in
+            all)  ;;
+            both) [[ "$profile" == "mini" || "$profile" == "max" ]] || { skipped=$((skipped+1)); continue; } ;;
+            *)    [[ "$profile" == "$BUILD_MODEL" ]] || { skipped=$((skipped+1)); continue; } ;;
+        esac
+
+        # Media filter. eMMC is deliberately NOT gated on the sd/nand flags: it
+        # is the Pi's only boot medium, so requiring --emmc to get the one image
+        # that board can produce would be a trap.
+        case "$medium" in
+            sd)   [[ "$build_sd_image" == "true" ]]   || { skipped=$((skipped+1)); continue; } ;;
+            nand) [[ "$build_nand_image" == "true" ]] || { skipped=$((skipped+1)); continue; } ;;
+            emmc) ;;
+        esac
+
+        is_nand="false"
+        [[ "$medium" == "nand" ]] && is_nand="true"
+
+        print_step "Generating ${medium} output (${profile}, official flow)"
+        build_profile_artifacts "$profile" "$medium" "$is_nand"
+        built=$((built + 1))
+    done
+
+    if [[ "$built" -eq 0 ]]; then
+        print_error "No hardware/boot combination matched BUILD_MODEL=$BUILD_MODEL"
+        print_error "with sd=$build_sd_image nand=$build_nand_image — nothing was built."
+        print_error "Valid: mini(sd,nand) max(sd,nand) pi(emmc); BUILD_MODEL=mini|max|pi|both|all"
+        exit 1
     fi
 
-    # Pico Pi only supports eMMC boot medium.
-    if [[ "$BUILD_MODEL" == "pi" ]]; then
-        print_step "Generating eMMC Output (pi, official flow)"
-        build_profile_artifacts "pi" "emmc" "false"
-    fi
-
-    # Build NAND/flash bundles using official SPI_NAND build flow.
-    if [[ "$build_nand_image" == "true" ]]; then
-        if [[ "$BUILD_MODEL" == "mini" || "$BUILD_MODEL" == "both" ]]; then
-            print_step "Generating NAND-Oriented Output (mini, official flow)"
-            build_profile_artifacts "mini" "nand" "true"
-        fi
-
-        if [[ "$BUILD_MODEL" == "max" || "$BUILD_MODEL" == "both" ]]; then
-            print_step "Generating NAND-Oriented Output (max, official flow)"
-            build_profile_artifacts "max" "nand" "true"
-        fi
-    fi
-
-    print_success "Build Complete!"
+    print_success "Build Complete! ($built combination(s) built, $skipped skipped)"
     echo ""
     echo "Build artifacts:"
     ls -la "$OUTPUT_DIR/"

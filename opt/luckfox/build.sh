@@ -36,7 +36,10 @@ Options:
   --output DIR   - Set output directory (default: ./build-output)
   --nand         - Build NAND-flashable system image artifacts
   --microsd      - Build MicroSD image artifacts
-  --model TARGET - Target model: mini|max|pi|both (default: both)
+  --model TARGET - Target model: mini|max|pi|both|all (default: both)
+                   "both" = mini+max (historical); "all" = mini+max+pi
+  --all          - Build every board on every boot medium it supports
+                   (mini sd+nand, max sd+nand, pi emmc) — five full builds
 
 Build-shaping options (mirror the GitHub Actions workflow inputs of the same
 name, so a local build can reproduce what CI ships):
@@ -60,6 +63,9 @@ Examples:
 
   # Build against a release tag:
   ./build.sh build --model max --microsd --seedsigner-ref SeSi-0.8.7+ShSi-B11
+
+  # Everything, matching the CI matrix (long!):
+  ./build.sh build --all --variant non-dev --readonly-rootfs on
 
 Build Output:
   - Build artifacts are automatically available in the output directory
@@ -217,6 +223,13 @@ run_build() {
             elif [[ "$build_microsd" == "true" ]]; then
                 container_mode="auto"
                 print_success "MicroSD artifact generation enabled"
+            elif [[ "$build_model" == "pi" ]]; then
+                # The Pico Pi boots from eMMC and nothing else, so demanding
+                # --microsd or --nand to build the one image it can produce is a
+                # trap. eMMC is not gated on those flags inside the container
+                # either; this just stops the wrapper refusing first.
+                container_mode="auto"
+                print_success "eMMC artifact generation enabled (Pico Pi)"
             else
                 print_error "No artifact type selected. Use --microsd and/or --nand"
                 exit 1
@@ -367,6 +380,15 @@ main() {
                 build_nand=true
                 shift
                 ;;
+            # Every board on every boot medium it supports: mini(sd,nand),
+            # max(sd,nand), pi(emmc) -- the same five combinations as the CI
+            # matrix. Note this is five full builds, not one.
+            --all)
+                build_model=all
+                build_nand=true
+                build_microsd=true
+                shift
+                ;;
             --microsd)
                 build_microsd=true
                 shift
@@ -375,11 +397,11 @@ main() {
                 # os-build.sh has always understood BUILD_MODEL=pi; only this
                 # wrapper rejected it, so the Pico Pi could be built in CI but not
                 # locally.
-                if [[ -n "$2" && "$2" =~ ^(mini|max|pi|both)$ ]]; then
+                if [[ -n "$2" && "$2" =~ ^(mini|max|pi|both|all)$ ]]; then
                     build_model="$2"
                     shift 2
                 else
-                    print_error "Invalid or missing argument for --model (use: mini|max|pi|both)"
+                    print_error "Invalid or missing argument for --model (use: mini|max|pi|both|all)"
                     exit 1
                 fi
                 ;;

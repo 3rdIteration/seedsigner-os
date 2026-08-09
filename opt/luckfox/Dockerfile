@@ -11,6 +11,11 @@ RUN apt-get update && \
         git \
         python3 \
         python3-pip \
+        # compile-translations.sh builds a venv to run the app's compile_catalog.
+        # Without python3-venv it degrades to "English-only" and says so in one
+        # line that scrolls past -- a Docker build silently shipped an image with
+        # no translations while CI shipped one with all of them.
+        python3-venv \
         ssh \
         make gcc \
         gcc-multilib g++-multilib \
