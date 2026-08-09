@@ -121,6 +121,12 @@ print_step() { echo -e "\n${BLUE}[STEP] $1${NC}\n"; }
 print_success() { echo -e "\n${GREEN}[SUCCESS] $1${NC}\n"; }
 print_error() { echo -e "\n${RED}[ERROR] $1${NC}\n"; }
 print_info() { echo -e "\n${YELLOW}[INFO] $1${NC}\n"; }
+# Was missing while two call sites used it (the ifd-ccid.bundle removal and the
+# rkaiq-service check). Under `set -e` an undefined command exits 127, so the
+# build died outright the first time either branch was taken -- which only
+# happened once the build got far enough for those files to exist.
+# build-local.sh has always defined it; this is the two drifting apart again.
+print_warning() { echo -e "\n${YELLOW}[WARNING] $1${NC}\n"; }
 
 debug_uart_bootargs_file() {
     local file_path="$1"
@@ -1494,6 +1500,14 @@ s/^endef\nendif/endef\nendif\nendif/
         bash "$SEEDSIGNER_LUCKFOX_DIR/patch-s50usbdevice.sh" "$ROOTFS_DIR"
     fi
 
+    # GnuPG agent/scdaemon config, staged into /usr/share for start-seedsigner.sh
+    # to seed into GNUPGHOME on tmpfs. The app never sets GNUPGHOME, so without
+    # this gpg writes to /.gnupg on the read-only root and key generation/import
+    # both fail. Shared with CI via install-gnupg-home.sh.
+    if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/install-gnupg-home.sh" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/install-gnupg-home.sh" "$ROOTFS_DIR"
+    fi
+
     # Non-dev (production) rootfs hardening: serial login, adb artifacts,
     # logging daemons, networking (interface bring-up + DHCP + telnet/ssh).
     if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
@@ -1721,6 +1735,7 @@ assert_shared_scripts_present() {
              assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
+             install-gnupg-home.sh \
              uboot-recovery-config.sh compile-translations.sh; do
         checked=$((checked + 1))
         [[ -f "$SEEDSIGNER_LUCKFOX_DIR/$s" ]] || missing+=("$s")

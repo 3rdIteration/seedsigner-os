@@ -15,6 +15,28 @@ APP_PID=""
 CAMERA_HELPER_PID=""
 BOOT_WATCHDOG_PID=""
 
+# GnuPG home. The app never sets GNUPGHOME and never passes `gpg --homedir`, so
+# gpg resolves its home from $HOME -- which under BusyBox init is "/", i.e.
+# /.gnupg on the read-only squashfs root, a directory S01overlay deliberately
+# does not overlay. Every write gpg needs then fails with "read-only file
+# system": pubring.kbx, private-keys-v1.d/, trustdb.gpg, random_seed, lock
+# files, and the S.gpg-agent / S.scdaemon sockets (there is no /run/user/0 here,
+# so the sockets land in the homedir too). That is what broke GPG key
+# generation and key import on the Pro Max and Pico Pi.
+#
+# /tmp is a plain tmpfs from the sysinit `mount -a`, so it is writable WITHOUT
+# depending on overlayfs -- S01overlay itself uses /tmp for its upper/work dirs,
+# so this cannot inherit an overlay failure. It is also emptied at reboot, which
+# is deliberate: generated keys are ephemeral by design and must never be
+# persisted to flash, so this is NOT on /userdata.
+#
+# GNUPGHOME rather than HOME: HOME would move Path.home() and expanduser("~")
+# for the whole app, while GNUPGHOME is read by gpg, gpgconf, gpg-agent and
+# scdaemon alike -- one variable covers the whole daemon tree, with none of the
+# blast radius.
+GNUPG_HOME="/tmp/.gnupg"
+GNUPG_SKEL="/usr/share/seedsigner/gnupg"   # staged by opt/luckfox/install-gnupg-home.sh
+
 # Persistent copy of the startup log. /tmp is a tmpfs, so on a non-dev image —
 # no serial console, no adb, no network — a boot failure destroys the only
 # record of why on the next reboot, leaving a device that looks bricked and
@@ -140,6 +162,39 @@ show_screen_message() {
             log_message "$msg_line"
         done
     fi
+    return 0
+}
+
+# Create the GnuPG home on tmpfs and point gpg at it. Idempotent, and strictly
+# best-effort: every branch logs and returns 0, because a diagnostic-grade
+# convenience must never be the reason a board fails to boot.
+init_gnupg_home() {
+    if ! mkdir -p "$GNUPG_HOME" 2>/dev/null; then
+        log_message "WARNING: could not create $GNUPG_HOME — GPG key generation/import will fail"
+        return 0
+    fi
+
+    # gpg complains loudly about a group/world-accessible homedir, on stderr,
+    # which the app captures into its own log.
+    chmod 700 "$GNUPG_HOME" 2>/dev/null \
+        || log_message "WARNING: could not chmod 700 $GNUPG_HOME"
+
+    # Seed the daemon config from the read-only image copy. Never overwrite an
+    # existing file: a retry must not clobber state the previous attempt wrote.
+    for conf in gpg-agent.conf scdaemon.conf; do
+        [ -f "$GNUPG_SKEL/$conf" ] || continue
+        [ -f "$GNUPG_HOME/$conf" ] && continue
+        if cp "$GNUPG_SKEL/$conf" "$GNUPG_HOME/$conf" 2>/dev/null; then
+            chmod 600 "$GNUPG_HOME/$conf" 2>/dev/null || true
+        else
+            log_message "WARNING: could not install $conf into $GNUPG_HOME"
+        fi
+    done
+
+    # Exported before the retry loop so every `python main.py` attempt inherits
+    # it; re-exporting on each attempt is harmless and keeps the two call sites
+    # identical.
+    export GNUPGHOME="$GNUPG_HOME"
     return 0
 }
 
@@ -416,6 +471,12 @@ init_persistent_log
 # applied /etc/hostname.
 hostname seedsigner-os 2>/dev/null || true
 
+# Point gpg at a writable, ephemeral home before anything can launch the app.
+# Done here rather than inside the retry loop only, so a failure is recorded in
+# the persistent boot log while that log is still being written.
+init_gnupg_home
+log_message "GNUPGHOME=$GNUPG_HOME (tmpfs — GPG keys are wiped at reboot)"
+
 # Boot-failover (non-dev). U-Boot carries a memory-backed boot counter
 # (CONFIG_SYS_BOOTCOUNT_ADDR = GRF OS_REG scratch register 0xFF020218, enabled in the
 # U-Boot board header) that increments on every boot; once it exceeds bootlimit, U-Boot
@@ -507,6 +568,12 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
     stop_rkipc || true
     stop_camera_service
     release_conflicting_gpio_lines
+
+    # Re-establish the GnuPG home on every attempt, matching how the other
+    # preconditions above are re-applied: a crashed app could have removed it,
+    # and a retry that silently loses GNUPGHOME would fail GPG in a way that
+    # looks nothing like the original crash.
+    init_gnupg_home
 
     # Configure GPIO button pins (IOMUX, pull-up, input, IE) for detected variant
     if [ -x /usr/bin/configure-gpio.sh ]; then

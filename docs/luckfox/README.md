@@ -175,6 +175,7 @@ There are three ways to build: `.github/workflows/build-luckfox.yml` (CI),
 | `apply-partition-layout.sh` | flash layout incl. the `userdata` partition |
 | `pin-spidev-bufsiz.sh` | `spidev.bufsiz=8192` on the kernel command line |
 | `readonly-rootfs.sh` / `assert-readonly-rootfs.sh` | squashfs root + overlay, and its verification |
+| `install-gnupg-home.sh` | stages the GnuPG agent/scdaemon config seeded into `GNUPGHOME` |
 | `strip-kernel-network.sh` / `assert-kernel-network.sh` | network/WiFi/coredump strip, and its verification |
 | `configure-usb-mode.sh`, `harden-nondev.sh`, `optimize-nondev.sh`, `patch-s50usbdevice.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`, `uboot-recovery-config.sh`, `compile-translations.sh` | as named |
 
@@ -251,6 +252,20 @@ a writable root**, so dev images are unaffected. Controlled by the `readonly_roo
 the defconfig written — Kconfig silently drops lines for symbols whose dependencies are unmet. A squashfs root
 on a kernel without overlayfs boots fine and then fails the first write to `/etc`, which presents as exactly
 the black screen described above. That has to fail the build, not the board.
+
+**GnuPG is on tmpfs, deliberately.** The app never sets `GNUPGHOME` and never passes
+`gpg --homedir`, so gpg resolves its home from `$HOME` — which under BusyBox init is `/`, i.e.
+`/.gnupg` on the read-only root. Every write gpg needs then fails with "read-only file
+system", which is what broke GPG key generation and key import. `start-seedsigner.sh` sets
+`GNUPGHOME=/tmp/.gnupg` and seeds `gpg-agent.conf` + `scdaemon.conf` there from
+`/usr/share/seedsigner/gnupg`.
+
+`/tmp` rather than an overlaid path: it is a plain tmpfs available *before* `S01overlay` runs
+(which itself uses `/tmp`), so gpg cannot inherit an overlay failure — and **GPG keys are
+wiped at reboot by construction**, never written to flash. `scdaemon.conf`'s `disable-ccid`
+matters here: until the home was writable, `gpg-agent`/`scdaemon` could not create their
+sockets and never ran at all; giving them a working home means they start, and `disable-ccid`
+routes scdaemon through pcscd instead of letting it grab the SEC1210 reader directly.
 
 **Not yet covered:** the `oem` partition is still read-write. Its surface is much smaller (no equivalent of
 the per-boot `luckfox.cfg` rewrite has been observed), but it is the remaining writable filesystem that is

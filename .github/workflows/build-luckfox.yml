@@ -1299,6 +1299,12 @@ jobs:
         # setup — but still mount configfs (the display depends on it) — when
         # dr_mode=host. No-op on gadget builds; idempotent.
         bash ../seedsigner-os/opt/luckfox/patch-s50usbdevice.sh "$ROOTFS_DIR"
+
+        # GnuPG agent/scdaemon config, staged into /usr/share for
+        # start-seedsigner.sh to seed into GNUPGHOME on tmpfs. The app never sets
+        # GNUPGHOME, so without this gpg writes to /.gnupg on the read-only root
+        # and key generation/import both fail.
+        bash ../seedsigner-os/opt/luckfox/install-gnupg-home.sh "$ROOTFS_DIR"
         if [[ -f "../seedsigner-os/opt/luckfox/files/mdev.conf" ]]; then
           cp -v ../seedsigner-os/opt/luckfox/files/mdev.conf "$ROOTFS_DIR/etc/mdev.conf"
         fi

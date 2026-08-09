@@ -1487,6 +1487,14 @@ install_seedsigner_app() {
         bash "$SCRIPT_DIR/patch-s50usbdevice.sh" "$rootfs_dir"
     fi
 
+    # GnuPG agent/scdaemon config, staged into /usr/share for start-seedsigner.sh
+    # to seed into GNUPGHOME on tmpfs. The app never sets GNUPGHOME, so without
+    # this gpg writes to /.gnupg on the read-only root and key generation/import
+    # both fail. Shared with CI via install-gnupg-home.sh.
+    if [ -f "$SCRIPT_DIR/install-gnupg-home.sh" ]; then
+        bash "$SCRIPT_DIR/install-gnupg-home.sh" "$rootfs_dir"
+    fi
+
     # Non-dev (production) rootfs hardening: serial login, adb artifacts,
     # logging daemons, networking (interface bring-up + DHCP + telnet/ssh).
     if [ "$BUILD_VARIANT" == "non-dev" ]; then

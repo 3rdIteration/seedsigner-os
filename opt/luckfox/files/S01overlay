@@ -27,6 +27,11 @@ OVERLAY_ROOT=/tmp/.rootfs-overlay
 #   /var   logs and service state (some entries may be symlinks into /tmp, which
 #          is harmless to overlay).
 #   /root  the root account's home; anything using $HOME lands here.
+#          NOTE: GnuPG deliberately does NOT rely on this. start-seedsigner.sh
+#          points GNUPGHOME at /tmp/.gnupg instead, because /tmp is a plain
+#          tmpfs that exists before this script runs, so gpg cannot inherit an
+#          overlay failure -- and because GPG keys are meant to be wiped at
+#          reboot. Do not "fix" that by moving it back under $HOME.
 #   /home  present on some rootfs layouts, absent on others.
 #
 # Deliberately NOT overlaid:
