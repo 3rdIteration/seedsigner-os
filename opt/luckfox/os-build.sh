@@ -11,8 +11,14 @@ export OUTPUT_DIR="/build/output"
 
 # Repository URLs for cloning
 export LUCKFOX_REPO_URL="https://github.com/3rdIteration/luckfox-pico.git"
-export SEEDSIGNER_REPO_URL="https://github.com/3rdIteration/seedsigner.git"
-export SEEDSIGNER_BRANCH="dev"
+# Overridable defaults, matching build-luckfox.yml's seedsigner_repo_url /
+# seedsigner_branch inputs. These were hard assignments, which silently discarded
+# whatever the caller passed in -- so a local build ALWAYS built `dev` no matter
+# what branch was asked for, and the resulting image differed from CI in the one
+# component that is not pinned by this repo. See also: the build records the app
+# branch, not its commit, so "dev" is not a fixed target either.
+export SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner.git}"
+export SEEDSIGNER_BRANCH="${SEEDSIGNER_BRANCH:-dev}"
 # Build variant: non-dev (hardened/air-gapped) or dev. Mirrors build-luckfox.yml's build_variant.
 export SEEDSIGNER_BUILD_VARIANT="${SEEDSIGNER_BUILD_VARIANT:-non-dev}"
 # USB role (mirrors build-luckfox.yml's usb_mode): gadget|host|otg|auto.

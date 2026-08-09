@@ -15,6 +15,14 @@ USB_MODE="${SEEDSIGNER_USB_MODE:-auto}"
 # Ethernet debug channel (mirrors build-luckfox.yml's debug_network): on|off|auto.
 # auto follows the variant: non-dev = off (no interface bring-up, no telnet), dev = on.
 DEBUG_NETWORK="${SEEDSIGNER_DEBUG_NETWORK:-auto}"
+# Read-only squashfs rootfs (mirrors build-luckfox.yml's readonly_rootfs): auto|on|off.
+READONLY_ROOTFS="${READONLY_ROOTFS:-${SEEDSIGNER_READONLY_ROOTFS:-auto}}"
+# The SeedSigner application repo/branch (mirrors build-luckfox.yml's
+# seedsigner_repo_url / seedsigner_branch). The app is the one component this
+# repo does not pin, so it has to be selectable or a local build cannot
+# reproduce a CI image.
+SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner.git}"
+SEEDSIGNER_BRANCH="${SEEDSIGNER_BRANCH:-dev}"
 
 # Default Python version for buildroot (used if detection fails)
 DEFAULT_PYTHON_VERSION="3.12"
@@ -133,6 +141,10 @@ Usage: ./build-local.sh [options]
 Options:
   --hardware TYPE    - Hardware type: mini|max|pi (default: mini)
   --boot MEDIUM      - Boot medium: sd|nand|emmc (default: sd)
+  --variant V        - non-dev (hardened) | dev (default: non-dev)
+  --readonly-rootfs V - auto|on|off; read-only squashfs root (default: auto)
+  --seedsigner-branch B - SeedSigner app branch (default: dev)
+  --seedsigner-repo URL - SeedSigner app repo
   --enable-uart2-console - Keep UART2 console/debug enabled (default: disabled)
   --build-rust-from-source - Build Rust toolchain from source (ignore cached binary)
   --check-deps       - Check and install missing dependencies
@@ -261,13 +273,25 @@ clone_repositories() {
     # SeedSigner OS Buildroot packages are part of this repo (opt/external-packages);
     # nothing to clone.
 
-    # Clone SeedSigner application code
+    # Clone SeedSigner application code. The repo/branch are variables, not
+    # literals: this used to hard-code `-b dev`, so a local build could not
+    # produce the image CI produces whenever CI was pointed at another branch --
+    # and the app is the one component this repo does not pin.
     if [ ! -d "seedsigner" ]; then
-        print_info "Cloning seedsigner application..."
-        git clone https://github.com/3rdIteration/seedsigner.git --depth=1 -b dev --single-branch --recurse-submodules
-        print_success "seedsigner cloned"
+        print_info "Cloning seedsigner application ($SEEDSIGNER_BRANCH)..."
+        git clone "$SEEDSIGNER_REPO_URL" --depth=1 -b "$SEEDSIGNER_BRANCH" \
+            --single-branch --recurse-submodules
+        print_success "seedsigner cloned ($SEEDSIGNER_BRANCH)"
     else
-        print_info "seedsigner already exists"
+        # An existing checkout is silently reused, so say which branch it is on:
+        # otherwise a --seedsigner-branch on a second run looks like it worked
+        # while the build keeps using whatever was cloned first.
+        existing_branch="$(git -C seedsigner rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+        existing_sha="$(git -C seedsigner rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        print_info "seedsigner already exists (branch=$existing_branch commit=$existing_sha) — REUSED, not re-cloned"
+        if [ "$existing_branch" != "$SEEDSIGNER_BRANCH" ] && [ "$existing_branch" != "unknown" ]; then
+            print_warning "requested branch '$SEEDSIGNER_BRANCH' != checked-out '$existing_branch'; delete $WORK_DIR/seedsigner to switch"
+        fi
     fi
 
     # Compile translation catalogs (.po -> .mo) + slim fonts in the checkout so
@@ -1673,6 +1697,36 @@ main() {
                 else
                     print_error "Invalid hardware type. Use: mini|max|pi"
                     exit 1
+                fi
+                ;;
+            # Mirror the GitHub Actions inputs of the same names, so this script
+            # can build the same image CI builds.
+            --seedsigner-branch)
+                if [[ -n "$2" ]]; then
+                    SEEDSIGNER_BRANCH="$2"; shift 2
+                else
+                    print_error "Missing argument for --seedsigner-branch"; exit 1
+                fi
+                ;;
+            --seedsigner-repo)
+                if [[ -n "$2" ]]; then
+                    SEEDSIGNER_REPO_URL="$2"; shift 2
+                else
+                    print_error "Missing argument for --seedsigner-repo"; exit 1
+                fi
+                ;;
+            --variant)
+                if [[ -n "$2" && "$2" =~ ^(non-dev|dev)$ ]]; then
+                    BUILD_VARIANT="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --variant (use: non-dev|dev)"; exit 1
+                fi
+                ;;
+            --readonly-rootfs)
+                if [[ -n "$2" && "$2" =~ ^(auto|on|off)$ ]]; then
+                    READONLY_ROOTFS="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --readonly-rootfs (use: auto|on|off)"; exit 1
                 fi
                 ;;
             --boot)
