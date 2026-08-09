@@ -55,8 +55,38 @@ export CONFIG_IN="${PACKAGE_DIR}/Config.in"
 export PYZBAR_PATCH="${PACKAGE_DIR}/python-pyzbar/0001-PATH-fixed-by-hand.patch"
 export ROOTFS_DIR="${LUCKFOX_SDK_DIR}/output/out/rootfs_uclibc_rv1106"
 
-# Parallel build configuration
-export BUILD_JOBS="${BUILD_JOBS:-$(nproc)}"
+# Parallel build configuration.
+#
+# The default is nproc CAPPED BY MEMORY, not nproc. This build compiles host-rust
+# from source -- and therefore LLVM -- because the Docker path never caches a
+# toolchain the way CI does. LLVM's X86/AArch64 codegen translation units are
+# among the largest C++ compiles in common use, several GB of RSS each. On a
+# 32-core machine, -j32 asks for tens of GB at peak; when the host cannot supply
+# it the compiler is OOM-killed and the build dies at ~97% with a bare
+#
+#   gmake[3]: *** [.../lib/Target/X86/CMakeFiles/LLVMX86CodeGen.dir/all] Error 2
+#
+# which names no cause and looks like a compiler bug rather than a resource
+# limit. ~2 GB per parallel job is the usual rule of thumb for building LLVM.
+#
+# An explicit BUILD_JOBS (or `--jobs N`) always wins; this only sets the default.
+# Note /proc/meminfo inside the container reports the memory the container can
+# actually use -- on WSL2 that is the WSL VM's allocation, not the Windows host's,
+# which is exactly the number that matters here.
+_ss_cpu_jobs="$(nproc)"
+_ss_mem_gb="$(awk '/^MemTotal:/ {printf "%d", $2/1048576}' /proc/meminfo 2>/dev/null || echo 0)"
+if [[ "${_ss_mem_gb:-0}" -gt 0 ]]; then
+    _ss_mem_jobs=$(( _ss_mem_gb / 2 ))
+    [[ "$_ss_mem_jobs" -lt 1 ]] && _ss_mem_jobs=1
+    if [[ "$_ss_mem_jobs" -lt "$_ss_cpu_jobs" ]]; then
+        _ss_default_jobs="$_ss_mem_jobs"
+    else
+        _ss_default_jobs="$_ss_cpu_jobs"
+    fi
+else
+    _ss_default_jobs="$_ss_cpu_jobs"
+fi
+export BUILD_JOBS="${BUILD_JOBS:-$_ss_default_jobs}"
 export MAKEFLAGS="-j${BUILD_JOBS}"
 export BR2_JLEVEL="${BUILD_JOBS}"
 export FORCE_UNSAFE_CONFIGURE=1
@@ -1525,7 +1555,16 @@ run_automated_build() {
 
     print_info "Build Configuration:"
     echo "   CPU Cores Available: $(nproc)"
+    echo "   Memory Available: ${_ss_mem_gb:-?} GB"
     echo "   Build Jobs: $BUILD_JOBS"
+    # Say so when memory, not cores, is what limits the job count. Building
+    # host-rust compiles LLVM, whose heaviest translation units need ~2 GB each;
+    # a silent -j<cores> on a memory-tight host dies at ~97% of the LLVM build
+    # with an error that names no cause. Raise with --jobs N if you know better.
+    if [[ "${_ss_mem_gb:-0}" -gt 0 && "$BUILD_JOBS" -lt "$(nproc)" ]]; then
+        echo "   (capped by memory: ~2 GB/job for the LLVM build in host-rust;"
+        echo "    override with --jobs N)"
+    fi
     echo "   MAKEFLAGS: $MAKEFLAGS"
     echo "   Build Directory: $BUILD_DIR"
     echo "   Output Directory: $OUTPUT_DIR"
