@@ -770,6 +770,7 @@ jobs:
 
     - name: Pin spidev buffer size (display SPI open)
       run: |
+        HARDWARE="${{ matrix.hardware }}"
         # Shared with the local Docker builds via opt/luckfox/pin-spidev-bufsiz.sh.
         # The rationale (order-6 allocation failure on the 64 MB Mini) lives in that
         # script's header so all three build implementations read the same account.
