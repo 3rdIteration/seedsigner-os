@@ -89,6 +89,25 @@ fi
 export BUILD_JOBS="${BUILD_JOBS:-$_ss_default_jobs}"
 export MAKEFLAGS="-j${BUILD_JOBS}"
 export BR2_JLEVEL="${BUILD_JOBS}"
+
+# LLVM's per-translation-unit cost (~2 GB) is the heaviest in buildroot, and
+# x.py sets LLVM's cmake --parallel to num_cpus() on its own -- it does NOT
+# honour MAKEFLAGS/BR2_JLEVEL (nor CMAKE_BUILD_PARALLEL_LEVEL), so the caps
+# above have no effect on the host-rust (LLVM) compile and a memory-tight
+# host OOMs at ~94-97% of the LLVM build with a bare
+#   gmake[3]: *** [.../lib/Target/X86/CMakeFiles/LLVMX86CodeGen.dir/all] Error 2
+# The rust.mk patch in apply_sdk_patches injects `jobs = $${RUST_BUILD_JOBS}`
+# into config.toml's [build] section, which x.py honours for both `x.py build`
+# and `x.py dist`. RUST_BUILD_JOBS defaults to half of BUILD_JOBS (LLVM ~2 GB
+# per job vs typical C ~1 GB per job), keeping the LLVM compile within the
+# memory budget the overall -j already targets; on a 16 GB host this is ~4.
+# Override explicitly with RUST_BUILD_JOBS=<n>.
+if (( BUILD_JOBS > 1 )); then
+    _ss_rust_default_jobs=$(( BUILD_JOBS / 2 ))
+else
+    _ss_rust_default_jobs=1
+fi
+export RUST_BUILD_JOBS="${RUST_BUILD_JOBS:-$_ss_rust_default_jobs}"
 export FORCE_UNSAFE_CONFIGURE=1
 export BUILD_MODEL="${BUILD_MODEL:-both}"
 export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
@@ -1260,6 +1279,34 @@ s/^endef\nendif/endef\nendif\nendif/
 }' "$RUSTBIN_MK"
     fi
 
+    # Patch rust.mk so x.py honours the memory-based job cap. host-rust's
+    # HOST_RUST_BUILD_CMDS runs `x.py build` and HOST_RUST_INSTALL_CMDS runs
+    # `x.py dist`, both with no --jobs, so x.py defaults LLVM's
+    # cmake --build --parallel to num_cpus() and ignores MAKEFLAGS/BR2_JLEVEL
+    # (and CMAKE_BUILD_PARALLEL_LEVEL) entirely -- without this the LLVM
+    # compile goes wide-open and OOMs the host. The `--jobs` CLI flag is the
+    # only knob rust 1.82's bootstrap still reads (the `jobs` config.toml
+    # field was removed -- a previous attempt that injected `echo "jobs = "`
+    # into HOST_RUST_CONFIGURE_CMDS made x.py fail with
+    # "Failed to parse 'config.toml': unknown field `jobs`").
+    RUST_MK="${PACKAGE_DIR}/rust/rust.mk"
+    if [[ -f "$RUST_MK" ]]; then
+        # Revert any stale `jobs =` config.toml injection left by an earlier
+        # build (idempotent: line is absent on a fresh buildroot unpack).
+        if grep -q 'echo "jobs = ' "$RUST_MK"; then
+            print_step "Removing stale config.toml jobs= injection from rust.mk"
+            sed -i '/echo "jobs = /d' "$RUST_MK"
+        fi
+        # Cap both x.py invocations. `$$` -> `$` after make, so the recipe
+        # shell expands ${RUST_BUILD_JOBS} (inherited from this script's
+        # export). Guarded so re-runs don't double-append `--jobs`.
+        if ! grep -q 'x.py build --jobs' "$RUST_MK"; then
+            print_step "Patching rust.mk to cap x.py/LLVM parallelism (--jobs)"
+            sed -i 's#x\.py build$#x.py build --jobs $${RUST_BUILD_JOBS}#' "$RUST_MK"
+            sed -i 's#x\.py dist$#x.py dist --jobs $${RUST_BUILD_JOBS}#' "$RUST_MK"
+        fi
+    fi
+
     print_step "Applying SeedSigner Configuration"
     if [[ -f "/build/configs/luckfox_pico_defconfig" ]]; then
         cp -v "/build/configs/luckfox_pico_defconfig" "$BUILDROOT_DIR/configs/luckfox_pico_defconfig"
@@ -1557,10 +1604,12 @@ run_automated_build() {
     echo "   CPU Cores Available: $(nproc)"
     echo "   Memory Available: ${_ss_mem_gb:-?} GB"
     echo "   Build Jobs: $BUILD_JOBS"
+    echo "   LLVM/Rust Jobs: $RUST_BUILD_JOBS"
     # Say so when memory, not cores, is what limits the job count. Building
     # host-rust compiles LLVM, whose heaviest translation units need ~2 GB each;
     # a silent -j<cores> on a memory-tight host dies at ~97% of the LLVM build
     # with an error that names no cause. Raise with --jobs N if you know better.
+    # RUST_BUILD_JOBS (LLVM) is stricter still; override with RUST_BUILD_JOBS=N.
     if [[ "${_ss_mem_gb:-0}" -gt 0 && "$BUILD_JOBS" -lt "$(nproc)" ]]; then
         echo "   (capped by memory: ~2 GB/job for the LLVM build in host-rust;"
         echo "    override with --jobs N)"
