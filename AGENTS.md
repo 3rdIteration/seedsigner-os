@@ -141,6 +141,16 @@ symbol doesn't exist or whose dependencies are unmet — this is exactly how the
 shipped green with zero bootcount code. `assert-kernel-network.sh` re-checks the built kernel config (plus a
 `CONFIGFS_FS=y` display canary and the oem `.ko` payload) and fails the build.
 
+**The Luckfox boot watchdog couples the image to the app ref.** `start-seedsigner.sh` reboots into Loader
+120 s after app start unless the app writes `/tmp/seedsigner-ready` (`signal_app_alive()`, app commit
+`689483af`+, i.e. the `generalized-platform-detection` branch — `dev` and all tags lack it). A signal-less
+app builds green, boots looking healthy, and Loader-loops on every boot, so all three build paths run
+`assert-app-watchdog-signal.sh` after the app clone/reuse decision and **fail the build** when it's absent
+(escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`). Relatedly, since the read-only rootfs can never
+cache `__pycache__` at runtime, all three paths also run `precompile-bytecode.sh` after staging the app
+(discovered target-python `compileall.py`, version-matched host interpreter, deterministic flags) over
+`/opt/src` and `site-packages` — the same treatment Pi profiles have always given the app in post-build.
+
 **Silencing the serial console differs by platform** — get this right per-board:
 - **Pi**: the firmware (`boot_config.txt`) doesn't route the console to the UART, so the cmdline simply omits `console=`. That also frees `/dev/ttyAMA0` (via `dtoverlay=disable-bt`) for the SEC1210 reader, which shares that UART — here serial output would actively break the reader.
 - **Lafrite**: the DTS sets `chosen/stdout-path = "serial0"` (`ttyAML0`), so **omitting `console=` is not enough** — the DT still routes the console to serial. Pass `console=ttynull` explicitly (a cmdline `console=` sets `console_set_on_cmdline`, which makes the kernel ignore the DT stdout-path), and provide `ttynull` via `CONFIG_NULL_TTY=y`. The SEC1210 reader is on a *separate* UART (`/dev/ttyAML6`), so console and reader don't collide as on the Pi — but the console is still silenced to meet the no-leak requirement.

@@ -269,6 +269,13 @@ clone_repositories() {
         print_info "seedsigner already exists"
     fi
 
+    # The app MUST carry the boot-watchdog liveness signal (it writes
+    # /tmp/seedsigner-ready): a signal-less ref builds green, but the image
+    # boots the app fine and then reboots into Loader 120 s later, on every
+    # boot. Runs after the clone-or-reuse decision so a stale reused checkout
+    # is caught too. Shared with CI via assert-app-watchdog-signal.sh.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/assert-app-watchdog-signal.sh" "$SEEDSIGNER_CODE_DIR"
+
     # Compile translation catalogs (.po -> .mo) + slim fonts in the checkout so
     # the image ships multi-language support. Must run before the checkout is
     # copied into the rootfs / l10n/ is pruned. Degrades to English-only if the
@@ -1533,6 +1540,14 @@ s/^endef\nendif/endef\nendif\nendif/
     else
         print_info "dev build: skipping rootfs hardening/optimization (serial console + adb retained, SDK-default boot)"
     fi
+
+    # Precompile app + site-packages bytecode with the TARGET interpreter's own
+    # compileall: the read-only squashfs can never cache __pycache__ at runtime,
+    # so every import would otherwise re-compile .py source off xz squashfs on
+    # every boot (the Pi profiles precompile at build time for the same reason).
+    # Runs after hardening/optimization, which prune parts of the python tree.
+    # Shared with CI via precompile-bytecode.sh.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/precompile-bytecode.sh" "$ROOTFS_DIR" "$LUCKFOX_SDK_DIR"
 
     # Install the oem iqfiles prune into the SDK's pre-build-OEM hook. The oem
     # tree is assembled by __PACKAGE_OEM inside `build.sh firmware`, so this is

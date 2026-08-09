@@ -248,6 +248,14 @@ NAND, `root=/dev/mmcblk0p<n>` on eMMC). `files/S01overlay` mounts the overlays a
 a writable root**, so dev images are unaffected. Controlled by the `readonly_rootfs` build input
 (`auto`/`on`/`off`; auto = on for non-dev).
 
+**Bytecode is precompiled at build time.** A read-only `/opt` can never cache `__pycache__` at runtime, so
+without this every import would re-compile `.py` source off xz squashfs, on a single-core A7, on every boot.
+`precompile-bytecode.sh` runs after the app is staged (and after the non-dev prune) in all three build paths,
+using the SDK buildroot's host python + the **target** python's `compileall.py` (discovered, version-matched —
+wrong-magic `.pyc` would be ignored) with deterministic flags and hash-based invalidation, over
+`/opt/src` **and** `site-packages`. Same approach as the Pi profiles' post-build scripts; `.py` sources stay
+in the image (checked-hash validation reads them).
+
 **Why the assertion matters.** `assert-readonly-rootfs.sh` checks the **generated** kernel `.config`, never
 the defconfig written — Kconfig silently drops lines for symbols whose dependencies are unmet. A squashfs root
 on a kernel without overlayfs boots fine and then fails the first write to `/etc`, which presents as exactly
@@ -280,7 +288,11 @@ So a bad image self-heals into a flashable state without the BOOT button:
   selects. Implemented in the app (`MainMenuScreen`/`RebootToLoaderView`).
 - **Startup watchdog** (`start-seedsigner.sh`, both variants): the app writes `/tmp/seedsigner-ready` when it
   reaches Home; if that never appears within ~120 s, or the launch retry loop is exhausted, the device reboots
-  into Loader mode. Covers the app-crash and app-hang cases.
+  into Loader mode. Covers the app-crash and app-hang cases. **The app ref must carry the signal** — it was
+  added in app commit `689483af` (2026-07-28), so `dev` and all release tags predate it. A signal-less app
+  builds green, boots *looking* completely healthy, and reboots into Loader 120 s later, on every boot;
+  `assert-app-watchdog-signal.sh` therefore fails the build after the app clone when the signal is absent
+  (escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`).
 - **`panic=5`** (non-dev bootargs): a kernel panic reboots instead of hanging, giving the failover another
   shot. Dev keeps panics visible for debugging.
 - **USB role (`usb_mode`) — this is the ADB switch.** The RV1106 USB port is either a **device gadget**
