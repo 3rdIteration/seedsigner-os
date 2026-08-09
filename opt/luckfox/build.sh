@@ -36,13 +36,26 @@ Options:
   --output DIR   - Set output directory (default: ./build-output)
   --nand         - Build NAND-flashable system image artifacts
   --microsd      - Build MicroSD image artifacts
-  --model TARGET - Target model: mini|max|both (default: both)
+  --model TARGET - Target model: mini|max|pi|both (default: both)
+
+Build-shaping options (mirror the GitHub Actions workflow inputs of the same
+name, so a local build can reproduce what CI ships):
+  --variant V           - non-dev (hardened) | dev (serial console + adb)
+                          (default: non-dev)
+  --readonly-rootfs V   - auto|on|off. Read-only squashfs root with tmpfs
+                          overlays; auto = on for non-dev (default: auto)
+  --usb-mode V          - auto|gadget|host|otg (default: auto)
+  --debug-network V     - auto|on|off (default: auto)
+  --seedsigner-branch B - SeedSigner app branch to build
 
 Examples:
   ./build.sh build             # Standard build (artifacts in ./build-output)
   ./build.sh build --jobs 8    # Use 8 parallel jobs
   ./build.sh interactive       # Debug build issues
   ./build.sh status            # Check volume and image status
+
+  # Reproduce the CI shipping image for the Pro Max on MicroSD:
+  ./build.sh build --model max --microsd --variant non-dev --readonly-rootfs on
 
 Build Output:
   - Build artifacts are automatically available in the output directory
@@ -133,6 +146,23 @@ run_build() {
         env_args="-e BUILD_JOBS=$build_jobs -e BUILD_MODEL=$build_model"
         print_success "Using $build_jobs parallel build jobs"
     fi
+
+    # Forward the build-shaping variables into the container. Only BUILD_MODEL and
+    # BUILD_JOBS used to cross the boundary, so a Docker build silently took
+    # os-build.sh's defaults for the variant, USB role, network and rootfs mode no
+    # matter what the caller asked for -- the local build could not reproduce a CI
+    # image. `docker run -e VAR` with no value passes the host's value through and
+    # omits the variable entirely when it is unset, so os-build.sh's own defaults
+    # still apply when nothing is specified.
+    local passthrough
+    for passthrough in SEEDSIGNER_BUILD_VARIANT SEEDSIGNER_READONLY_ROOTFS \
+                       SEEDSIGNER_USB_MODE SEEDSIGNER_DEBUG_NETWORK \
+                       SEEDSIGNER_HARDEN_ADB SEEDSIGNER_REPO_URL SEEDSIGNER_BRANCH; do
+        if [[ -n "${!passthrough:-}" ]]; then
+            env_args="$env_args -e $passthrough=${!passthrough}"
+            print_success "$passthrough=${!passthrough}"
+        fi
+    done
     
     # Mount this repo's converged SeedSigner Buildroot packages (a single
     # toolchain-aware set under opt/external-packages) so the container does not
@@ -337,12 +367,53 @@ main() {
                 shift
                 ;;
             --model)
-                if [[ -n "$2" && "$2" =~ ^(mini|max|both)$ ]]; then
+                # os-build.sh has always understood BUILD_MODEL=pi; only this
+                # wrapper rejected it, so the Pico Pi could be built in CI but not
+                # locally.
+                if [[ -n "$2" && "$2" =~ ^(mini|max|pi|both)$ ]]; then
                     build_model="$2"
                     shift 2
                 else
-                    print_error "Invalid or missing argument for --model (use: mini|max|both)"
+                    print_error "Invalid or missing argument for --model (use: mini|max|pi|both)"
                     exit 1
+                fi
+                ;;
+            # The build-shaping options below mirror the GitHub Actions inputs of
+            # the same names. Without them a local build could not produce the
+            # image CI produces -- it always got the defaults.
+            --variant)
+                if [[ -n "$2" && "$2" =~ ^(non-dev|dev)$ ]]; then
+                    export SEEDSIGNER_BUILD_VARIANT="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --variant (use: non-dev|dev)"; exit 1
+                fi
+                ;;
+            --readonly-rootfs)
+                if [[ -n "$2" && "$2" =~ ^(auto|on|off)$ ]]; then
+                    export SEEDSIGNER_READONLY_ROOTFS="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --readonly-rootfs (use: auto|on|off)"; exit 1
+                fi
+                ;;
+            --usb-mode)
+                if [[ -n "$2" && "$2" =~ ^(auto|gadget|host|otg)$ ]]; then
+                    export SEEDSIGNER_USB_MODE="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --usb-mode (use: auto|gadget|host|otg)"; exit 1
+                fi
+                ;;
+            --debug-network)
+                if [[ -n "$2" && "$2" =~ ^(auto|on|off)$ ]]; then
+                    export SEEDSIGNER_DEBUG_NETWORK="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --debug-network (use: auto|on|off)"; exit 1
+                fi
+                ;;
+            --seedsigner-branch)
+                if [[ -n "$2" ]]; then
+                    export SEEDSIGNER_BRANCH="$2"; shift 2
+                else
+                    print_error "Missing argument for --seedsigner-branch"; exit 1
                 fi
                 ;;
             *)

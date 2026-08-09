@@ -164,6 +164,38 @@ those prunes). The prune decides what to delete before deleting anything and **a
 if `IQFILES_KEEP` matches nothing**, so a bad keep-list can't silently ship a camera with no tuning data.
 The same hook is the right home for any future oem-partition surgery.
 
+## Keeping the three build implementations in sync
+
+There are three ways to build: `.github/workflows/build-luckfox.yml` (CI),
+`opt/luckfox/os-build.sh` (Docker), and `opt/luckfox/build-local.sh` (no Docker). **Shared logic lives in
+`opt/luckfox/*.sh`; change the script, never one caller.** Every one of these is invoked by all three:
+
+| Script | Does |
+|---|---|
+| `apply-partition-layout.sh` | flash layout incl. the `userdata` partition |
+| `pin-spidev-bufsiz.sh` | `spidev.bufsiz=8192` on the kernel command line |
+| `readonly-rootfs.sh` / `assert-readonly-rootfs.sh` | squashfs root + overlay, and its verification |
+| `strip-kernel-network.sh` / `assert-kernel-network.sh` | network/WiFi/coredump strip, and its verification |
+| `configure-usb-mode.sh`, `harden-nondev.sh`, `optimize-nondev.sh`, `patch-s50usbdevice.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`, `uboot-recovery-config.sh`, `compile-translations.sh` | as named |
+
+**Why this is a hard rule, not a style preference.** Two of these were inlined and duplicated instead, and
+both copies drifted into shipping a different device:
+
+- **Partition layout.** The local builds *deleted* the `userdata` partition (`20M(oem),99M(rootfs)`, plus a
+  sed stripping `userdata@/userdata@ubifs`) while CI kept it. Same repo, same board, silently different
+  images — and the local one had nowhere to persist settings or write a boot log. With a read-only rootfs it
+  had nowhere writable at all.
+- **`spidev.bufsiz`.** Present only in CI. A locally built Mini kept the vendor default, hit the order-6
+  allocation failure in `spidev_open()`, and came up with no display — while its splash drew fine on the same
+  boot, which makes it look like a display bug rather than a build difference.
+
+Neither had a build-time signal. Both are now single scripts that hard-fail if their result is wrong.
+
+`opt/luckfox/build.sh` (the Docker wrapper) mirrors the CI workflow inputs: `--variant`,
+`--readonly-rootfs`, `--usb-mode`, `--debug-network`, `--seedsigner-branch`, and `--model mini|max|pi|both`.
+Previously only `BUILD_MODEL`/`BUILD_JOBS` crossed the container boundary, so a Docker build silently took
+the defaults no matter what was asked for.
+
 ## Read-only root filesystem
 
 Non-dev images mount `/` as **squashfs** with **tmpfs overlays** on `/etc`, `/var`, `/root` and `/home`.

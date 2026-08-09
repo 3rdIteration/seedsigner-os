@@ -223,108 +223,14 @@ clone_repositories() {
 
 apply_sdk_patches() {
     print_step "Applying SeedSigner SDK Patches"
-    
-    cd "$LUCKFOX_SDK_DIR"
-    
-    # Show files before patching
-    print_info "Checking target files..."
-    if [ -f project/cfg/BoardConfig_IPC/BoardConfig-SPI_NAND-Buildroot-RV1103_Luckfox_Pico_Mini-IPC.mk ]; then
-        echo "  ${GREEN}✓${NC} Mini BoardConfig found"
-    else
-        print_error "Mini BoardConfig NOT FOUND!"
-        cd "$REPOS_DIR"
-        return 1
-    fi
-    
-    if [ -f project/cfg/BoardConfig_IPC/BoardConfig-SPI_NAND-Buildroot-RV1106_Luckfox_Pico_Pro_Max-IPC.mk ]; then
-        echo "  ${GREEN}✓${NC} Max BoardConfig found"
-    else
-        print_error "Max BoardConfig NOT FOUND!"
-        cd "$REPOS_DIR"
-        return 1
-    fi
-    echo ""
-    
-    # Apply Mini SPI-NAND partition optimization using sed (more reliable than patches)
-    print_info "Applying Mini SPI-NAND partition optimization..."
-    MINI_FILE="project/cfg/BoardConfig_IPC/BoardConfig-SPI_NAND-Buildroot-RV1103_Luckfox_Pico_Mini-IPC.mk"
-    # Remove userdata from partition table and shrink OEM, expand rootfs
-    sed -i 's/30M(oem),6M(userdata),85M(rootfs)/20M(oem),99M(rootfs)/' "$MINI_FILE"
-    # Remove userdata from filesystem config
-    sed -i 's/,userdata@\/userdata@ubifs//' "$MINI_FILE"
-    echo "  ${GREEN}✓${NC} Mini SPI-NAND partition modified (sed)"
-    echo ""
-    
-    # Apply Max SPI-NAND partition optimization using sed
-    print_info "Applying Max SPI-NAND partition optimization..."
-    MAX_FILE="project/cfg/BoardConfig_IPC/BoardConfig-SPI_NAND-Buildroot-RV1106_Luckfox_Pico_Pro_Max-IPC.mk"
-    # Remove userdata from partition table and shrink OEM, expand rootfs
-    sed -i 's/30M(oem),10M(userdata),210M(rootfs)/20M(oem),227M(rootfs)/' "$MAX_FILE"
-    # Remove userdata from filesystem config
-    sed -i 's/,userdata@\/userdata@ubifs//' "$MAX_FILE"
-    echo "  ${GREEN}✓${NC} Max SPI-NAND partition modified (sed)"
-    echo ""
-    
-    # Apply Pi eMMC partition update to remove userdata.img expectation
-    print_info "Applying Pi eMMC partition update..."
-    PI_FILE="project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Pi-IPC.mk"
-    if [ -f "$PI_FILE" ]; then
-        sed -i 's/,256M(userdata),/,/' "$PI_FILE"
-        sed -i 's/,userdata@\/userdata@ext4//' "$PI_FILE"
-        echo "  ${GREEN}✓${NC} Pi eMMC userdata removed from partition/fs config (sed)"
-    else
-        echo "  ${YELLOW}⚠${NC}  Pi eMMC BoardConfig not found, skipping"
-    fi
-    echo ""
 
-    # Verify patches were applied by checking partition sizes
-    print_info "Verifying patches..."
-    MINI_PARTITION=$(grep "RK_PARTITION_CMD_IN_ENV=" project/cfg/BoardConfig_IPC/BoardConfig-SPI_NAND-Buildroot-RV1103_Luckfox_Pico_Mini-IPC.mk | head -1)
-    MAX_PARTITION=$(grep "RK_PARTITION_CMD_IN_ENV=" project/cfg/BoardConfig_IPC/BoardConfig-SPI_NAND-Buildroot-RV1106_Luckfox_Pico_Pro_Max-IPC.mk | head -1)
-    
-    echo "  Mini partition table:"
-    echo "    $MINI_PARTITION"
-    echo ""
-    echo "  Max partition table:"
-    echo "    $MAX_PARTITION"
-    echo ""
-    
-    # Check if patches actually modified the files
-    if echo "$MINI_PARTITION" | grep -q "99M(rootfs)"; then
-        echo "  ${GREEN}✓${NC} Mini partition optimization VERIFIED (rootfs = 103MB)"
-    else
-        echo "  ${YELLOW}⚠${NC}  WARNING: Mini partition may not be optimized!"
-    fi
-    
-    if echo "$MAX_PARTITION" | grep -q "227M(rootfs)"; then
-        echo "  ${GREEN}✓${NC} Max partition optimization VERIFIED (rootfs = 103MB)"
-    else
-        echo "  ${YELLOW}⚠${NC}  WARNING: Max partition may not be optimized!"
-    fi
-    echo ""
-    
-    print_success "Partition layout optimized:"
-    echo "  - OEM: 30MB → 20MB (save 10MB, 16.4MB used + 3.6MB headroom)"
-    echo "  - Userdata: 6MB → Removed (save 6MB, SeedSigner is stateless)"
-    echo "  - Rootfs: 85MB → 103MB (add 18MB, total 34MB gained)"
-    echo ""
-    
-    # Show partition summary
-    print_info "SPI-NAND Partition Summary (128MB flash):"
-    echo "  ┌─────────────┬──────────┬────────────┬─────────────┐"
-    echo "  │ Partition   │ Size     │ Offset     │ Purpose     │"
-    echo "  ├─────────────┼──────────┼────────────┼─────────────┤"
-    echo "  │ env         │   256 KB │ 0x00000    │ Environment │"
-    echo "  │ idblock     │   256 KB │ 0x40000    │ Boot ID     │"
-    echo "  │ uboot       │   512 KB │ 0x80000    │ U-Boot      │"
-    echo "  │ boot        │     4 MB │ 0x100000   │ Kernel+DTB  │"
-    echo "  │ oem         │    20 MB │ 0x500000   │ OEM data    │"
-    echo "  │ rootfs      │   103 MB │ 0x1900000  │ Root FS     │"
-    echo "  └─────────────┴──────────┴────────────┴─────────────┘"
-    echo "  Total allocated: ~128 MB (fits 128MB SPI-NAND)"
-    echo ""
-    
-    cd "$REPOS_DIR"
+    # Partition layout is shared with CI via apply-partition-layout.sh. It used to
+    # be duplicated here, and the copy had drifted badly: this function DELETED the
+    # userdata partition (20M(oem),99M(rootfs) plus a sed stripping the
+    # userdata@/userdata@ubifs mount) while CI kept it. Locally built images
+    # therefore had nowhere to persist settings or write a boot log -- and since
+    # the rootfs became read-only squashfs, nowhere writable at all.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/apply-partition-layout.sh" "$LUCKFOX_SDK_DIR"
 }
 
 validate_environment() {
@@ -779,6 +685,25 @@ apply_readonly_rootfs() {
         "$board_config" "$kernel_cfg_file" "$ro_rootfs"
 }
 
+# Pin spidev.bufsiz on the kernel command line. Shared with CI via
+# pin-spidev-bufsiz.sh — without it the 64 MB Mini fails an order-6 allocation in
+# spidev_open() and the display never opens, while the pre-app splash on the same
+# boot draws fine. Applies to every board and every variant.
+apply_spidev_bufsiz() {
+    local board_profile="$1"
+
+    local sdk_hardware
+    case "$board_profile" in
+        mini) sdk_hardware="RV1103_Luckfox_Pico_Mini" ;;
+        max)  sdk_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
+        pi)   sdk_hardware="RV1106_Luckfox_Pico_Pi" ;;
+        *) print_error "Unsupported board profile for spidev bufsiz: $board_profile"; exit 1 ;;
+    esac
+
+    print_step "Pinning spidev.bufsiz (display SPI open)"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/pin-spidev-bufsiz.sh" "$LUCKFOX_SDK_DIR" "$sdk_hardware" 8192
+}
+
 apply_hwrng_crypto_kernel_patch() {
     local board_profile="$1"
     local boot_medium="$2"
@@ -1115,6 +1040,7 @@ build_profile_artifacts() {
     apply_uart2_fiq_kernel_patch "$board_profile" "$boot_medium"
     apply_kernel_network_strip "$board_profile" "$boot_medium"
     apply_readonly_rootfs "$board_profile" "$boot_medium"
+    apply_spidev_bufsiz "$board_profile"
     apply_hwrng_crypto_kernel_patch "$board_profile" "$boot_medium"
     apply_crypto_dts_patch "$board_profile"
 
