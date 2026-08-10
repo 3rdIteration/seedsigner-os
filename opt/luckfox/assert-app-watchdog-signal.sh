@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# assert-app-watchdog-signal.sh <SEEDSIGNER_CODE_DIR> [build_variant]
+# assert-app-watchdog-signal.sh <SEEDSIGNER_CODE_DIR>
 #
 # Fail the build when the staged SeedSigner app cannot satisfy the OS boot
 # watchdog. Shared by the GitHub Actions build and both local Docker builds
@@ -18,25 +18,12 @@
 # kind of failure that builds green and only shows up on hardware, so it is
 # checked here instead: the app source is in hand and the check is free.
 #
-# SCOPE BY BUILD VARIANT (2nd argument). The hard failure exists to stop a
-# PRODUCTION image from shipping and Loader-looping. Non-dev (production,
-# shipped) builds therefore fail hard on a signal-less app. Dev (debuggable,
-# never shipped) builds — which carry serial + adb, so the failure is visible
-# and recoverable — downgrade to a warning, because automatic push/PR CI always
-# builds the dev variant against the app's 'dev' branch (which predates the
-# signal); a hard fail there would block all OS development until the app
-# signal merges. The caller passes its variant: build-luckfox.yml passes the
-# CI input, os-build.sh/build-local.sh pass $SEEDSIGNER_BUILD_VARIANT/
-# $BUILD_VARIANT. An omitted/unknown variant defaults to non-dev (the safe,
-# hard-failing direction).
-#
 # Escape hatch, for deliberately building an old app (bisect / A-B):
 #   SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1  downgrades the failure to a warning.
 
 set -eu
 
 APP_DIR="${1:-}"
-VARIANT="${2:-non-dev}"
 if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
     echo "assert-app-watchdog-signal: seedsigner dir '${APP_DIR:-<empty>}' not found" >&2
     exit 1
@@ -51,13 +38,8 @@ if grep -rq 'seedsigner-ready' "$APP_DIR/src" 2>/dev/null; then
     exit 0
 fi
 
-if [ "${SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL:-0}" = "1" ] || [ "$VARIANT" = "dev" ]; then
-    echo "⚠️  app has NO boot-watchdog liveness signal" >&2
-    if [ "$VARIANT" = "dev" ]; then
-        echo "⚠️  dev build (debuggable, never shipped): continuing with a warning" >&2
-    else
-        echo "⚠️  SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1, continuing anyway" >&2
-    fi
+if [ "${SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL:-0}" = "1" ]; then
+    echo "⚠️  app has NO boot-watchdog liveness signal — SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1, continuing anyway" >&2
     echo "⚠️  the image will reboot into Loader mode 120 s after every app start" >&2
     exit 0
 fi
@@ -68,10 +50,6 @@ cat >&2 <<'EOF'
    start-seedsigner.sh reboots into rockusb Loader mode 120 s after app start
    when the marker never appears. The image would boot the app, look healthy,
    and Loader-loop on every boot.
-
-   This is a non-dev (production) build, which is a hard gate: a shipped
-   image must never Loader-loop. Dev builds (serial + adb, never shipped)
-   warn instead.
 
    Use an app ref containing commit 689483af or later (2026-07-28), e.g. the
    generalized-platform-detection branch; 'dev' and all release tags predate

@@ -145,12 +145,8 @@ shipped green with zero bootcount code. `assert-kernel-network.sh` re-checks the
 120 s after app start unless the app writes `/tmp/seedsigner-ready` (`signal_app_alive()`, app commit
 `689483af`+, i.e. the `generalized-platform-detection` branch — `dev` and all tags lack it). A signal-less
 app builds green, boots looking healthy, and Loader-loops on every boot, so all three build paths run
-`assert-app-watchdog-signal.sh <dir> <variant>` after the app clone/reuse decision. It **scopes by build
-variant**: non-dev (shipped) builds **fail the build** when the signal is absent; dev builds (automatic
-push/PR CI always builds dev against the signal-less `dev` app branch, so a hard fail there would block all
-OS CI) warn instead — the dangerous case the guard exists for is a shipped production image Loader-looping,
-and that stays a hard gate. Escape hatch for deliberate bisect/A-B of an old app:
-`SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`. Relatedly, since the read-only rootfs can never
+`assert-app-watchdog-signal.sh` after the app clone/reuse decision and **fail the build** when it's absent
+(escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`). Relatedly, since the read-only rootfs can never
 cache `__pycache__` at runtime, all three paths also run `precompile-bytecode.sh` after staging the app
 (discovered target-python `compileall.py`, version-matched host interpreter, deterministic flags) over
 `/opt/src` and `site-packages` — the same treatment Pi profiles have always given the app in post-build.
