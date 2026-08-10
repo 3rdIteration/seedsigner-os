@@ -328,7 +328,10 @@ jobs:
         # boots the app fine and then reboots into Loader 120 s later, on every
         # boot. Fail here, in seconds, instead of on the device. Shared with the
         # local builds (os-build.sh / build-local.sh call the same script).
-        bash seedsigner-os/opt/luckfox/assert-app-watchdog-signal.sh seedsigner
+        # The guard scopes by build variant: non-dev (shipped) hard-fails; dev
+        # (auto push/PR CI, debuggable, never shipped) warns — the app's 'dev'
+        # branch predates the signal, so a hard fail there blocks OS CI.
+        bash seedsigner-os/opt/luckfox/assert-app-watchdog-signal.sh seedsigner "${{ inputs.build_variant || 'dev' }}"
 
         echo "All repositories cloned successfully"
 

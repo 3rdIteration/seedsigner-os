@@ -291,8 +291,11 @@ So a bad image self-heals into a flashable state without the BOOT button:
   into Loader mode. Covers the app-crash and app-hang cases. **The app ref must carry the signal** — it was
   added in app commit `689483af` (2026-07-28), so `dev` and all release tags predate it. A signal-less app
   builds green, boots *looking* completely healthy, and reboots into Loader 120 s later, on every boot;
-  `assert-app-watchdog-signal.sh` therefore fails the build after the app clone when the signal is absent
-  (escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`).
+  `assert-app-watchdog-signal.sh` therefore fails the build after the app clone when the signal is absent.
+  **Scoped by build variant:** non-dev (production, shipped) builds hard-fail; dev builds (automatic push/PR
+  CI, debuggable, never shipped — the app's `dev` branch is signal-less, so a hard fail there would block all
+  OS CI) warn instead. Escape hatch for deliberate bisect/A-B of an old app:
+  `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`.
 - **Persistent boot log** (`start-seedsigner.sh`, both variants, **off by default**): when enabled, every boot
   is recorded to `/userdata/seedsigner-boot.log` (rotated once, capped at 128 KiB, deleted as soon as the app
   signals ready) so a boot failure that leaves a "bricked-looking" device still explains itself — `/tmp` is a

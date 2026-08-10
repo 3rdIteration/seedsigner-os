@@ -277,8 +277,9 @@ clone_repositories() {
     # /tmp/seedsigner-ready): a signal-less ref builds green, but the image
     # boots the app fine and then reboots into Loader 120 s later, on every
     # boot. Runs after the clone-or-reuse decision so a stale reused checkout
-    # is caught too. Shared with CI via assert-app-watchdog-signal.sh.
-    bash "$SEEDSIGNER_LUCKFOX_DIR/assert-app-watchdog-signal.sh" "$SEEDSIGNER_CODE_DIR"
+    # is caught too. Shared with CI via assert-app-watchdog-signal.sh. The
+    # guard scopes by variant: non-dev (shipped) hard-fails; dev warns.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/assert-app-watchdog-signal.sh" "$SEEDSIGNER_CODE_DIR" "$SEEDSIGNER_BUILD_VARIANT"
 
     # Compile translation catalogs (.po -> .mo) + slim fonts in the checkout so
     # the image ships multi-language support. Must run before the checkout is
