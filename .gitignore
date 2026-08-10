@@ -3,3 +3,14 @@
 .buildroot-ccache/
 .ccache/
 opt/output/
+
+# Luckfox Pico build (opt/luckfox)
+opt/luckfox/build-output/
+opt/luckfox/cache/
+# Repos the Luckfox build clones at build time (SDK + app)
+luckfox-pico/
+opt/luckfox-pico/
+opt/seedsigner/
+build-artifacts/
+# Build-time generated OS identity/provenance marker (Pi/La Frite overlay)
+opt/rootfs-overlay/etc/seedsigner-os-release

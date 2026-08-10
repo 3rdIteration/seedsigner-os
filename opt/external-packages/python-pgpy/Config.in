@@ -1,8 +1,12 @@
 config BR2_PACKAGE_PYTHON_PGPY
 	bool "python-pgpy"
-	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY
 	select BR2_PACKAGE_PYTHON_PYASN1
+	# Same deps on every toolchain: python-cryptography (Rust) builds on
+	# uClibc now (Tier-3 Rust target patch in the Luckfox build).
+	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY
 	help
-      Pretty Good Privacy (PGP) implementation in Python
+	  Pretty Good Privacy (PGP) implementation in Python.
+	  Single upstream version on all platforms; toolchain
+	  compatibility is handled inside the package.
 
 	  https://github.com/SecurityInnovation/PGPy

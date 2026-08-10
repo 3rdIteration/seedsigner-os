@@ -1,2 +1,3 @@
-# md5, sha256 from https://github.com/3rdIteration/pysatochip/releases
+# sha256 computed locally from https://github.com/3rdIteration/pysatochip
+# Single version for all toolchains/platforms (see python-pysatochip.mk).
 sha256 d8213c27df6e3abcdd0505de64d6ef633009a2e261df6245fcab97c2d2cacfc7  python-pysatochip-0.6a.tar.gz

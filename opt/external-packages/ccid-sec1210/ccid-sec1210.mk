@@ -9,8 +9,16 @@ CCID_SEC1210_SITE = $(call github,LudovicRousseau,CCID,$(CCID_SEC1210_VERSION))
 CCID_SEC1210_LICENSE = LGPL-2.1+
 CCID_SEC1210_LICENSE_FILES = COPYING
 CCID_SEC1210_INSTALL_STAGING = YES
-CCID_SEC1210_DEPENDENCIES = pcsc-lite host-pkgconf libusb zlib
+CCID_SEC1210_DEPENDENCIES = pcsc-lite host-pkgconf libusb
 CCID_SEC1210_CONF_OPTS = -Dserial=true -Dudev-rules=false
+
+# uClibc toolchains (Rockchip/Luckfox Pico) build the embedded variant and omit
+# zlib; glibc toolchains (Raspberry Pi / La Frite) keep the zlib-backed default.
+ifeq ($(BR2_TOOLCHAIN_USES_UCLIBC),y)
+CCID_SEC1210_CONF_OPTS += -Dembedded=true
+else
+CCID_SEC1210_DEPENDENCIES += zlib
+endif
 
 ifeq ($(BR2_PACKAGE_HAS_UDEV),y)
 define CCID_INSTALL_UDEV_RULES

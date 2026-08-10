@@ -92,6 +92,13 @@ jobs:
           mkdir -p images
           mkdir -p buildroot_dl
 
+      - name: Capture OS provenance
+        run: |
+          echo "SEEDSIGNER_OS_REPO=https://github.com/${{ github.repository }}" >> "$GITHUB_ENV"
+          echo "SEEDSIGNER_OS_BRANCH=${{ github.ref_name }}" >> "$GITHUB_ENV"
+          echo "SEEDSIGNER_OS_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "SEEDSIGNER_OS_DATE=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
+
       - name: Build ${{ matrix.config }}
         env:
           DOCKER_DEFAULT_PLATFORM: linux/amd64

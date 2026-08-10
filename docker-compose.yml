@@ -8,4 +8,11 @@ services:
       - ./images:/images
       - ./.ccache:/root/.cache/ccache
       - ./.buildroot-ccache:/root/.buildroot-ccache
+    environment:
+      # Forwarded from the host (set by CI) so the build can stamp seedsigner-os
+      # provenance into /etc/seedsigner-os-release. Unset locally -> "unknown".
+      - SEEDSIGNER_OS_REPO
+      - SEEDSIGNER_OS_BRANCH
+      - SEEDSIGNER_OS_COMMIT
+      - SEEDSIGNER_OS_DATE
     command: "${SS_ARGS:---no-op}"

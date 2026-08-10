@@ -8,6 +8,8 @@ PYTHON_PYSCARD_VERSION = 2.3.1
 PYTHON_PYSCARD_SITE = $(call github,LudovicRousseau,pyscard,$(PYTHON_PYSCARD_VERSION))
 PYTHON_PYSCARD_SETUP_TYPE = setuptools
 PYTHON_PYSCARD_LICENSE = LGPL
+# PC/SC smartcard library is required for pyscard to build and run
+PYTHON_PYSCARD_DEPENDENCIES += pcsc-lite
 # Ensure the swig host tool is available for wrapper generation
 PYTHON_PYSCARD_DEPENDENCIES += host-swig
 # Explicitly point setup.py to the host-provided swig binary

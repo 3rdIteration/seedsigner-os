@@ -1,0 +1,59 @@
+#!/bin/sh
+#
+# S10mdev - Register mdev as the kernel hotplug handler
+#
+# Enables automatic FAT filesystem repair when block devices (MicroSD cards,
+# USB drives) are inserted after boot.  mdev intercepts kernel hotplug events
+# and runs /usr/sbin/fat-fsck-hotplug for each new block partition.
+#
+# Runs after S02fsck (which handles partitions present at boot) so that
+# both boot-time and hot-inserted storage devices are covered.
+#
+
+start() {
+    if ! command -v mdev >/dev/null 2>&1; then
+        echo "[mdev] mdev not found; hotplug filesystem checks disabled"
+        return 0
+    fi
+
+    if [ ! -f /etc/mdev.conf ]; then
+        echo "[mdev] /etc/mdev.conf not found; skipping"
+        return 0
+    fi
+
+    # Register mdev as the kernel hotplug handler.
+    # This causes the kernel to invoke /sbin/mdev for every device event,
+    # which reads /etc/mdev.conf and runs the configured commands.
+    if [ -w /proc/sys/kernel/hotplug ]; then
+        echo /sbin/mdev > /proc/sys/kernel/hotplug
+        echo "[mdev] Hotplug handler registered (/proc/sys/kernel/hotplug)"
+    else
+        echo "[mdev] WARNING: /proc/sys/kernel/hotplug not writable; hotplug events may not be received"
+    fi
+}
+
+stop() {
+    # Unregister mdev as hotplug handler
+    if [ -w /proc/sys/kernel/hotplug ]; then
+        echo "" > /proc/sys/kernel/hotplug
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0

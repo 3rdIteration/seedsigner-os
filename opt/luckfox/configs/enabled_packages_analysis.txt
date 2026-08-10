@@ -1,0 +1,243 @@
+=========================================
+BUILDROOT PACKAGE ANALYSIS
+=========================================
+Generated: Tue Feb 17 12:49:56 UTC 2026
+Defconfig: /home/runner/work/seedsigner-luckfox-pico/seedsigner-luckfox-pico/buildroot/scripts/../configs/luckfox_pico_defconfig
+
+=========================================
+ENABLED PACKAGES WITH SIZE ESTIMATES
+=========================================
+
+
+[1;33m=== Python Core ===[0m
+  BR2_PACKAGE_PYTHON3                                     7.8MB
+  BR2_PACKAGE_PYTHON3_PYC_ONLY                             50KB
+  BR2_PACKAGE_PYTHON3_BZIP2                                50KB
+  BR2_PACKAGE_PYTHON3_CODECSCJK                            50KB
+  BR2_PACKAGE_PYTHON3_SSL                                  50KB
+  BR2_PACKAGE_PYTHON3_UNICODEDATA                          50KB
+  BR2_PACKAGE_PYTHON3_PYEXPAT                              50KB
+  BR2_PACKAGE_PYTHON3_ZLIB                                 50KB
+[0;32m  Category Total: 8 packages, ~8.2MB[0m
+
+[1;33m=== Python Packages ===[0m
+  BR2_PACKAGE_PYTHON_CFFI                                  50KB
+  BR2_PACKAGE_PYTHON_ECDSA                                500KB
+  BR2_PACKAGE_PYTHON_MULTIDICT                             50KB
+  BR2_PACKAGE_PYTHON_NUMPY_ARCH_SUPPORTS                   50KB
+  BR2_PACKAGE_PYTHON_PERIPHERY                             50KB
+  BR2_PACKAGE_PYTHON_PILLOW                               2.0MB
+  BR2_PACKAGE_PYTHON_PYAES                                100KB
+  BR2_PACKAGE_PYTHON_PYASN1                               300KB
+  BR2_PACKAGE_PYTHON_PYCPARSER                             50KB
+  BR2_PACKAGE_PYTHON_PYCRYPTODOMEX                        2.0MB
+  BR2_PACKAGE_PYTHON_PYQRCODE                             100KB
+  BR2_PACKAGE_PYTHON_QRCODE                               200KB
+  BR2_PACKAGE_PYTHON_QRCODE_SVG                            50KB
+  BR2_PACKAGE_PYTHON_QRCODE_PIL                            50KB
+  BR2_PACKAGE_PYTHON_SETUPTOOLS                           1.5MB
+  BR2_PACKAGE_PYTHON_PIP                                  2.4MB
+  BR2_PACKAGE_PYTHON_WHEEL                               1000KB
+  BR2_PACKAGE_PYTHON_SMBUS_CFFI                           100KB
+  BR2_PACKAGE_PYTHON_SPIDEV                                50KB
+  BR2_PACKAGE_PYTHON_TYPING_EXTENSIONS                     50KB
+  BR2_PACKAGE_PYTHON_URTYPES                               50KB
+  BR2_PACKAGE_PYTHON_PYZBAR                               100KB
+  BR2_PACKAGE_PYTHON_EMBIT                                500KB
+  BR2_PACKAGE_PYTHON_MNEMONIC                             100KB
+  BR2_PACKAGE_PYTHON_SHAMIR_MNEMONIC                      150KB
+[0;32m  Category Total: 25 packages, ~11.4MB[0m
+
+[1;33m=== Libraries ===[0m
+  BR2_PACKAGE_GETTEXT_PROVIDES_LIBINTL                     50KB
+  BR2_PACKAGE_PYTHON3_ZLIB                                 50KB
+  BR2_PACKAGE_ZLIB_NG_ARCH_SUPPORTS                        50KB
+  BR2_PACKAGE_ZLIB                                        100KB
+  BR2_PACKAGE_LIBZLIB                                      50KB
+  BR2_PACKAGE_HAS_ZLIB                                     50KB
+  BR2_PACKAGE_LIBGPG_ERROR_ARCH_SUPPORTS                   50KB
+  BR2_PACKAGE_LIBMD                                        50KB
+  BR2_PACKAGE_OPENSSL_FORCE_LIBOPENSSL                     50KB
+  BR2_PACKAGE_LIBOPENSSL                                  2.4MB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_CHACHA                     50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_RC2                        50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_RC4                        50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_MD2                        50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_MD4                        50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_MDC2                       50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_BLAKE2                     50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_IDEA                       50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_SEED                       50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_DES                        50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_RMD160                     50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_WHIRLPOOL                  50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_BLOWFISH                   50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_SSL                        50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_SSL2                       50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_SSL3                       50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_WEAK_SSL                   50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_PSK                        50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_CAST                       50KB
+  BR2_PACKAGE_LIBOPENSSL_UNSECURE                          50KB
+  BR2_PACKAGE_LIBOPENSSL_DYNAMIC_ENGINE                    50KB
+  BR2_PACKAGE_LIBOPENSSL_ENABLE_COMP                       50KB
+  BR2_PACKAGE_LIBCURL                                     1.5MB
+  BR2_PACKAGE_LIBCURL_CURL                                200KB
+  BR2_PACKAGE_LIBDRM                                       50KB
+  BR2_PACKAGE_LIBDRM_HAS_ATOMIC                            50KB
+  BR2_PACKAGE_LIBEXIF                                      50KB
+  BR2_PACKAGE_LIBPNG                                      300KB
+  BR2_PACKAGE_TIFF_ZLIB                                    50KB
+  BR2_PACKAGE_LIBGPIOD2                                   200KB
+  BR2_PACKAGE_LIBGPIOD2_TOOLS                             300KB
+  BR2_PACKAGE_LIBV4L                                      400KB
+  BR2_PACKAGE_LIBV4L_UTILS                                200KB
+  BR2_PACKAGE_LIBYAML                                      50KB
+  BR2_PACKAGE_LIBCAMERA_ARCH_SUPPORTS                      50KB
+  BR2_PACKAGE_LIBOPENH264_ARCH_SUPPORTS                    50KB
+  BR2_PACKAGE_LIBABSEIL_CPP_ARCH_SUPPORTS                  50KB
+  BR2_PACKAGE_LIBATOMIC_OPS_ARCH_SUPPORTS                  50KB
+  BR2_PACKAGE_LIBBSD_ARCH_SUPPORTS                         50KB
+  BR2_PACKAGE_LIBFFI                                       50KB
+  BR2_PACKAGE_LIBNSPR_ARCH_SUPPORT                         50KB
+  BR2_PACKAGE_LIBPTHREAD_STUBS                             50KB
+  BR2_PACKAGE_LIBSECCOMP_ARCH_SUPPORTS                     50KB
+  BR2_PACKAGE_LIBSIGSEGV_ARCH_SUPPORTS                     50KB
+  BR2_PACKAGE_LIBTASN1                                     50KB
+  BR2_PACKAGE_LIBUNWIND_ARCH_SUPPORTS                      50KB
+  BR2_PACKAGE_LIBURCU_ARCH_SUPPORTS                        50KB
+  BR2_PACKAGE_LIBICONV                                     50KB
+  BR2_PACKAGE_LIBUNISTRING                                 50KB
+  BR2_PACKAGE_UTIL_LINUX_LIBBLKID                          50KB
+  BR2_PACKAGE_UTIL_LINUX_LIBMOUNT                          50KB
+  BR2_PACKAGE_UTIL_LINUX_LIBUUID                           50KB
+[0;32m  Category Total: 62 packages, ~8.2MB[0m
+
+[1;33m=== System Utilities ===[0m
+
+[1;33m=== Cryptography ===[0m
+
+[1;33m=== Graphics/Image ===[0m
+
+[1;33m=== Video/Camera ===[0m
+
+[1;33m=== Hardware I/O ===[0m
+
+[1;33m=== Other Packages ===[0m
+  BR2_PACKAGE_HAS_TOOLCHAIN_EXTERNAL                       50KB
+  BR2_PACKAGE_HOST_GDB_ARCH_SUPPORTS                       50KB
+  BR2_PACKAGE_BUSYBOX                                      50KB
+  BR2_PACKAGE_BUSYBOX_SHOW_OTHERS                          50KB
+  BR2_PACKAGE_SKELETON                                     50KB
+  BR2_PACKAGE_HAS_SKELETON                                 50KB
+  BR2_PACKAGE_SKELETON_INIT_COMMON                         50KB
+  BR2_PACKAGE_SKELETON_INIT_SYSV                           50KB
+  BR2_PACKAGE_FFMPEG_ARCH_SUPPORTS                         50KB
+  BR2_PACKAGE_KODI_ARCH_SUPPORTS                           50KB
+  BR2_PACKAGE_PULSEAUDIO_HAS_ATOMIC                        50KB
+  BR2_PACKAGE_FWTS_ARCH_SUPPORTS                           50KB
+  BR2_PACKAGE_GDB_ARCH_SUPPORTS                            50KB
+  BR2_PACKAGE_TCF_AGENT_ARCH_SUPPORTS                      50KB
+  BR2_PACKAGE_GETTEXT                                      50KB
+  BR2_PACKAGE_HAS_GETTEXT                                  50KB
+  BR2_PACKAGE_GETTEXT_GNU                                  50KB
+  BR2_PACKAGE_E2FSPROGS                                    50KB
+  BR2_PACKAGE_E2FSPROGS_FSCK                               50KB
+  BR2_PACKAGE_E2FSPROGS_RESIZE2FS                          50KB
+  BR2_PACKAGE_CPUBURN_ARM_ARCH_SUPPORTS                    50KB
+  BR2_PACKAGE_BOTAN_ARCH_SUPPORTS                          50KB
+  BR2_PACKAGE_GNUTLS                                       50KB
+  BR2_PACKAGE_NETTLE                                       50KB
+  BR2_PACKAGE_OPENSSL                                     2.9MB
+  BR2_PACKAGE_HAS_OPENSSL                                  50KB
+  BR2_PACKAGE_WGET                                        500KB
+  BR2_PACKAGE_WOLFSSL_ASM_SUPPORTS                         50KB
+  BR2_PACKAGE_MONGODB_ARCH_SUPPORTS                        50KB
+  BR2_PACKAGE_BAYER2RGB_NEON_ARCH_SUPPORTS                 50KB
+  BR2_PACKAGE_FREETYPE                                    800KB
+  BR2_PACKAGE_JPEG_SIMD_SUPPORT                            50KB
+  BR2_PACKAGE_JPEG                                        500KB
+  BR2_PACKAGE_JPEG_TURBO                                  700KB
+  BR2_PACKAGE_JPEG_TURBO_TOOLS                             50KB
+  BR2_PACKAGE_HAS_JPEG                                     50KB
+  BR2_PACKAGE_TIFF                                         50KB
+  BR2_PACKAGE_TIFF_CCITT                                   50KB
+  BR2_PACKAGE_TIFF_PACKBITS                                50KB
+  BR2_PACKAGE_TIFF_LZW                                     50KB
+  BR2_PACKAGE_TIFF_THUNDER                                 50KB
+  BR2_PACKAGE_TIFF_NEXT                                    50KB
+  BR2_PACKAGE_TIFF_LOGLUV                                  50KB
+  BR2_PACKAGE_TIFF_MDI                                     50KB
+  BR2_PACKAGE_TIFF_PIXARLOG                                50KB
+  BR2_PACKAGE_TIFF_JPEG                                    50KB
+  BR2_PACKAGE_TIFF_OLD_JPEG                                50KB
+  BR2_PACKAGE_TIFF_JBIG                                    50KB
+  BR2_PACKAGE_WEBKITGTK_ARCH_SUPPORTS                      50KB
+  BR2_PACKAGE_WPEWEBKIT_ARCH_SUPPORTS                      50KB
+  BR2_PACKAGE_ZBAR                                        500KB
+  BR2_PACKAGE_DTC                                          50KB
+  BR2_PACKAGE_DTC_PROGRAMS                                 50KB
+  BR2_PACKAGE_GNU_EFI_ARCH_SUPPORTS                        50KB
+  BR2_PACKAGE_MRAA_ARCH_SUPPORTS                           50KB
+  BR2_PACKAGE_EXPAT                                        50KB
+  BR2_PACKAGE_ARGP_STANDALONE                              50KB
+  BR2_PACKAGE_GMP                                          50KB
+  BR2_PACKAGE_GOBJECT_INTROSPECTION_ARCH_SUPPORTS          50KB
+  BR2_PACKAGE_JEMALLOC_ARCH_SUPPORTS                       50KB
+  BR2_PACKAGE_LAPACK_ARCH_SUPPORTS                         50KB
+  BR2_PACKAGE_LLVM_ARCH_SUPPORTS                           50KB
+  BR2_PACKAGE_OPENBLAS_ARCH_SUPPORTS                       50KB
+  BR2_PACKAGE_POCO_ARCH_SUPPORTS                           50KB
+  BR2_PACKAGE_HOST_PROTOBUF_ARCH_SUPPORTS                  50KB
+  BR2_PACKAGE_PROTOBUF_ARCH_SUPPORTS                       50KB
+  BR2_PACKAGE_NCURSES                                      50KB
+  BR2_PACKAGE_READLINE                                     50KB
+  BR2_PACKAGE_IFUPDOWN_SCRIPTS                             50KB
+  BR2_PACKAGE_URANDOM_SCRIPTS                              50KB
+  BR2_PACKAGE_RNG_TOOLS                                   100KB
+  BR2_PACKAGE_BASH                                        1.5MB
+  BR2_PACKAGE_DIALOG                                      300KB
+  BR2_PACKAGE_GIT                                        14.6MB
+  BR2_PACKAGE_GNUPG2_DEPENDS                               50KB
+  BR2_PACKAGE_GNUPG2                                       ~2MB
+  BR2_PACKAGE_PINENTRY                                    ~200KB
+  BR2_PACKAGE_PINENTRY_NCURSES                            (included in PINENTRY)
+  BR2_PACKAGE_AUDIT_ARCH_SUPPORTS                          50KB
+  BR2_PACKAGE_EFIVAR_ARCH_SUPPORTS                         50KB
+  BR2_PACKAGE_INITSCRIPTS                                  50KB
+  BR2_PACKAGE_MAKEDUMPFILE_ARCH_SUPPORTS                   50KB
+  BR2_PACKAGE_SYSTEMD_ARCH_SUPPORTS                        50KB
+  BR2_PACKAGE_SYSTEMD_BOOTCHART_ARCH_SUPPORTS              50KB
+  BR2_PACKAGE_UTIL_LINUX                                   50KB
+  BR2_PACKAGE_XVISOR_ARCH_SUPPORTS                         50KB
+  BR2_PACKAGE_NANO                                        200KB
+  BR2_PACKAGE_NANO_TINY                                   100KB
+  BR2_PACKAGE_MC                                          2.4MB
+  BR2_PACKAGE_SHIM_ARCH_SUPPORTS                           50KB
+  BR2_PACKAGE_HOST_DTC                                     50KB
+  BR2_PACKAGE_HOST_MKPASSWD                                50KB
+  BR2_PACKAGE_HOST_PATCHELF                                50KB
+  BR2_PACKAGE_HOST_QEMU_ARCH_SUPPORTS                      50KB
+  BR2_PACKAGE_HOST_QEMU_SYSTEM_ARCH_SUPPORTS               50KB
+  BR2_PACKAGE_HOST_QEMU_USER_ARCH_SUPPORTS                 50KB
+  BR2_PACKAGE_HOST_RUSTC_ARCH_SUPPORTS                     50KB
+  BR2_PACKAGE_HOST_TI_CGT_PRU_ARCH_SUPPORTS                50KB
+[0;32m  Other Total: 95 packages, ~29.1MB[0m
+
+=========================================
+SUMMARY
+=========================================
+
+
+[0;34m========================================[0m
+[0;34mSUMMARY[0m
+[0;34m========================================[0m
+[0;32mTotal Packages: 95[0m
+[0;32mEstimated Size: ~27.7MB (28350KB)[0m
+
+[1;33mNote: Sizes are estimates and may vary based on:[0m
+  - Compilation options
+  - Architecture (ARM)
+  - Library dependencies
+  - Debug symbols (stripped in production)
+

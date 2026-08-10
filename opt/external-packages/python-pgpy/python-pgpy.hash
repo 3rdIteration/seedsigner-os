@@ -1,2 +1,3 @@
 # sha256 from https://github.com/SecurityInnovation/PGPy
+# Single version for all toolchains/platforms (see python-pgpy.mk).
 sha256 33028fc2c47718a9215311bb22d6fed042074afbc91bf4e9764fdf0df54fc2b3  PGPy-0.6.0.tar.gz

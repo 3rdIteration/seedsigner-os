@@ -132,6 +132,16 @@ download_app_repo() {
     echo "${repo_commit_time}" > "${rootfs_overlay}/opt/src/.build_commit_time"
   fi
 
+  # Generate the SeedSigner OS identity + provenance marker into the rootfs
+  # overlay (baked into the image via BR2_ROOTFS_OVERLAY). App git data is read
+  # from the freshly-cloned repo here, before its .git is stripped below; OS git
+  # data (SEEDSIGNER_OS_*) is inherited from the environment (set by CI).
+  SEEDSIGNER_APP_REPO="${seedsigner_app_repo}" \
+  SEEDSIGNER_APP_BRANCH="${seedsigner_app_repo_branch}" \
+  SEEDSIGNER_APP_GIT_DIR="${rootfs_overlay}/opt" \
+    bash "${cur_dir}/gen-os-release.sh" "${rootfs_overlay}/etc/seedsigner-os-release" \
+    || echo "warning: failed to generate seedsigner-os-release"
+
   # Only compile translations and slim fonts if the catalog directory exists (not all branches/repos configure this)
   if [ -d "${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n" ]; then
     compile_translations_and_fonts

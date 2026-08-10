@@ -1,0 +1,111 @@
+#!/bin/sh
+#
+# Start/stop rkaiq_3A_server for camera ISP support.
+#
+
+DAEMON="/oem/usr/bin/rkaiq_3A_server"
+PIDFILE="/var/run/rkaiq_3A_server.pid"
+LOGFILE="/tmp/rkaiq_3A_server.log"
+
+ensure_camera_modules() {
+    for mod in rk_dvbm video_rkisp video_rkcif sc3336; do
+        if ! lsmod 2>/dev/null | awk '{print $1}' | grep -qx "$mod"; then
+            if [ -f "/oem/usr/ko/${mod}.ko" ]; then
+                insmod "/oem/usr/ko/${mod}.ko" >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+}
+
+wait_for_oem() {
+    local i=0
+    while [ $i -lt 10 ]; do
+        [ -x "$DAEMON" ] && return 0
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+start() {
+    echo "Starting rkaiq_3A_server..."
+
+    if ! wait_for_oem; then
+        echo "Error: $DAEMON not ready (is /oem mounted?)"
+        return 1
+    fi
+
+    ensure_camera_modules
+    export LD_LIBRARY_PATH="/oem/usr/lib:/usr/lib:/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+    mkdir -p /var/run
+
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "rkaiq_3A_server is already running"
+        return 0
+    fi
+
+    rm -f "$PIDFILE"
+    "$DAEMON" >>"$LOGFILE" 2>&1 &
+    echo "$!" > "$PIDFILE"
+    sleep 2
+
+    if kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "rkaiq_3A_server started"
+        return 0
+    fi
+
+    echo "Error: rkaiq_3A_server failed to start (see $LOGFILE)"
+    rm -f "$PIDFILE"
+    return 1
+}
+
+stop() {
+    echo "Stopping rkaiq_3A_server..."
+
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null || true
+        sleep 1
+    fi
+
+    killall rkaiq_3A_server 2>/dev/null || true
+    rm -f "$PIDFILE"
+    echo "rkaiq_3A_server stopped"
+    return 0
+}
+
+status() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "rkaiq_3A_server is running (pid $(cat "$PIDFILE"))"
+        return 0
+    fi
+    if pidof rkaiq_3A_server >/dev/null 2>&1; then
+        echo "rkaiq_3A_server is running (pid $(pidof rkaiq_3A_server))"
+        return 0
+    fi
+    echo "rkaiq_3A_server is not running"
+    return 1
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        sleep 1
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|reload|status}"
+        exit 1
+        ;;
+esac
+
+exit $?

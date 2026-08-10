@@ -1,0 +1,140 @@
+#!/bin/sh
+#
+# S01overlay - tmpfs overlays over a read-only root filesystem
+#
+# The rootfs is squashfs (see opt/luckfox/readonly-rootfs.sh): no journal, no
+# allocator, no write path, so an unclean shutdown cannot corrupt it and no
+# runtime change to / can survive a reboot. Software that expects to write to /
+# still has to work, so the directories that are genuinely written at runtime
+# get an overlayfs whose upper layer is tmpfs. Writes succeed, and every one of
+# them is discarded at reboot.
+#
+# MUST RUN EARLY. S99luckfoxconfigload runs `luckfox-config load`, which does
+# `sed -i` on /etc/luckfox.cfg; if that runs before the /etc overlay exists it
+# fails on the read-only filesystem and the device gets no device-tree overlays,
+# no /dev/spidev0.0, and a black screen. S01 is before every other init script
+# here (S02fsck, S10mdev, S60pcscd, S99*) and after the sysinit `mount -a` that
+# provides /tmp.
+#
+# This is a no-op on a writable root, so dev images and any build with the
+# read-only rootfs disabled run unchanged.
+
+OVERLAY_ROOT=/tmp/.rootfs-overlay
+
+# Directories that are actually written at runtime:
+#   /etc   luckfox-config rewrites /etc/luckfox.cfg on every boot; mdev and the
+#          network scripts write here too.
+#   /var   logs and service state (some entries may be symlinks into /tmp, which
+#          is harmless to overlay).
+#   /root  the root account's home; anything using $HOME lands here.
+#          NOTE: GnuPG deliberately does NOT rely on this. start-seedsigner.sh
+#          points GNUPGHOME at /tmp/.gnupg instead, because /tmp is a plain
+#          tmpfs that exists before this script runs, so gpg cannot inherit an
+#          overlay failure -- and because GPG keys are meant to be wiped at
+#          reboot. Do not "fix" that by moving it back under $HOME.
+#   /home  present on some rootfs layouts, absent on others.
+#
+# Deliberately NOT overlaid:
+#   /opt   the application and its shipped bytecode. Keeping it read-only is the
+#          point of the exercise -- a truncated .pyc here is what previously
+#          bricked a board -- and nothing writes to it (settings resolve to
+#          /userdata or the card, and PYC_ONLY means no bytecode is generated at
+#          runtime).
+#   /mnt   overlaying it would put the microSD mountpoints inside an overlay for
+#          no benefit; the mountpoint directories already exist in the image.
+OVERLAY_DIRS="/etc /var /root /home"
+
+log_overlay() {
+    echo "[overlay] $1"
+    # The kernel log is the only channel that survives on a hardened image with
+    # no console, and it is what the persistent boot log captures.
+    [ -w /dev/kmsg ] && echo "[overlay] $1" > /dev/kmsg 2>/dev/null
+    return 0
+}
+
+root_is_readonly() {
+    awk '$2 == "/" { split($4, o, ","); for (i in o) if (o[i] == "ro") { found = 1 } }
+         END { exit !found }' /proc/mounts
+}
+
+start() {
+    root_fstype=$(awk '$2 == "/" { print $3; exit }' /proc/mounts)
+
+    if ! root_is_readonly; then
+        log_overlay "root ($root_fstype) is writable - no overlay needed"
+        return 0
+    fi
+
+    if ! grep -qw overlay /proc/filesystems; then
+        # Nothing can be done about it here, and continuing means every write to
+        # /etc fails. Say so loudly: this is the signature of CONFIG_OVERLAY_FS
+        # having been silently dropped by Kconfig.
+        log_overlay "ERROR: root is read-only ($root_fstype) but the kernel has no overlayfs"
+        log_overlay "ERROR: /etc is not writable - luckfox-config will fail and the display will not come up"
+        return 1
+    fi
+
+    if ! mkdir -p "$OVERLAY_ROOT" 2>/dev/null; then
+        log_overlay "ERROR: could not create $OVERLAY_ROOT (is /tmp mounted?)"
+        return 1
+    fi
+
+    failed=0
+    for dir in $OVERLAY_DIRS; do
+        [ -d "$dir" ] || continue
+        # Some rootfs layouts make /var (or parts of it) a symlink into /tmp,
+        # which is already writable tmpfs. Overlaying through the symlink would
+        # mount onto the target instead of the name we asked for, so skip it.
+        if [ -L "$dir" ]; then
+            log_overlay "$dir is a symlink - already writable, skipping"
+            continue
+        fi
+
+        upper="$OVERLAY_ROOT$dir/upper"
+        work="$OVERLAY_ROOT$dir/work"
+        if ! mkdir -p "$upper" "$work" 2>/dev/null; then
+            log_overlay "WARNING: could not create overlay dirs for $dir"
+            failed=1
+            continue
+        fi
+
+        # lowerdir is the directory itself: overlaying a path onto itself is
+        # well-defined here because the lower layer is resolved before the mount
+        # is grafted on. The pre-existing content stays visible, and writes land
+        # in tmpfs.
+        if mount -t overlay overlay \
+                -o "lowerdir=$dir,upperdir=$upper,workdir=$work" "$dir" 2>/dev/null; then
+            log_overlay "$dir is writable via tmpfs overlay (changes discarded at reboot)"
+        else
+            log_overlay "WARNING: could not mount overlay on $dir - it stays read-only"
+            failed=1
+        fi
+    done
+
+    if [ "$failed" -ne 0 ]; then
+        log_overlay "WARNING: at least one overlay failed; some writes to / will fail"
+    fi
+
+    log_overlay "read-only root ($root_fstype) + tmpfs overlays ready"
+    return 0
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        # Nothing to unmount: the overlays are torn down with the tmpfs at
+        # shutdown, and unmounting /etc while services are stopping would do
+        # more harm than leaving it.
+        ;;
+    restart|reload)
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
