@@ -357,3 +357,21 @@
 	status = "okay";
 	dr_mode = "host";
 };
+
+/*
+ * The camera/host port is dwc3 (already dr_mode = "host" in the base SoC
+ * dtsi; kernel-fragment.config forces USB_XHCI_HCD + USB_DWC3 built-in for
+ * it). dwc2 is a separate on-die controller the base dtsi hardcodes to
+ * dr_mode = "peripheral" -- overriding the parent &usb node above does not
+ * reach this child node, so without this override dwc2 boots as a USB
+ * gadget and registers a UDC regardless (CONFIG_USB_GADGET/CONFIG_USB_DWC2
+ * are both built in, not modules). That is exactly what the app's non-dev
+ * hardening self-check (check_usb_gadget in helpers/hardening.py) flags as
+ * an open USB-ADB exposure. Force it to host mode too, matching dwc3 and
+ * the original intent of the &usb override above; this is not needed for
+ * the camera (see kernel-fragment.config comment) so it carries no
+ * functional risk.
+ */
+&dwc2 {
+	dr_mode = "host";
+};
