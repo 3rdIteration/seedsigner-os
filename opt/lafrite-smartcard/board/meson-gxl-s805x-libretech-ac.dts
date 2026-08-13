@@ -367,11 +367,18 @@
  * gadget and registers a UDC regardless (CONFIG_USB_GADGET/CONFIG_USB_DWC2
  * are both built in, not modules). That is exactly what the app's non-dev
  * hardening self-check (check_usb_gadget in helpers/hardening.py) flags as
- * an open USB-ADB exposure. Force it to host mode too, matching dwc3 and
- * the original intent of the &usb override above; this is not needed for
- * the camera (see kernel-fragment.config comment) so it carries no
- * functional risk.
+ * an open USB-ADB exposure.
+ *
+ * Forcing dr_mode = "host" here compiled and applied cleanly (dtc accepted
+ * the &dwc2 override with no warnings) but did NOT close the exposure on
+ * hardware -- confirmed on the actual La Frite board, a UDC still appears.
+ * Amlogic's dwc2 glue evidently doesn't treat dr_mode as authoritative on
+ * this SoC (likely internal ID-pin/role-detection logic, since the DTS has
+ * no extcon/id-gpio wiring for it to read either way). Disable the node
+ * outright instead: an unprobed driver cannot register a UDC no matter
+ * what its internal role logic would have decided. Not needed for the
+ * camera (see kernel-fragment.config comment), so no functional risk.
  */
 &dwc2 {
-	dr_mode = "host";
+	status = "disabled";
 };
