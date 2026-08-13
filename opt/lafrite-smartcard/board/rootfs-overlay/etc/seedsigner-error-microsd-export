@@ -1,0 +1,6 @@
+Presence of this file enables the app's opt-in "Save to MicroSD" button on
+OS/package-level error screens (see seedsigner: helpers/seedsigner_os.py
+is_error_microsd_export_enabled(), helpers/hardening.py
+check_error_diagnostics_export()). Diagnostic aid only -- remove this file
+before shipping a production image; its presence is flagged as an open
+"diagnostics" exposure by the app's own hardening self-check.
