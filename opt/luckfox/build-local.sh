@@ -1420,6 +1420,17 @@ install_seedsigner_app() {
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
+    # Diagnostic aid (off by default): when SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=1
+    # is set in the build environment, ship the marker that enables the app's
+    # opt-in "Save to MicroSD" button on OS/package error screens (see
+    # seedsigner repo: helpers/seedsigner_os.py
+    # is_error_microsd_export_enabled()). Its presence is also flagged by the
+    # app's own hardening self-check.
+    if [ "${SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS:-0}" = "1" ]; then
+        mkdir -p "$rootfs_dir/etc"
+        touch "$rootfs_dir/etc/seedsigner-error-microsd-export"
+    fi
+
     # Patch settings.json for Mini hardware
     if [ "$hardware" == "mini" ]; then
         local settings_json="$rootfs_dir/opt/src/settings.json"

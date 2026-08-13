@@ -1448,6 +1448,17 @@ s/^endef\nendif/endef\nendif\nendif/
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
+    # Diagnostic aid (off by default): when SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=1
+    # is set in the build environment, ship the marker that enables the app's
+    # opt-in "Save to MicroSD" button on OS/package error screens (see
+    # seedsigner repo: helpers/seedsigner_os.py
+    # is_error_microsd_export_enabled()). Its presence is also flagged by the
+    # app's own hardening self-check.
+    if [ "${SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS:-0}" = "1" ]; then
+        mkdir -p "$ROOTFS_DIR/etc"
+        touch "$ROOTFS_DIR/etc/seedsigner-error-microsd-export"
+    fi
+
     print_step "Installing SeedSigner Support Files"
     local luckfox_cfg_template="/build/files/luckfox-${board_profile}.cfg"
     if [[ -f "$luckfox_cfg_template" ]]; then
