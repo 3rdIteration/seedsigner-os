@@ -99,3 +99,11 @@ if [ "${SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS:-0}" = "1" ]; then
     mkdir -p "${TARGET_DIR}/etc"
     touch "${TARGET_DIR}/etc/seedsigner-error-microsd-export"
 fi
+
+# Testing build, off by default: when SEEDSIGNER_TESTING_BUILD=1 is set in the
+# build environment, ship the marker that swaps Home's menu for the hardware
+# test menu (see seedsigner repo: helpers/seedsigner_os.py is_testing_build_enabled()).
+if [ "${SEEDSIGNER_TESTING_BUILD:-0}" = "1" ]; then
+    mkdir -p "${TARGET_DIR}/etc"
+    touch "${TARGET_DIR}/etc/seedsigner-testing-build"
+fi

@@ -1431,6 +1431,15 @@ install_seedsigner_app() {
         touch "$rootfs_dir/etc/seedsigner-error-microsd-export"
     fi
 
+    # Testing build, off by default: when SEEDSIGNER_TESTING_BUILD=1 is set in
+    # the build environment, ship the marker that swaps Home's menu for the
+    # hardware test menu (see seedsigner repo: helpers/seedsigner_os.py
+    # is_testing_build_enabled()).
+    if [ "${SEEDSIGNER_TESTING_BUILD:-0}" = "1" ]; then
+        mkdir -p "$rootfs_dir/etc"
+        touch "$rootfs_dir/etc/seedsigner-testing-build"
+    fi
+
     # Patch settings.json for Mini hardware
     if [ "$hardware" == "mini" ]; then
         local settings_json="$rootfs_dir/opt/src/settings.json"
