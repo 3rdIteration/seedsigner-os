@@ -15,4 +15,7 @@ services:
       - SEEDSIGNER_OS_BRANCH
       - SEEDSIGNER_OS_COMMIT
       - SEEDSIGNER_OS_DATE
+      # Off unless explicitly set to "1" -- see post-build.sh in each
+      # *-smartcard* profile and opt/luckfox/{os-build,build-local}.sh.
+      - SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS
     command: "${SS_ARGS:---no-op}"
