@@ -18,4 +18,9 @@ services:
       # Off unless explicitly set to "1" -- see post-build.sh in each
       # *-smartcard* profile and opt/luckfox/{os-build,build-local}.sh.
       - SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS
+      # Off unless explicitly set to "1" -- see post-build.sh in each
+      # *-smartcard* profile and opt/luckfox/{os-build,build-local}.sh. Ships
+      # the marker that swaps Home's menu for the hardware test menu (see
+      # seedsigner repo: helpers/seedsigner_os.py is_testing_build_enabled()).
+      - SEEDSIGNER_TESTING_BUILD
     command: "${SS_ARGS:---no-op}"

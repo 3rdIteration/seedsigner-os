@@ -1459,6 +1459,15 @@ s/^endef\nendif/endef\nendif\nendif/
         touch "$ROOTFS_DIR/etc/seedsigner-error-microsd-export"
     fi
 
+    # Testing build, off by default: when SEEDSIGNER_TESTING_BUILD=1 is set in
+    # the build environment, ship the marker that swaps Home's menu for the
+    # hardware test menu (see seedsigner repo: helpers/seedsigner_os.py
+    # is_testing_build_enabled()).
+    if [ "${SEEDSIGNER_TESTING_BUILD:-0}" = "1" ]; then
+        mkdir -p "$ROOTFS_DIR/etc"
+        touch "$ROOTFS_DIR/etc/seedsigner-testing-build"
+    fi
+
     print_step "Installing SeedSigner Support Files"
     local luckfox_cfg_template="/build/files/luckfox-${board_profile}.cfg"
     if [[ -f "$luckfox_cfg_template" ]]; then
