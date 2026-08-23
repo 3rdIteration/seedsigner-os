@@ -1240,10 +1240,35 @@ build_profile_artifacts() {
     select_board_profile "$board_profile" "$boot_medium"
     apply_mini_cma_profile
 
-    print_step "Cleaning Previous Build (${board_profile}/${boot_medium})"
-    ./build.sh clean
+    # DO NOT run `./build.sh clean` here.
+    #
+    # It was destroying the image. The SDK's clean runs boardtools_clean,
+    # `clean drv` and `clean tools which run on pc`, which delete the PREBUILT
+    # board tools that ship in the SDK checkout -- udev, mtd-utils, memtester,
+    # stressapptest, rockchip_test, adbd and usbdevice. Nothing rebuilds them,
+    # so they never reach the rootfs tarball that build_rootfs extracts, and the
+    # image silently ships ~84 files lighter than the validated CI build,
+    # including fsck.vfat, which S02fsck and fat-fsck-hotplug need.
+    #
+    # The validated CI workflow never cleans -- it builds one hardware/boot
+    # combination per matrix job in a fresh checkout, so it never needs to. This
+    # script can build several profiles in one run, which is the only reason the
+    # clean was here.
+    #
+    # So: never clean for the first profile (identical to CI), and between
+    # profiles restore the SDK with git instead. That is strictly better than
+    # the SDK's clean -- it puts back the prebuilts and the files earlier
+    # profiles patched in place, which `./build.sh clean` does not.
+    if [[ -n "${SS_PROFILE_BUILT:-}" ]]; then
+        print_step "Restoring pristine SDK before ${board_profile}/${boot_medium}"
+        bash "$SEEDSIGNER_LUCKFOX_DIR/prepare-sdk-checkout.sh" "$REPOS_DIR" "$LUCKFOX_REPO_URL"
+        cd "$LUCKFOX_SDK_DIR"
+    else
+        print_info "First profile of this run: SDK left as cloned (matches CI, which never cleans)"
+    fi
+    export SS_PROFILE_BUILT=1
 
-    # Some SDK clean paths may reset board context; force board selection again.
+    # The SDK reset above drops board context; force board selection again.
     select_board_profile "$board_profile" "$boot_medium"
     apply_uart2_console_config "$board_profile" "$boot_medium"
     apply_uart2_console_dts_patch "$board_profile"

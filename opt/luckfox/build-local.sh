@@ -1738,8 +1738,22 @@ EOF
     ls -lh "$bundle_name"
 }
 
+# WARNING: the SDK's own clean is destructive in a way that is not obvious.
+# boardtools_clean / `clean drv` / `clean tools which run on pc` delete the
+# PREBUILT board tools shipped in the SDK checkout (udev, mtd-utils, memtester,
+# stressapptest, rockchip_test, adbd, usbdevice, and the dosfstools binaries
+# S02fsck needs). Nothing rebuilds them, so a build after this clean ships an
+# image ~84 files lighter than the validated CI build. os-build.sh used to call
+# this before every profile, which is why its images did not boot.
+#
+# Prefer restoring the SDK with git (prepare-sdk-checkout.sh does exactly that:
+# reset --hard + clean -ffdx), which puts the prebuilts back. Only use this when
+# you specifically want the SDK's own clean semantics.
 clean_build() {
     print_header "Cleaning Build Artifacts"
+    print_warning "The SDK clean removes prebuilt board tools; a build straight"
+    print_warning "after this will be missing them. Use prepare-sdk-checkout.sh"
+    print_warning "to restore a pristine SDK instead."
     
     if [ -d "$WORK_DIR/luckfox-pico" ]; then
         print_info "Cleaning luckfox-pico build..."
