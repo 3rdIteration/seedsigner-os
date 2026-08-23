@@ -11,12 +11,12 @@
 # WHY: start-seedsigner.sh arms a 120 s boot watchdog on EVERY boot, in BOTH
 # variants: if /tmp/seedsigner-ready never appears, it reboots into rockusb
 # Loader mode. The app writes that marker from signal_app_alive() — added in
-# app commit 689483af (2026-07-28) and, at the time of writing, present only on
-# the generalized-platform-detection branch: 'dev' and every release tag lack
-# it. An image built from a signal-less ref boots the app, looks completely
-# healthy — and reboots into Loader 120 s later, on every boot. Exactly the
-# kind of failure that builds green and only shows up on hardware, so it is
-# checked here instead: the app source is in hand and the check is free.
+# app commit 689483af (2026-07-28), so 'dev' and SeSi-0.8.7+ShSi-B12 carry it
+# and every earlier release tag does not. An image built from a signal-less
+# ref boots the app, looks completely healthy — and reboots into Loader 120 s
+# later, on every boot. Exactly the kind of failure that builds green and only
+# shows up on hardware, so it is checked here instead: the app source is in
+# hand and the check is free.
 #
 # Escape hatch, for deliberately building an old app (bisect / A-B):
 #   SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1  downgrades the failure to a warning.
@@ -51,9 +51,9 @@ cat >&2 <<'EOF'
    when the marker never appears. The image would boot the app, look healthy,
    and Loader-loop on every boot.
 
-   Use an app ref containing commit 689483af or later (2026-07-28), e.g. the
-   generalized-platform-detection branch; 'dev' and all release tags predate
-   it. (--seedsigner-ref locally / the seedsigner_branch CI input.)
+   Use an app ref containing commit 689483af or later (2026-07-28): 'dev' and
+   SeSi-0.8.7+ShSi-B12 carry it, every earlier release tag predates it.
+   (--seedsigner-ref locally / the seedsigner_branch CI input.)
 
    To build a signal-less app anyway (bisect / A-B), set
    SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1.

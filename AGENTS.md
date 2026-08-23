@@ -10,6 +10,28 @@ Non-dev builds (`pi0-smartcard`, `pi2-smartcard`, `pi4-smartcard`, etc.) are des
 * When adding new downloads to a script, always include both the download step **and** a `sha256sum` verification (use the existing `download_and_verify()` helper where available).
 * If a change affects only `-dev` configs, keep it out of non-dev scripts entirely.
 
+### Diagnosing a reproducibility failure
+
+When two builds of the same commit disagree, **diff the images — do not rebuild first.** Run
+[`tools/imgdiff.py`](tools/imgdiff.py) (`python3 tools/imgdiff.py local.img ci.img`); it narrows the
+difference from "the hashes don't match" down to the individual file, and for ELF binaries down to the
+individual embedded string. For lafrite this reaches every rootfs file without a rebuild or a
+`--debug-rootfs` tarball, because the rootfs is an initramfs inside the kernel `Image`. See
+[docs/agents.md](docs/agents.md#verifying-reproducibility) for how to read its output — in particular that
+differences **cascade**, so the innermost file whose *content* changed is the root cause and everything
+downstream of it is just shifted offsets.
+
+**The build container does not isolate the host kernel.** `uname -r` inside Docker reports the *host's*
+kernel, so anything that records it differs between a WSL2 laptop and a CI runner. This is not theoretical:
+it was the sole cause of non-reproducible lafrite images until 2026-08-22, via OpenCV's build-information
+block (`Host: Linux <uname -r> x86_64`) compiled into `libopencv_core.so`. That one string was enough to
+desynchronise the whole image, because its length change resized the compressed initramfs, which shifted
+the kernel's layout. The fix lives in
+[`opt/external-packages/opencv4-config/opencv4-config.mk`](opt/external-packages/opencv4-config/opencv4-config.mk)
+and it **fails the build loudly** if upstream OpenCV moves the line, rather than silently regressing.
+When adding a package that embeds build metadata, check for the same class of leak: host uname, hostname,
+build path, timestamp, `$USER`, CPU count, locale.
+
 ## Local Testing of Scripts
 
 Wherever possible, validate script changes locally before pushing to CI. The full buildroot build takes 1–2 hours per board; many failures can be caught in seconds with synthetic test data.
@@ -143,10 +165,13 @@ shipped green with zero bootcount code. `assert-kernel-network.sh` re-checks the
 
 **The Luckfox boot watchdog couples the image to the app ref.** `start-seedsigner.sh` reboots into Loader
 120 s after app start unless the app writes `/tmp/seedsigner-ready` (`signal_app_alive()`, app commit
-`689483af`+, i.e. the `generalized-platform-detection` branch — `dev` and all tags lack it). A signal-less
+`689483af`+ — `dev` and `SeSi-0.8.7+ShSi-B12` carry it, earlier tags do not). A signal-less
 app builds green, boots looking healthy, and Loader-loops on every boot, so all three build paths run
-`assert-app-watchdog-signal.sh` after the app clone/reuse decision and **fail the build** when it's absent
-(escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`). Relatedly, since the read-only rootfs can never
+`assert-app-watchdog-signal.sh` after the app checkout and **fail the build** when it's absent
+(escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`). That guard only works because the checkout is
+really on the requested ref: `prepare-app-checkout.sh` (all three paths) resolves the ref at the remote
+and re-clones when the on-disk checkout is a different commit — a cached checkout in the
+`seedsigner-repos` Docker volume used to be reused blindly, silently ignoring `--seedsigner-ref`. Relatedly, since the read-only rootfs can never
 cache `__pycache__` at runtime, all three paths also run `precompile-bytecode.sh` after staging the app
 (discovered target-python `compileall.py`, version-matched host interpreter, deterministic flags) over
 `/opt/src` and `site-packages` — the same treatment Pi profiles have always given the app in post-build.

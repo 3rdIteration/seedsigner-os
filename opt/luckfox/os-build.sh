@@ -264,14 +264,12 @@ clone_repositories() {
     # SeedSigner OS Buildroot packages are part of this repo and mounted at
     # $SEEDSIGNER_OS_PACKAGES_DIR (see build.sh); nothing to clone here.
 
-    # Clone SeedSigner code (specific branch)
-    if [[ ! -d "seedsigner" ]]; then
-        print_info "Cloning seedsigner code (ref: $SEEDSIGNER_BRANCH)..."
-        git clone "$SEEDSIGNER_REPO_URL" --depth=1 -b "$SEEDSIGNER_BRANCH" --single-branch --recurse-submodules seedsigner
-        print_success "seedsigner cloned"
-    else
-        print_info "seedsigner already exists"
-    fi
+    # Put the SeedSigner app checkout on exactly $SEEDSIGNER_BRANCH. NOT a bare
+    # `if [[ ! -d seedsigner ]]`: $REPOS_DIR is a Docker volume that outlives
+    # the build, so an existing checkout used to be reused and the requested
+    # ref silently ignored -- see prepare-app-checkout.sh. Shared with CI
+    # (build-luckfox.yml) and build-local.sh.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/prepare-app-checkout.sh" "$REPOS_DIR" "$SEEDSIGNER_BRANCH" "$SEEDSIGNER_REPO_URL"
 
     # The app MUST carry the boot-watchdog liveness signal (it writes
     # /tmp/seedsigner-ready): a signal-less ref builds green, but the image

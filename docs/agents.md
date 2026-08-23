@@ -208,6 +208,44 @@ docker exec seedsigner-os-build-images-1 ls /opt/
 docker exec seedsigner-os-build-images-1 ls /images/
 ```
 
+## Verifying reproducibility
+
+When two builds of the same commit produce different image hashes, don't reach for a rebuild — diff
+the images directly with **[`tools/imgdiff.py`](../tools/imgdiff.py)**:
+
+```bash
+python3 tools/imgdiff.py local.img ci.img
+```
+
+It exits `0` if the images are byte-identical and `1` if they differ, so it also works as a CI check.
+Stdlib only — no mtools, binwalk or loopback mount, and it runs on Windows.
+
+**No rebuild and no `--debug-rootfs` rootfs tarball is needed for lafrite images.** The lafrite profile
+sets `BR2_TARGET_ROOTFS_INITRAMFS=y` + `BR2_TARGET_ROOTFS_CPIO_GZIP=y`, so there is no separate rootfs
+filesystem — the entire userland is a gzipped cpio linked into the kernel `Image`. The tool walks the FAT
+boot partition itself, pulls the initramfs back out of the kernel, and compares all ~6769 rootfs entries
+(mode, uid/gid, mtime, size, sha256, archive order). The MBR/partition/FAT/squashfs/ELF stages are generic,
+so it still reports usefully on other boards, but only lafrite carries its rootfs inside the kernel.
+
+The stage that usually names the culprit outright is the **embedded-string diff**: when a differing file is
+an ELF, the tool compares the multiset of printable strings in each copy. One changed string shifts every
+offset after it, so a raw byte diff drowns in noise while the string diff points straight at the leak:
+
+```
+=== usr/lib/libopencv_core.so.4.10.0 (2432512 vs 2432512 bytes) ===
+  embedded strings differ (A=5720 distinct, B=5720):
+    only in A x1  b'    Host:                        Linux 6.6.87.2-microsoft-standard-WSL2 x86_64'
+    only in B x1  b'    Host:                        Linux 6.17.0-1022-azure x86_64'
+```
+
+**Work outward-in, and don't stop at the first difference you see.** Differences cascade: in the case
+above, one 16-byte string changed `libopencv_core.so`'s size, which changed the compressed initramfs size
+by 271 bytes, which shifted the kernel's post-initramfs layout and so perturbed kallsyms ordering, some
+AArch64 load immediates and the GNU build-id — 285 bytes of "kernel differences" that were pure
+downstream noise. Rule of thumb: **the innermost file whose *content* (not offset) changed is the root
+cause**; everything else is a shift. Cross-check a suspected kernel-level cause against the kernel's own
+string table and its embedded `IKCONFIG` `.config` — if both are identical, the kernel is not the cause.
+
 ## Workflow Summary
 
 1. **Make your edits** to the relevant files

@@ -54,6 +54,11 @@ Build artifacts are **automatically available** in `./build-output/`:
 - Subsequent builds: 15-45 minutes (reuses cached repositories)
 
 Repository caching uses Docker volume `seedsigner-repos` which persists between builds.
+The 37 GB `luckfox-pico` SDK clone is reused as-is; the SeedSigner app checkout is **not** —
+`prepare-app-checkout.sh` resolves `--seedsigner-ref` at the remote every build and re-clones
+whenever the cached checkout is on a different commit, so a cached `dev` from last month or a
+checkout left behind by a different ref can never be built by mistake. Set
+`SEEDSIGNER_KEEP_APP_CHECKOUT=1` to hold a hand-edited checkout in place instead.
 
 ## CI/CD Integration
 

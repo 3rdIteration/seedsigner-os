@@ -260,38 +260,6 @@ check_and_install_dependencies() {
     fi
 }
 
-# Describe the seedsigner checkout in a way that works for a branch AND a tag.
-# `rev-parse --abbrev-ref HEAD` returns the literal string "HEAD" on a detached
-# checkout, which is what a tag clone produces -- so comparing that against the
-# requested ref reports a mismatch on every single tag build.
-seedsigner_checkout_desc() {
-    local dir="$WORK_DIR/seedsigner"
-    local sha ref
-    sha="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    ref="$(git -C "$dir" describe --tags --exact-match 2>/dev/null || true)"
-    if [ -z "$ref" ]; then
-        ref="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-        [ "$ref" = "HEAD" ] && ref="detached"
-    fi
-    echo "ref=$ref commit=$sha"
-}
-
-# Does the existing checkout correspond to $1? True when it is that branch, that
-# tag, or that exact commit -- a ref can legitimately be any of the three.
-seedsigner_checkout_matches() {
-    local want="$1"
-    local dir="$WORK_DIR/seedsigner"
-    local head branch tag
-    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo none)"
-    branch="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo none)"
-    tag="$(git -C "$dir" describe --tags --exact-match 2>/dev/null || true)"
-
-    [ "$branch" = "$want" ] && return 0
-    [ -n "$tag" ] && [ "$tag" = "$want" ] && return 0
-    case "$head" in "$want"*) return 0 ;; esac
-    return 1
-}
-
 clone_repositories() {
     print_header "Cloning Required Repositories"
     
@@ -309,31 +277,14 @@ clone_repositories() {
     # SeedSigner OS Buildroot packages are part of this repo (opt/external-packages);
     # nothing to clone.
 
-    # Clone SeedSigner application code. The repo/branch are variables, not
-    # literals: this used to hard-code `-b dev`, so a local build could not
-    # produce the image CI produces whenever CI was pointed at another branch --
-    # and the app is the one component this repo does not pin.
-    if [ ! -d "seedsigner" ]; then
-        print_info "Cloning seedsigner application ($SEEDSIGNER_REF)..."
-        # `-b` takes a branch OR a tag, so a release tag needs no special handling
-        # here -- it just checks out detached at the tag.
-        if ! git clone "$SEEDSIGNER_REPO_URL" --depth=1 -b "$SEEDSIGNER_REF" \
-                --single-branch --recurse-submodules; then
-            print_error "Could not clone $SEEDSIGNER_REPO_URL at ref '$SEEDSIGNER_REF'"
-            print_error "Check the branch or tag exists: git ls-remote $SEEDSIGNER_REPO_URL '*$SEEDSIGNER_REF*'"
-            exit 1
-        fi
-        print_success "seedsigner cloned at $(seedsigner_checkout_desc)"
-    else
-        # An existing checkout is silently REUSED, so report what it actually is:
-        # otherwise --seedsigner-ref on a second run looks like it worked while
-        # the build quietly keeps using whatever was cloned first.
-        print_info "seedsigner already exists ($(seedsigner_checkout_desc)) — REUSED, not re-cloned"
-        if ! seedsigner_checkout_matches "$SEEDSIGNER_REF"; then
-            print_warning "requested ref '$SEEDSIGNER_REF' does not match the checkout above"
-            print_warning "delete $WORK_DIR/seedsigner to switch"
-        fi
-    fi
+    # Put the app checkout on exactly $SEEDSIGNER_REF. The repo/ref are
+    # variables, not literals: this used to hard-code `-b dev`, so a local
+    # build could not produce the image CI produces whenever CI was pointed at
+    # another branch -- and the app is the one component this repo does not
+    # pin. An existing checkout is put ON the requested ref rather than reused
+    # as-is (it outlives the build here too, so reuse used to swallow
+    # --seedsigner-ref entirely). Shared with CI and os-build.sh.
+    bash "$SCRIPT_DIR/prepare-app-checkout.sh" "$WORK_DIR" "$SEEDSIGNER_REF" "$SEEDSIGNER_REPO_URL"
 
     # The app MUST carry the boot-watchdog liveness signal (it writes
     # /tmp/seedsigner-ready): a signal-less ref builds green, but the image
