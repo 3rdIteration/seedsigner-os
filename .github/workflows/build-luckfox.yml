@@ -420,6 +420,17 @@ jobs:
         path: build-artifacts/
         retention-days: 30
         if-no-files-found: warn
+
+    # Uploaded separately from the images so the aggregation job below can
+    # collect every combination's hashes without pulling down ~100 MB each.
+    - name: Upload checksum manifest
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: sha256-${{ matrix.hardware }}-${{ matrix.boot }}
+        path: build-artifacts/sha256sums.txt
+        retention-days: 90
+        if-no-files-found: warn
     
     - name: Upload artifacts to GitHub Release
       if: success() && github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
@@ -595,3 +606,51 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "The build may have failed. Check the build logs above." >> $GITHUB_STEP_SUMMARY
         fi
+
+  # Collect every combination's checksums into one manifest, mirroring the
+  # sha256sum job in the seedsigner repo's build-buildroot.yml. Without a
+  # published hash there is nothing for a third party to reproduce against, so
+  # this is the deliverable that makes the reproducibility work checkable rather
+  # than merely claimed.
+  sha256sum:
+    name: collect sha256 manifest
+    runs-on: ubuntu-latest
+    needs: build
+    # `always()` so a partial matrix still publishes hashes for what did build;
+    # skipped entirely if every combination failed.
+    if: ${{ always() && needs.build.result != 'skipped' }}
+    steps:
+      - name: Download per-combination manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sha256-*
+          path: manifests
+
+      - name: Merge into one manifest
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          parts=(manifests/*/sha256sums.txt)
+          if [ ${#parts[@]} -eq 0 ]; then
+            echo "No checksum manifests were produced -- every build combination failed." >&2
+            exit 1
+          fi
+
+          # Sorted so the merged manifest does not depend on artifact download
+          # order, which is not stable.
+          LC_ALL=C cat "${parts[@]}" | LC_ALL=C sort -k2 > seedsigner_luckfox.${GITHUB_SHA:0:7}.sha256
+
+          echo "## Luckfox Pico image checksums" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat seedsigner_luckfox.${GITHUB_SHA:0:7}.sha256 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat seedsigner_luckfox.${GITHUB_SHA:0:7}.sha256
+
+      - name: Upload merged manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: seedsigner_luckfox_images_sha256
+          path: "*.sha256"
+          if-no-files-found: error
+          retention-days: 90

@@ -119,6 +119,12 @@ else
 fi
 export RUST_BUILD_JOBS="${RUST_BUILD_JOBS:-$_ss_rust_default_jobs}"
 export FORCE_UNSAFE_CONFIGURE=1
+# Reproducible builds: the epoch compilers and packaging tools stamp into their
+# output. Same value and same reasoning as the Pi/La Frite path (opt/build.sh:5),
+# which the Luckfox build never picked up. Notably U-Boot's mkimage honours it
+# for the FIT `timestamp` field in boot.img, and e2fsprogs for ext4 superblock
+# times -- two things that otherwise differ on every single build.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
 export BUILD_MODEL="${BUILD_MODEL:-both}"
 export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
 # Serial console (ttyFIQ0). Accepts auto|true|false and the legacy 1|0, matching
@@ -174,6 +180,25 @@ resolve_uart2_console() {
     export DISABLE_UART2_CONSOLE_DEBUG
 }
 resolve_uart2_console
+
+# Deterministic tarball. Plain `tar -czf` records each entry's mtime, uid/gid and
+# whatever order readdir happened to return, and gzip stamps its own header with
+# the current time -- so the three bundles below differed on every build even
+# when their contents were byte-identical. Same treatment the Pi/La Frite rootfs
+# archive gets in opt/build.sh:340.
+#
+# --sort=name fixes entry order, --mtime/--owner/--group fix the metadata, and
+# gzip -n omits the timestamp and original filename from the gzip header.
+SS_REPRODUCIBLE_MTIME="@${SOURCE_DATE_EPOCH:-0}"
+ss_tar_deterministic() {  # <output.tar.gz> <-C dir> <member>
+    local out="$1" dir="$2" member="$3"
+    tar --sort=name \
+        --mtime="$SS_REPRODUCIBLE_MTIME" \
+        --owner=root:0 --group=root:0 --numeric-owner \
+        --format=gnu \
+        -cf - -C "$dir" "$member" | gzip -n > "$out"
+    touch -d "@${SOURCE_DATE_EPOCH:-0}" "$out"
+}
 
 debug_uart_bootargs_file() {
     local file_path="$1"
@@ -939,7 +964,7 @@ resolve_rootfs_dir() {
 
 create_nand_image_artifacts() {
     local board_profile="$1"
-    local ts="$2"
+    local tag="$2"
     local profile_medium="${3:-unknown}"
 
     print_step "Creating NAND-Flashable Image Artifacts (${board_profile})"
@@ -958,7 +983,7 @@ create_nand_image_artifacts() {
         exit 1
     fi
 
-    local nand_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-nand-files-${ts}"
+    local nand_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-nand-files-${tag}"
     mkdir -p "$nand_bundle_dir"
 
     local required_bundle_files=(
@@ -1007,8 +1032,8 @@ Flash guidance:
 - Use sd_update.txt / tftp_update.txt with U-Boot workflows.
 EOF
 
-    local nand_bundle="seedsigner-luckfox-pico-${board_profile}-nand-bundle-${ts}.tar.gz"
-    tar -czf "$OUTPUT_DIR/$nand_bundle" -C "$OUTPUT_DIR" "$(basename "$nand_bundle_dir")"
+    local nand_bundle="seedsigner-luckfox-pico-${board_profile}-nand-bundle-${tag}.tar.gz"
+    ss_tar_deterministic "$OUTPUT_DIR/$nand_bundle" "$OUTPUT_DIR" "$(basename "$nand_bundle_dir")"
     print_success "NAND bundle folder created: $nand_bundle_dir"
     print_success "NAND bundle archive created: $OUTPUT_DIR/$nand_bundle"
 }
@@ -1016,7 +1041,7 @@ EOF
 
 create_emmc_bundle() {
     local board_profile="$1"
-    local ts="$2"
+    local tag="$2"
 
     print_step "Creating eMMC-Flashable Bundle (${board_profile})"
 
@@ -1034,7 +1059,7 @@ create_emmc_bundle() {
         exit 1
     fi
 
-    local emmc_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-emmc-files-${ts}"
+    local emmc_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-emmc-files-${tag}"
     mkdir -p "$emmc_bundle_dir"
 
     local emmc_files=(
@@ -1069,8 +1094,8 @@ Flash guidance:
 - See: https://wiki.luckfox.com/Luckfox-Pico-Plus-Mini/Flash-image
 EOF
 
-    local emmc_bundle="seedsigner-luckfox-pico-${board_profile}-emmc-bundle-${ts}.tar.gz"
-    tar -czf "$OUTPUT_DIR/$emmc_bundle" -C "$OUTPUT_DIR" "$(basename "$emmc_bundle_dir")"
+    local emmc_bundle="seedsigner-luckfox-pico-${board_profile}-emmc-bundle-${tag}.tar.gz"
+    ss_tar_deterministic "$OUTPUT_DIR/$emmc_bundle" "$OUTPUT_DIR" "$(basename "$emmc_bundle_dir")"
     print_success "eMMC bundle folder created: $emmc_bundle_dir"
     print_success "eMMC bundle archive created: $OUTPUT_DIR/$emmc_bundle"
 }
@@ -1105,7 +1130,7 @@ validate_nand_oriented_output() {
 
 export_official_nand_image_dir() {
     local board_profile="$1"
-    local ts="$2"
+    local tag="$2"
     local image_root="$LUCKFOX_SDK_DIR/IMAGE"
 
     if [[ ! -d "$image_root" ]]; then
@@ -1121,8 +1146,8 @@ export_official_nand_image_dir() {
         return 0
     fi
 
-    local bundle_name="seedsigner-luckfox-pico-${board_profile}-nand-sdk-images-${ts}.tar.gz"
-    tar -czf "$OUTPUT_DIR/$bundle_name" -C "$image_root" "$(basename "$latest_dir")"
+    local bundle_name="seedsigner-luckfox-pico-${board_profile}-nand-sdk-images-${tag}.tar.gz"
+    ss_tar_deterministic "$OUTPUT_DIR/$bundle_name" "$image_root" "$(basename "$latest_dir")"
     print_success "Exported official SDK NAND image directory: $OUTPUT_DIR/$bundle_name"
 }
 
@@ -1680,21 +1705,21 @@ s/^endef\nendif/endef\nendif\nendif/
 
     cd "$LUCKFOX_SDK_DIR/output/image"
 
-    local ts
-    ts=$(date +%Y%m%d_%H%M%S)
-    export LAST_PROFILE_BUILD_TS="$ts"
-    if [[ "$board_profile" == "mini" ]]; then
-        export LAST_MINI_BUILD_TS="$ts"
-    elif [[ "$board_profile" == "max" ]]; then
-        export LAST_MAX_BUILD_TS="$ts"
-    elif [[ "$board_profile" == "pi" ]]; then
-        export LAST_PI_BUILD_TS="$ts"
-    fi
+    # Artifact name tag. This used to be $(date +%Y%m%d_%H%M%S), which put a
+    # wall-clock stamp in the name of every image and bundle -- so two builds of
+    # identical source could never even produce the same FILENAME, let alone be
+    # compared by hash. Keyed on the app ref instead, exactly as the Pi/La Frite
+    # naming does in opt/build.sh (seedsigner_os.<ref>.<config>.img).
+    #
+    # The four LAST_*_BUILD_TS exports that used to live here had no readers
+    # anywhere in the repo and are gone.
+    local tag
+    tag="$(printf '%s' "$SEEDSIGNER_BRANCH" | tr -c 'A-Za-z0-9_.-' '_')"
 
     if [[ "$boot_medium" == "sd" ]]; then
         print_step "Creating Final SD Image (${board_profile})"
 
-        local sd_image="seedsigner-luckfox-pico-${board_profile}-sd-${ts}.img"
+        local sd_image="seedsigner-luckfox-pico-${board_profile}-sd-${tag}.img"
 
         if [[ -f "/build/blkenvflash" ]]; then
             "/build/blkenvflash" "$sd_image"
@@ -1712,13 +1737,13 @@ s/^endef\nendif/endef\nendif\nendif/
         print_success "SD image created for ${board_profile}: $OUTPUT_DIR/$sd_image"
     elif [[ "$boot_medium" == "emmc" ]]; then
         print_step "Creating eMMC Bundle (${board_profile})"
-        create_emmc_bundle "$board_profile" "$ts"
+        create_emmc_bundle "$board_profile" "$tag"
     fi
 
     if [[ "$include_nand" == "true" ]]; then
         print_step "Packaging NAND artifacts (${board_profile})"
-        create_nand_image_artifacts "$board_profile" "$ts" "$boot_medium"
-        export_official_nand_image_dir "$board_profile" "$ts"
+        create_nand_image_artifacts "$board_profile" "$tag" "$boot_medium"
+        export_official_nand_image_dir "$board_profile" "$tag"
     fi
 
     cd "$LUCKFOX_SDK_DIR"
@@ -1805,10 +1830,61 @@ run_automated_build() {
         exit 1
     fi
 
+    write_artifact_checksums
+
     print_success "Build Complete! ($built combination(s) built, $skipped skipped)"
     echo ""
     echo "Build artifacts:"
     ls -la "$OUTPUT_DIR/"
+}
+
+# Normalise artifact mtimes and record a checksum manifest.
+#
+# Luckfox published no hashes at all -- not in the build log, not as a file --
+# so there was nothing for a third party to reproduce AGAINST, which makes a
+# reproducible build unverifiable even once it is byte-identical. The Pi path
+# has printed sha256sum since the beginning (opt/build.sh:331); this also writes
+# a manifest, which CI collects across the matrix.
+#
+# The mtime normalisation matters because the .img files are consumed by `tar`
+# and `zip` downstream (the release upload zips bundle directories), and both
+# record mtimes.
+write_artifact_checksums() {
+    local manifest="$OUTPUT_DIR/sha256sums.txt"
+    local f
+
+    shopt -s nullglob
+    local artifacts=("$OUTPUT_DIR"/*.img "$OUTPUT_DIR"/*.tar.gz)
+    shopt -u nullglob
+
+    if [[ ${#artifacts[@]} -eq 0 ]]; then
+        print_info "No artifacts to checksum"
+        return 0
+    fi
+
+    for f in "${artifacts[@]}"; do
+        touch -d "@${SOURCE_DATE_EPOCH:-0}" "$f"
+    done
+
+    # Also the loose files inside the *-files-* bundle directories. They are not
+    # in the manifest (the .tar.gz of the same content is), but the release
+    # upload step zips these directories, and zip records mtimes -- so without
+    # this the published .zip differs on every build even though the tarball of
+    # exactly the same bytes does not.
+    find "$OUTPUT_DIR" -mindepth 2 -exec touch -d "@${SOURCE_DATE_EPOCH:-0}" {} +
+
+    # Basenames only, so the manifest does not leak the build directory, and
+    # generated from inside $OUTPUT_DIR because a bash glob is already sorted --
+    # under LC_ALL=C, deterministically so. The manifest is therefore itself
+    # reproducible, which matters as much as the artifacts it lists.
+    (
+        cd "$OUTPUT_DIR" || exit 1
+        shopt -s nullglob
+        LC_ALL=C sha256sum -- *.img *.tar.gz > "$(basename "$manifest")"
+    )
+
+    print_step "Artifact checksums (sha256)"
+    cat "$manifest"
 }
 
 start_interactive_mode() {
