@@ -121,8 +121,24 @@ export RUST_BUILD_JOBS="${RUST_BUILD_JOBS:-$_ss_rust_default_jobs}"
 export FORCE_UNSAFE_CONFIGURE=1
 export BUILD_MODEL="${BUILD_MODEL:-both}"
 export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
-export DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-1}"
+# Serial console (ttyFIQ0). Accepts auto|true|false and the legacy 1|0, matching
+# build-luckfox.yml's disable_uart2_console_debug input.
+#
+# The default used to be a flat 1 -- console always stripped, whatever the
+# variant -- while CI's "auto" keeps the console on a dev build. So a Docker dev
+# image had no serial console and the CI dev image did, from the same source.
+# That is the whole point of a dev image, and it is not something you discover
+# until the board is on the bench and silent.
+#
+# Resolved after SEEDSIGNER_BUILD_VARIANT is known, in resolve_uart2_console().
+export DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-auto}"
 export DEFAULT_PYTHON_VERSION="${DEFAULT_PYTHON_VERSION:-3.12}"
+# Host Rust toolchain cache (see rust-toolchain-cache.sh). Unset = no caching,
+# i.e. host-rust (and therefore LLVM) is compiled from source every build, which
+# is what the Docker path always did. build.sh sets this when given --cache-dir;
+# CI sets it and wraps the directory in actions/cache. Deliberately outside the
+# SDK tree, which prepare-sdk-checkout.sh wipes before every build.
+export RUST_TOOLCHAIN_CACHE="${RUST_TOOLCHAIN_CACHE:-}"
 
 # Colors for output
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -137,6 +153,27 @@ print_info() { echo -e "\n${YELLOW}[INFO] $1${NC}\n"; }
 # happened once the build got far enough for those files to exist.
 # build-local.sh has always defined it; this is the two drifting apart again.
 print_warning() { echo -e "\n${YELLOW}[WARNING] $1${NC}\n"; }
+
+# Normalise DISABLE_UART2_CONSOLE_DEBUG to a plain 1|0 before anything reads it,
+# applying the same rule as build-luckfox.yml: an explicit true/false (or the
+# legacy 1/0) wins; auto follows the build variant -- non-dev strips the serial
+# console, dev keeps it. The three apply_uart2_* functions below then only ever
+# see 1 or 0, so the policy lives in exactly one place.
+resolve_uart2_console() {
+    case "$DISABLE_UART2_CONSOLE_DEBUG" in
+        1|true)  DISABLE_UART2_CONSOLE_DEBUG=1 ;;
+        0|false) DISABLE_UART2_CONSOLE_DEBUG=0 ;;
+        *)
+            if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
+                DISABLE_UART2_CONSOLE_DEBUG=1
+            else
+                DISABLE_UART2_CONSOLE_DEBUG=0
+            fi
+            ;;
+    esac
+    export DISABLE_UART2_CONSOLE_DEBUG
+}
+resolve_uart2_console
 
 debug_uart_bootargs_file() {
     local file_path="$1"
@@ -247,8 +284,10 @@ show_usage() {
     echo "  - Model selector via BUILD_MODEL=mini|max|pi|both"
     echo "  - Mini CMA override via MINI_CMA_SIZE (default: 1M)"
     echo "  - 'both' builds mini+max; use 'pi' to build the Pico Pi (eMMC only)"
-    echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=1|0 (default: 1)"
-    echo "  - Rust toolchain: always built from source in Docker (no caching)"
+    echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=auto|true|false (default: auto)"
+    echo "    auto follows the variant: non-dev strips the console, dev keeps it"
+    echo "  - SDK revision pinned by opt/luckfox/SDK_COMMIT"
+    echo "    (override with LUCKFOX_COMMIT=<sha> or LUCKFOX_BRANCH=<branch>)"
     echo ""
 }
 
@@ -258,14 +297,13 @@ clone_repositories() {
     mkdir -p "$REPOS_DIR"
     cd "$REPOS_DIR"
     
-    # Clone luckfox-pico SDK
-    if [[ ! -d "luckfox-pico" ]]; then
-        print_info "Cloning luckfox-pico SDK..."
-        git clone "$LUCKFOX_REPO_URL" --depth=1 --single-branch luckfox-pico
-        print_success "luckfox-pico cloned"
-    else
-        print_info "luckfox-pico already exists"
-    fi
+    # Put the SDK on the pinned revision, in a pristine tree. NOT a bare
+    # `if [[ ! -d luckfox-pico ]]`: that clone was unpinned (default branch,
+    # whatever it meant that day) AND reused a tree the previous build had
+    # already patched in place, since $REPOS_DIR is a Docker volume that
+    # outlives the build. Shared with CI and build-local.sh -- see
+    # prepare-sdk-checkout.sh for the full account.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/prepare-sdk-checkout.sh" "$REPOS_DIR" "$LUCKFOX_REPO_URL"
     
     # SeedSigner OS Buildroot packages are part of this repo and mounted at
     # $SEEDSIGNER_OS_PACKAGES_DIR (see build.sh); nothing to clone here.
@@ -1377,6 +1415,14 @@ s/^endef\nendif/endef\nendif\nendif/
         bash "$SEEDSIGNER_LUCKFOX_DIR/uboot-recovery-config.sh" "$LUCKFOX_SDK_DIR"
     fi
 
+    # Restore the cached host Rust toolchain, if the caller provided a cache.
+    # Must land after ensure_buildroot_tree (the tree it unpacks into has to
+    # exist) and before the first step that can trigger the Rust build.
+    if [[ -n "$RUST_TOOLCHAIN_CACHE" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/rust-toolchain-cache.sh" restore \
+            "$LUCKFOX_SDK_DIR" "$RUST_TOOLCHAIN_CACHE"
+    fi
+
     print_step "Building U-Boot"
     ./build.sh uboot
 
@@ -1392,6 +1438,15 @@ s/^endef\nendif/endef\nendif\nendif/
 
     print_step "Building Rootfs"
     ./build.sh rootfs
+
+    # host-rust is built and installed by now, so this is the first point the
+    # toolchain can be captured. Runs unconditionally when a cache path is set:
+    # the script no-ops when the toolchain came from the cache unchanged.
+    if [[ -n "$RUST_TOOLCHAIN_CACHE" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/rust-toolchain-cache.sh" package \
+            "$LUCKFOX_SDK_DIR" "$RUST_TOOLCHAIN_CACHE" || \
+            print_info "Rust toolchain caching failed (build continues)"
+    fi
 
     print_step "Building Media Support"
     ./build.sh media
@@ -1412,8 +1467,12 @@ s/^endef\nendif/endef\nendif\nendif/
     cp -a "$SEEDSIGNER_CODE_DIR/." "$ROOTFS_DIR/opt/"
 
     # Generate the SeedSigner OS identity + provenance marker. App git data comes
-    # from the cloned repo; OS git data is unavailable inside the build container,
-    # so it falls back to "unknown" (gen-os-release.sh is mounted at /build by build.sh).
+    # from the cloned repo. There is no seedsigner-os checkout inside the
+    # container, so the OS fields have to be supplied from outside: build.sh
+    # forwards SEEDSIGNER_OS_{REPO,BRANCH,COMMIT,DATE} when the caller sets them
+    # (CI does), and gen-os-release.sh reads them straight from the environment.
+    # Unset -> "unknown", which is what every Docker build recorded before those
+    # variables were forwarded. (gen-os-release.sh is mounted at /build.)
     if [ -f /build/gen-os-release.sh ]; then
         SEEDSIGNER_APP_REPO="$SEEDSIGNER_REPO_URL" \
         SEEDSIGNER_APP_BRANCH="$SEEDSIGNER_BRANCH" \
@@ -1788,7 +1847,9 @@ assert_shared_scripts_present() {
     local missing=()
     local checked=0
     local s
-    for s in apply-partition-layout.sh pin-spidev-bufsiz.sh readonly-rootfs.sh \
+    for s in prepare-sdk-checkout.sh rust-toolchain-cache.sh \
+             apply-partition-layout.sh \
+             pin-spidev-bufsiz.sh readonly-rootfs.sh \
              assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \

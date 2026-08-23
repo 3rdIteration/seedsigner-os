@@ -25,6 +25,11 @@ RUN apt-get update && \
         device-tree-compiler libncurses5-dev \
         pkg-config bc python-is-python3 passwd openssl \
         openssh-server openssh-client vim file cpio rsync \
+        # rust-toolchain-cache.sh packs the host Rust toolchain with
+        # `tar --zstd`, which shells out to the zstd binary. The CI runner
+        # image happens to ship it; this base image does not, so without it
+        # the cache silently fails to write and every build recompiles LLVM.
+        zstd \
         ca-certificates \
         && \
     rm -rf /var/lib/apt/lists/*
