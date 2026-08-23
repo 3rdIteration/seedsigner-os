@@ -4,11 +4,105 @@ set -o errexit -o pipefail
 export FORCE_UNSAFE_CONFIGURE=1 # Allows buildroot/tar to run as root user in docker container
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}" # Reproducible builds: epoch used by compilers and build tools
 
-# global variables 
+# global variables
 cur_dir_name=${PWD##*/}
 cur_dir=$(pwd)
 seedsigner_app_repo="https://github.com/3rditeration/seedsigner.git"
 seedsigner_app_repo_branch="dev"
+
+###
+### Resilience against transient network failures
+###
+# Every network-dependent step below (buildroot's source downloads, the app git
+# clone, pip) is retried, because the single most common cause of a failed build
+# is an upstream mirror having a bad minute rather than anything wrong with the
+# tree.
+NETWORK_MAX_ATTEMPTS="${NETWORK_MAX_ATTEMPTS:-3}"
+NETWORK_RETRY_DELAY="${NETWORK_RETRY_DELAY:-30}"
+
+# Buildroot's default download command is "wget -nd -t 3". That -t only covers
+# connection-level failures: wget does NOT retry an HTTP *error response*, so a
+# 5xx from a mirror fails the download on the very first reply. That is exactly
+# how a build dies when sources.buildroot.net (Cloudflare-fronted) returns its
+# intermittent 522s -- one 522, no retry, next mirror, and if the backup site is
+# the one that is unhappy there is no next mirror left.
+#
+# --retry-on-http-error makes those responses retriable and --waitretry spreads
+# the attempts out, so a brief outage is ridden out instead of being burned
+# through in milliseconds. Passed to make on the command line (below) because
+# BR2_WGET comes from .config, which would override a mere environment variable.
+BR2_WGET_CMD="${BR2_WGET_CMD:-wget -nd -t 5 --waitretry=15 --timeout=30 --retry-on-http-error=429,500,502,503,504,522,524}"
+
+# Signatures of a failure worth retrying. Anything else (a real compile error, a
+# missing config) is reported immediately -- retrying those would just burn
+# hours arriving at the same place.
+NETWORK_TRANSIENT_RE='\.stamp_downloaded|ERROR (429|5[0-9][0-9]):|Connection (refused|timed out|reset)|Temporary failure in name resolution|Could not resolve host|Name or service not known|Unable to establish SSL connection|[Nn]etwork is unreachable|RPC failed|early EOF|fatal: unable to access|Service Unavailable|Bad Gateway|Gateway Time-?out'
+
+# Retry a network-dependent command that is safe to simply run again.
+# usage: retry_network "<description>" <command> [args...]
+retry_network() {
+  local what="${1}"; shift
+  local attempt=1
+
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [ "${attempt}" -ge "${NETWORK_MAX_ATTEMPTS}" ]; then
+      echo "${what}: failed after ${NETWORK_MAX_ATTEMPTS} attempts" >&2
+      return 1
+    fi
+
+    echo "${what}: attempt ${attempt}/${NETWORK_MAX_ATTEMPTS} failed, retrying in ${NETWORK_RETRY_DELAY}s" >&2
+    sleep "${NETWORK_RETRY_DELAY}"
+    attempt=$((attempt + 1))
+  done
+}
+
+# git leaves a partial checkout behind when a clone dies midway, and the retry
+# would then fail on the non-empty destination. Clear it before each attempt.
+# usage: clone_repo_clean <destination> <git clone args...>
+clone_repo_clean() {
+  local dest="${1}"; shift
+  rm -rf "${dest}"
+  git clone "$@"
+}
+
+# Run the buildroot build, retrying only when the failure looks transient.
+#
+# This is safe to repeat because buildroot is resumable: its per-package
+# .stamp_* files mean a retry picks up at the package that failed rather than
+# rebuilding what already succeeded, so a retry that helps is cheap and a retry
+# that cannot help is not attempted at all.
+run_buildroot_make() {
+  local attempt=1
+  local make_log
+  make_log="$(mktemp)"
+
+  while true; do
+    if PATH="/usr/lib/ccache:${PATH}" make BR2_WGET="${BR2_WGET_CMD}" 2>&1 | tee "${make_log}"; then
+      rm -f "${make_log}"
+      return 0
+    fi
+
+    if ! grep -qE "${NETWORK_TRANSIENT_RE}" "${make_log}"; then
+      echo "buildroot make failed, and not for a transient network reason -- not retrying" >&2
+      rm -f "${make_log}"
+      return 1
+    fi
+
+    if [ "${attempt}" -ge "${NETWORK_MAX_ATTEMPTS}" ]; then
+      echo "buildroot make: transient failure persisted across ${NETWORK_MAX_ATTEMPTS} attempts" >&2
+      rm -f "${make_log}"
+      return 1
+    fi
+
+    echo "buildroot make: transient network failure on attempt ${attempt}/${NETWORK_MAX_ATTEMPTS}, retrying in ${NETWORK_RETRY_DELAY}s" >&2
+    sleep "${NETWORK_RETRY_DELAY}"
+    attempt=$((attempt + 1))
+  done
+}
 
 help()
 {
@@ -53,9 +147,9 @@ compile_translations_and_fonts() {
   ss_translations_repo="./src/seedsigner/resources/seedsigner-translations"
 
   # install depedencies for babel and fonttools(pyftsubset)
-  pip install babel || exit
-  pip install fonttools || exit
-  pip install -e . || exit
+  retry_network "pip install babel" pip install babel || exit
+  retry_network "pip install fonttools" pip install fonttools || exit
+  retry_network "pip install -e ." pip install -e . || exit
 
   # remove any existing binary mo files if they exist
   rm -rf ${ss_translations_repo}/l10n/**/**/*.mo
@@ -115,14 +209,18 @@ download_app_repo() {
   # check for custom app branch or custom commit. Custom commit takes priority over branch name
   if ! [ -z ${seedsigner_app_repo_commit_id} ]; then
     echo "cloning repo ${seedsigner_app_repo} with commit id ${seedsigner_app_repo_commit_id}"
-    git clone --recurse-submodules "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
+    retry_network "app repo clone" \
+      clone_repo_clean "${rootfs_overlay}/opt/" \
+      --recurse-submodules "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
     cd ${rootfs_overlay}/opt/
     git reset --hard "${seedsigner_app_repo_commit_id}" || exit
-    git submodule update || exit
+    retry_network "submodule update" git submodule update || exit
     cd -
   else
     echo "cloning repo ${seedsigner_app_repo} with branch ${seedsigner_app_repo_branch}"
-    git clone --recurse-submodules --depth 1 -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
+    retry_network "app repo clone" \
+      clone_repo_clean "${rootfs_overlay}/opt/" \
+      --recurse-submodules --depth 1 -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
   fi
 
   # Record the app commit time for display on device
@@ -211,8 +309,8 @@ build_image() {
 
   PATH="/usr/lib/ccache:${PATH}" make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ ${config_name}_defconfig
   cd "${build_dir}"
-  PATH="/usr/lib/ccache:${PATH}" make
-  
+  run_buildroot_make
+
   # if successful, mv seedsigner_os.img image to /images
   # rename to image to include branch name and config name, then compress
   

@@ -185,6 +185,71 @@ That image can be burned to an SD card and run in your SeedSigner.
 ---
 
 
+## Transient network failures
+
+A build reaches out to the network in three places — Buildroot downloading
+package sources, the `git clone` of the SeedSigner app, and `pip` — and by far
+the most common cause of a failed build is one of those having a bad minute,
+not anything wrong with the tree. A typical example is Buildroot's backup
+mirror returning a Cloudflare `522`:
+
+```
+HTTP request sent, awaiting response... 522 <none>
+ERROR 522: <none>.
+make[1]: *** [package/pkg-generic.mk:179: .../.stamp_downloaded] Error 1
+```
+
+`opt/build.sh` handles these itself, so a build usually rides them out rather
+than dying:
+
+- **Downloads retry on HTTP errors.** Buildroot's default `wget -nd -t 3` does
+  *not* retry an HTTP error response — `-t` only covers connection-level
+  failures, so a `5xx` fails the download on the first reply. The build passes
+  its own `BR2_WGET` with `--retry-on-http-error` and `--waitretry`.
+- **The build itself is retried, but only when the failure looks transient.**
+  Buildroot resumes from its per-package `.stamp_*` files, so a retry picks up
+  at the package that failed. A genuine compile error is *not* retried — it
+  fails immediately rather than repeating for hours.
+- **The app clone and pip installs are retried**, with a partial checkout
+  cleared before each attempt.
+
+Tunable via the environment (defaults shown):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NETWORK_MAX_ATTEMPTS` | `3` | Attempts for each network-dependent step |
+| `NETWORK_RETRY_DELAY` | `30` | Seconds between attempts |
+| `BR2_WGET_CMD` | `wget -nd -t 5 --waitretry=15 --timeout=30 --retry-on-http-error=...` | Buildroot's download command |
+
+To fail fast instead of retrying, set `NETWORK_MAX_ATTEMPTS=1`. These are
+forwarded into the container by `docker-compose.yml`, so they work the same way
+locally and in CI.
+
+### Luckfox Pico
+
+The Luckfox build is a separate pipeline (the Rockchip vendor SDK, with its own
+Buildroot) and does not run `opt/build.sh`, so it does not inherit the retries
+above. It carries the same download hardening in
+`opt/luckfox/configs/luckfox_pico_defconfig` instead, which every Luckfox build
+copies into the SDK's Buildroot:
+
+- `BR2_WGET` gets the same `--retry-on-http-error` treatment.
+- `BR2_BACKUP_SITE` is empty. It previously named the same host as
+  `BR2_PRIMARY_SITE`, so 4 of the 5 candidate URIs pointed at one mirror —
+  duplicated work on any outage, and more of it now that each URI is retried.
+
+Note `BR2_WGET` (the *host's* download command, used while building) is
+unrelated to `BR2_PACKAGE_WGET` (wget *on the device*, which non-dev strips).
+
+The Luckfox SDK and app `git clone`s are not yet retried — see
+`opt/luckfox/os-build.sh` and `build-local.sh`.
+
+<br/>
+<br/>
+
+---
+
+
 ## Board configs
 | Board                        | Image Name                              | Build Script Option |
 | ---------------------------- | --------------------------------------- | ------------------- |
