@@ -1843,7 +1843,7 @@ start_interactive_mode() {
 #
 # Checking up front turns that into a five-second failure instead: the guards
 # exist to tolerate an optional script, not to tolerate a broken image.
-assert_shared_scripts_present() {
+assert_shared_build_files() {
     local missing=()
     local checked=0
     local s
@@ -1854,19 +1854,20 @@ assert_shared_scripts_present() {
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
              install-gnupg-home.sh \
-             uboot-recovery-config.sh compile-translations.sh; do
+             uboot-recovery-config.sh compile-translations.sh \
+             SDK_COMMIT; do
         checked=$((checked + 1))
         [[ -f "$SEEDSIGNER_LUCKFOX_DIR/$s" ]] || missing+=("$s")
     done
 
     if [[ ${#missing[@]} -ne 0 ]]; then
-        print_error "Shared build scripts missing from $SEEDSIGNER_LUCKFOX_DIR:"
+        print_error "Shared build files missing from $SEEDSIGNER_LUCKFOX_DIR:"
         for s in "${missing[@]}"; do echo "    - $s"; done
         print_error "The Docker image is stale or incomplete. Rebuild it:"
         print_error "  ./build.sh --luckfox build --force ..."
         exit 1
     fi
-    print_info "All $checked shared build scripts present"
+    print_info "All $checked shared build files present"
 }
 
 # Main entry point
@@ -1874,7 +1875,7 @@ main() {
     local mode="${1:-auto}"
 
     case "${1:-auto}" in
-        auto|auto-nand|auto-nand-only) assert_shared_scripts_present ;;
+        auto|auto-nand|auto-nand-only) assert_shared_build_files ;;
     esac
 
     case "$mode" in

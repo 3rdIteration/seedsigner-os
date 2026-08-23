@@ -45,6 +45,12 @@ COPY configs/ /build/configs/
 COPY files/ /build/files/
 COPY scripts/ /build/scripts/
 COPY blkenvflash /build/
+# The SDK revision pin, read by prepare-sdk-checkout.sh from its own directory.
+# NOT covered by the `COPY *.sh` below -- it is data, not a script -- so it needs
+# its own line. Leaving it out makes every build fail at the clone step with
+# "no SDK revision pinned"; assert_shared_build_files() in os-build.sh now
+# catches it up front instead.
+COPY SDK_COMMIT /build/
 
 
 # Make scripts executable
