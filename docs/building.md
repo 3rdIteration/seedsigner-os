@@ -212,6 +212,25 @@ To fail fast instead of retrying, set `NETWORK_MAX_ATTEMPTS=1`. These are
 forwarded into the container by `docker-compose.yml`, so they work the same way
 locally and in CI.
 
+### Luckfox Pico
+
+The Luckfox build is a separate pipeline (the Rockchip vendor SDK, with its own
+Buildroot) and does not run `opt/build.sh`, so it does not inherit the retries
+above. It carries the same download hardening in
+`opt/luckfox/configs/luckfox_pico_defconfig` instead, which every Luckfox build
+copies into the SDK's Buildroot:
+
+- `BR2_WGET` gets the same `--retry-on-http-error` treatment.
+- `BR2_BACKUP_SITE` is empty. It previously named the same host as
+  `BR2_PRIMARY_SITE`, so 4 of the 5 candidate URIs pointed at one mirror —
+  duplicated work on any outage, and more of it now that each URI is retried.
+
+Note `BR2_WGET` (the *host's* download command, used while building) is
+unrelated to `BR2_PACKAGE_WGET` (wget *on the device*, which non-dev strips).
+
+The Luckfox SDK and app `git clone`s are not yet retried — see
+`opt/luckfox/os-build.sh` and `build-local.sh`.
+
 <br/>
 <br/>
 

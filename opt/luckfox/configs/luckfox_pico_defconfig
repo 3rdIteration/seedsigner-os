@@ -140,7 +140,7 @@ BR2_TOOLCHAIN_ARM_HAS_SYNC_8=y
 BR2_TOOLCHAIN_HAS_SYNC_8=y
 BR2_TOOLCHAIN_HAS_LIBATOMIC=y
 BR2_TOOLCHAIN_HAS_ATOMIC=y
-BR2_WGET="wget --passive-ftp -nd -t 3"
+BR2_WGET="wget --passive-ftp -nd -t 5 --waitretry=15 --timeout=30 --retry-on-http-error=429,500,502,503,504,522,524"
 BR2_SVN="svn --non-interactive"
 BR2_BZR="bzr"
 BR2_GIT="git"
@@ -158,7 +158,14 @@ BR2_DEFCONFIG="/mnt/host/sysdrv/source/buildroot/buildroot-2023.02.6/configs/luc
 BR2_DL_DIR="$(TOPDIR)/dl"
 BR2_HOST_DIR="$(BASE_DIR)/host"
 BR2_PRIMARY_SITE="http://sources.buildroot.net"
-BR2_BACKUP_SITE="http://sources.buildroot.net"
+# Deliberately empty: it used to name the same host as BR2_PRIMARY_SITE, which
+# only added duplicate URIs for a host already tried first. Buildroot's URI
+# order is primary -> upstream site -> backup, and each site contributes two URI
+# forms, so 4 of the 5 candidates pointed at one host. That is wasted time on
+# any outage, and more so now that BR2_WGET retries -- a hard-down mirror is
+# retried on every one of those URIs before the upstream site is reached.
+# Emptying it removes only duplicates: no distinct download source is lost.
+BR2_BACKUP_SITE=""
 BR2_KERNEL_MIRROR="https://cdn.kernel.org/pub"
 BR2_GNU_MIRROR="http://ftpmirror.gnu.org"
 BR2_LUAROCKS_MIRROR="http://rocks.moonscript.org"
