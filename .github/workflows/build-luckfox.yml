@@ -315,13 +315,11 @@ jobs:
           fi
         fi
         
-        # Clone SeedSigner code (dev branch contains LuckFox-specific adaptations)
-        echo "Cloning seedsigner application code..."
-        if ! git clone "$SEEDSIGNER_REPO" --depth=1 -b "$SEEDSIGNER_BRANCH" --single-branch --recurse-submodules seedsigner; then
-          echo "ERROR: Failed to clone seedsigner code from $SEEDSIGNER_REPO (branch: $SEEDSIGNER_BRANCH)"
-          echo "This branch may have been renamed or removed"
-          exit 1
-        fi
+        # Clone the SeedSigner app at the requested ref. The runner workspace is
+        # fresh so this always clones, but it goes through the shared script so
+        # all three builds resolve a ref identically -- a raw commit included,
+        # which `git clone -b` alone cannot check out.
+        bash seedsigner-os/opt/luckfox/prepare-app-checkout.sh . "$SEEDSIGNER_BRANCH" "$SEEDSIGNER_REPO"
 
         # The app MUST carry the boot-watchdog liveness signal (it writes
         # /tmp/seedsigner-ready): a signal-less ref builds green, but the image

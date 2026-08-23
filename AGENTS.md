@@ -143,10 +143,13 @@ shipped green with zero bootcount code. `assert-kernel-network.sh` re-checks the
 
 **The Luckfox boot watchdog couples the image to the app ref.** `start-seedsigner.sh` reboots into Loader
 120 s after app start unless the app writes `/tmp/seedsigner-ready` (`signal_app_alive()`, app commit
-`689483af`+, i.e. the `generalized-platform-detection` branch — `dev` and all tags lack it). A signal-less
+`689483af`+ — `dev` and `SeSi-0.8.7+ShSi-B12` carry it, earlier tags do not). A signal-less
 app builds green, boots looking healthy, and Loader-loops on every boot, so all three build paths run
-`assert-app-watchdog-signal.sh` after the app clone/reuse decision and **fail the build** when it's absent
-(escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`). Relatedly, since the read-only rootfs can never
+`assert-app-watchdog-signal.sh` after the app checkout and **fail the build** when it's absent
+(escape hatch: `SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL=1`). That guard only works because the checkout is
+really on the requested ref: `prepare-app-checkout.sh` (all three paths) resolves the ref at the remote
+and re-clones when the on-disk checkout is a different commit — a cached checkout in the
+`seedsigner-repos` Docker volume used to be reused blindly, silently ignoring `--seedsigner-ref`. Relatedly, since the read-only rootfs can never
 cache `__pycache__` at runtime, all three paths also run `precompile-bytecode.sh` after staging the app
 (discovered target-python `compileall.py`, version-matched host interpreter, deterministic flags) over
 `/opt/src` and `site-packages` — the same treatment Pi profiles have always given the app in post-build.
