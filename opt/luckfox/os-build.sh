@@ -1566,6 +1566,54 @@ s/^endef\nendif/endef\nendif\nendif/
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
+    # Mini boards need hardware_config=FOX_22; the app's checked-in settings.json
+    # ships FOX_40, which is the Pro/Max and Pi pinout. Both the inline CI and
+    # build-local.sh patched this and os-build.sh never did, so a Docker-built
+    # Mini image shipped the wrong board configuration -- the app comes up against
+    # the wrong GPIO/display pins and never reaches its ready signal, so the boot
+    # watchdog reboots into Loader ~120 s later. Looks like a broken image; is
+    # actually one line of config.
+    local settings_json="$ROOTFS_DIR/opt/src/settings.json"
+    if [[ "$board_profile" == "mini" ]]; then
+        if [[ -f "$settings_json" ]]; then
+            sed -i 's/"hardware_config":[[:space:]]*"FOX_40"/"hardware_config": "FOX_22"/g' "$settings_json"
+            if grep -q '"hardware_config":[[:space:]]*"FOX_22"' "$settings_json"; then
+                print_success "settings.json patched for Mini hardware (FOX_22)"
+            else
+                print_error "Failed to set hardware_config=FOX_22 in $settings_json"
+                grep -n 'hardware_config' "$settings_json" || true
+                exit 1
+            fi
+        else
+            print_error "settings.json not found at $settings_json"
+            exit 1
+        fi
+    else
+        print_info "hardware_config left at FOX_40 (correct for Pro/Max and Pi)"
+    fi
+
+    # pyzbar dlopens zbar.so by bare name, so it has to be resolvable from the
+    # default library path -- the shared object itself is installed under
+    # site-packages. Missing here while both the inline CI and build-local.sh
+    # created it: without it `import pyzbar` raises at app startup, which again
+    # ends as a Loader reboot rather than an error anyone can see.
+    local rootfs_python
+    rootfs_python="$(ls "$ROOTFS_DIR/usr/lib/" | grep -E '^python3\.[0-9]+$' | head -n 1)"
+    if [[ -n "$rootfs_python" ]]; then
+        local site_packages="$ROOTFS_DIR/usr/lib/$rootfs_python/site-packages"
+        if [[ -f "$site_packages/zbar.so" ]]; then
+            ln -sf "$rootfs_python/site-packages/zbar.so" "$ROOTFS_DIR/usr/lib/zbar.so"
+            print_success "Created /usr/lib/zbar.so -> $rootfs_python/site-packages/zbar.so"
+        else
+            print_error "zbar.so not found at $site_packages/zbar.so"
+            find "$ROOTFS_DIR" -name 'zbar.so' 2>/dev/null || true
+            exit 1
+        fi
+    else
+        print_error "Could not detect the python3.x directory in $ROOTFS_DIR/usr/lib/"
+        exit 1
+    fi
+
     # Diagnostic aid (off by default): when SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=1
     # is set in the build environment, ship the marker that enables the app's
     # opt-in "Save to MicroSD" button on OS/package error screens (see
