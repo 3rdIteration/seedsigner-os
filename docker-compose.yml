@@ -23,4 +23,10 @@ services:
       # the marker that swaps Home's menu for the hardware test menu (see
       # seedsigner repo: helpers/seedsigner_os.py is_testing_build_enabled()).
       - SEEDSIGNER_TESTING_BUILD
+      # Tuning for opt/build.sh's retries around transient network failures
+      # (flaky upstream mirrors). Unset -> the defaults in opt/build.sh.
+      # Set NETWORK_MAX_ATTEMPTS=1 to fail fast instead of retrying.
+      - NETWORK_MAX_ATTEMPTS
+      - NETWORK_RETRY_DELAY
+      - BR2_WGET_CMD
     command: "${SS_ARGS:---no-op}"
