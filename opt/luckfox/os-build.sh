@@ -986,6 +986,19 @@ create_nand_image_artifacts() {
     local nand_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-nand-files-${tag}"
     mkdir -p "$nand_bundle_dir"
 
+    # userdata.img is required, not optional. Mini/Max/Pi all declare a userdata
+    # partition, and /userdata is the only non-rootfs writable store the app saves
+    # settings to -- on a read-only-rootfs build it is the ONLY writable store at
+    # all. A bundle without it flashes a board that boots, looks healthy, and
+    # silently discards every setting: a failure with no symptom until a user
+    # loses state, which is why it belongs in the required list rather than being
+    # copied opportunistically.
+    #
+    # This was missing here (and in build-local.sh) while the inline CI packaged
+    # it and hard-failed without it, so only CI ever produced a complete bundle.
+    # The partition layout itself was already reconciled across the three builds
+    # (see apply-partition-layout.sh and the note in apply_sdk_patches); the
+    # PACKAGING of it never was.
     local required_bundle_files=(
         update.img
         download.bin
@@ -995,6 +1008,7 @@ create_nand_image_artifacts() {
         boot.img
         oem.img
         rootfs.img
+        userdata.img
         sd_update.txt
         tftp_update.txt
     )
@@ -1062,6 +1076,9 @@ create_emmc_bundle() {
     local emmc_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-emmc-files-${tag}"
     mkdir -p "$emmc_bundle_dir"
 
+    # userdata.img is required here too -- same reasoning as the NAND bundle
+    # above. The Pi BoardConfig declares 256M(userdata) with userdata@ext4, so
+    # the SDK does emit it; it simply was never copied.
     local emmc_files=(
         update.img
         download.bin
@@ -1071,6 +1088,7 @@ create_emmc_bundle() {
         boot.img
         oem.img
         rootfs.img
+        userdata.img
     )
 
     for file in "${emmc_files[@]}"; do
@@ -1080,6 +1098,18 @@ create_emmc_bundle() {
             print_info "Optional file not found, skipping: $file"
         fi
     done
+
+    # The loop above treats every file as optional, so listing userdata.img in
+    # emmc_files is not enough on its own -- a missing one would be skipped with
+    # an INFO line and the bundle would ship incomplete. Check explicitly, the
+    # way the CI workflow did before this packaging moved here.
+    if [[ ! -f "$emmc_bundle_dir/userdata.img" ]]; then
+        print_error "userdata.img missing from the eMMC bundle."
+        echo "   The Pi BoardConfig declares 256M(userdata) and userdata@/userdata@ext4,"
+        echo "   so the SDK should have emitted it. Check RK_PRE_BUILD_USERDATA_SCRIPT"
+        echo "   and the partition layout step (apply-partition-layout.sh)."
+        exit 1
+    fi
 
     cat > "$emmc_bundle_dir/README.txt" << 'EOF'
 SeedSigner Luckfox eMMC Flash Bundle

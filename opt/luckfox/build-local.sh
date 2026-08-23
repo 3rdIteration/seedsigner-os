@@ -1617,7 +1617,7 @@ create_nand_bundle() {
     local required_files=(
         update.img download.bin env.img idblock.img
         uboot.img boot.img oem.img
-        rootfs.img sd_update.txt tftp_update.txt
+        rootfs.img userdata.img sd_update.txt tftp_update.txt
     )
     
     for file in "${required_files[@]}"; do
@@ -1627,6 +1627,18 @@ create_nand_bundle() {
             print_warning "Missing file: $file"
         fi
     done
+
+    # userdata.img is required, not optional: /userdata is the only non-rootfs
+    # writable store the app saves settings to, so a bundle without it flashes a
+    # board that boots, looks healthy, and silently discards every setting. Both
+    # loops above only warn on a missing file, so check explicitly.
+    if [ ! -f "$nand_bundle_dir/userdata.img" ]; then
+        print_error "userdata.img missing from the NAND bundle."
+        echo "   Every board's partition table declares a userdata partition, so the"
+        echo "   SDK should have emitted it. Check the partition layout step"
+        echo "   (apply-partition-layout.sh)."
+        exit 1
+    fi
     
     # Create README
     cat > "$nand_bundle_dir/README.txt" << 'EOF'
@@ -1679,7 +1691,7 @@ create_emmc_bundle() {
     # Copy available files to bundle
     local emmc_files=(
         update.img download.bin env.img idblock.img
-        uboot.img boot.img oem.img rootfs.img
+        uboot.img boot.img oem.img rootfs.img userdata.img
     )
     
     for file in "${emmc_files[@]}"; do
@@ -1689,6 +1701,18 @@ create_emmc_bundle() {
             print_info "Optional file not found, skipping: $file"
         fi
     done
+
+    # userdata.img is required, not optional: /userdata is the only non-rootfs
+    # writable store the app saves settings to, so a bundle without it flashes a
+    # board that boots, looks healthy, and silently discards every setting. Both
+    # loops above only warn on a missing file, so check explicitly.
+    if [ ! -f "$emmc_bundle_dir/userdata.img" ]; then
+        print_error "userdata.img missing from the eMMC bundle."
+        echo "   Every board's partition table declares a userdata partition, so the"
+        echo "   SDK should have emitted it. Check the partition layout step"
+        echo "   (apply-partition-layout.sh)."
+        exit 1
+    fi
     
     # Create README
     cat > "$emmc_bundle_dir/README.txt" << 'EOF'
