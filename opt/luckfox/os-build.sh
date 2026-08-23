@@ -37,6 +37,12 @@ export SEEDSIGNER_READONLY_ROOTFS="${SEEDSIGNER_READONLY_ROOTFS:-auto}"
 # /etc/seedsigner-boot-log so start-seedsigner.sh records every boot to /userdata.
 # Default off: a production device must write nothing to flash.
 export SEEDSIGNER_BOOT_LOG="${SEEDSIGNER_BOOT_LOG:-off}"
+# Strip the adb userspace on non-dev (mirrors build-luckfox.yml's harden_adb):
+# on|off. build.sh has always forwarded this variable, but nothing here read it,
+# so --harden-adb off was silently ignored on every Docker build while CI
+# honoured it -- the exact kind of CI/local divergence that makes an image
+# impossible to reproduce locally. Applied as HARDEN_DISABLE_ADB below.
+export SEEDSIGNER_HARDEN_ADB="${SEEDSIGNER_HARDEN_ADB:-on}"
 # SeedSigner OS Buildroot packages now live in this same repo. build.sh mounts
 # opt/external-packages into the container at /build/external-packages, so there
 # is no seedsigner-os clone.
@@ -1559,7 +1565,9 @@ s/^endef\nendif/endef\nendif\nendif/
             # SEEDSIGNER_DEBUG_NETWORK on => keep Ethernet+telnet (debug), else disable.
             local harden_net=1
             if [[ "$SEEDSIGNER_DEBUG_NETWORK" == "on" ]]; then harden_net=0; fi
-            HARDEN_DISABLE_ADB=1 HARDEN_DISABLE_NETWORK="$harden_net" \
+            local harden_adb=1
+            if [[ "$SEEDSIGNER_HARDEN_ADB" == "off" ]]; then harden_adb=0; fi
+            HARDEN_DISABLE_ADB="$harden_adb" HARDEN_DISABLE_NETWORK="$harden_net" \
                 bash "$SEEDSIGNER_LUCKFOX_DIR/harden-nondev.sh" "$ROOTFS_DIR" || print_error "non-dev hardening reported an error"
         fi
         if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/optimize-nondev.sh" ]]; then

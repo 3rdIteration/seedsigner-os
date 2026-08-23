@@ -89,6 +89,14 @@ on:
           - 'on'
           - 'off'
         default: 'off'
+      testing_build:
+        description: 'Testing build (off by default): ships /etc/seedsigner-testing-build, which swaps the Home menu for the hardware test menu (I/O Test, Test Smartcard, Flash Applet, Settings). For hardware bring-up only -- NOT a production image.'
+        required: false
+        type: choice
+        options:
+          - 'off'
+          - 'on'
+        default: 'off'
       build_variant:
         description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell). Automatic push/PR CI always builds dev.'
         required: false
@@ -162,6 +170,10 @@ on:
         type: string
         default: 'auto'
       boot_log:
+        required: false
+        type: string
+        default: 'off'
+      testing_build:
         required: false
         type: string
         default: 'off'
@@ -1374,6 +1386,19 @@ jobs:
         else
           rm -f "$ROOTFS_DIR/etc/seedsigner-boot-log" 2>/dev/null || true
           echo "persistent boot log disabled (default)"
+        fi
+
+        # Testing build, off by default: ship the marker that swaps Home's menu
+        # for the hardware test menu (see the seedsigner repo:
+        # helpers/seedsigner_os.py is_testing_build_enabled()). Mirrors
+        # opt/luckfox/os-build.sh, which has always written this file when
+        # SEEDSIGNER_TESTING_BUILD=1 -- CI just had no input to set it.
+        if [ "${{ inputs.testing_build || 'off' }}" = "on" ]; then
+          : > "$ROOTFS_DIR/etc/seedsigner-testing-build"
+          echo "🧪 Testing build ENABLED (/etc/seedsigner-testing-build) - NOT a production image"
+        else
+          rm -f "$ROOTFS_DIR/etc/seedsigner-testing-build" 2>/dev/null || true
+          echo "testing build disabled (default)"
         fi
 
         # Non-dev (production) hardening of the built rootfs: remove the serial
