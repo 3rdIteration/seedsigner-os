@@ -10,6 +10,28 @@ Non-dev builds (`pi0-smartcard`, `pi2-smartcard`, `pi4-smartcard`, etc.) are des
 * When adding new downloads to a script, always include both the download step **and** a `sha256sum` verification (use the existing `download_and_verify()` helper where available).
 * If a change affects only `-dev` configs, keep it out of non-dev scripts entirely.
 
+### Diagnosing a reproducibility failure
+
+When two builds of the same commit disagree, **diff the images — do not rebuild first.** Run
+[`tools/imgdiff.py`](tools/imgdiff.py) (`python3 tools/imgdiff.py local.img ci.img`); it narrows the
+difference from "the hashes don't match" down to the individual file, and for ELF binaries down to the
+individual embedded string. For lafrite this reaches every rootfs file without a rebuild or a
+`--debug-rootfs` tarball, because the rootfs is an initramfs inside the kernel `Image`. See
+[docs/agents.md](docs/agents.md#verifying-reproducibility) for how to read its output — in particular that
+differences **cascade**, so the innermost file whose *content* changed is the root cause and everything
+downstream of it is just shifted offsets.
+
+**The build container does not isolate the host kernel.** `uname -r` inside Docker reports the *host's*
+kernel, so anything that records it differs between a WSL2 laptop and a CI runner. This is not theoretical:
+it was the sole cause of non-reproducible lafrite images until 2026-08-22, via OpenCV's build-information
+block (`Host: Linux <uname -r> x86_64`) compiled into `libopencv_core.so`. That one string was enough to
+desynchronise the whole image, because its length change resized the compressed initramfs, which shifted
+the kernel's layout. The fix lives in
+[`opt/external-packages/opencv4-config/opencv4-config.mk`](opt/external-packages/opencv4-config/opencv4-config.mk)
+and it **fails the build loudly** if upstream OpenCV moves the line, rather than silently regressing.
+When adding a package that embeds build metadata, check for the same class of leak: host uname, hostname,
+build path, timestamp, `$USER`, CPU count, locale.
+
 ## Local Testing of Scripts
 
 Wherever possible, validate script changes locally before pushing to CI. The full buildroot build takes 1–2 hours per board; many failures can be caught in seconds with synthetic test data.

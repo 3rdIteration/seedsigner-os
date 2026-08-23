@@ -151,6 +151,19 @@ The second line above will show the SHA256 hash of the image file that was built
 
 **Windows (PowerShell) note:** Even with LF line endings and symlinks enabled, some Windows builds may still produce a different image hash than the published release. WSL2 remains the recommended path for reproducible builds.
 
+### If the hashes don't match
+
+Don't rebuild to investigate — compare the two images directly:
+
+```bash
+python3 tools/imgdiff.py your-build.img published-release.img
+```
+
+[`tools/imgdiff.py`](../tools/imgdiff.py) reports exactly which file inside the image differs, and for
+program binaries which embedded string differs. It needs only Python 3 (no mtools, no loopback mount) and
+exits `0` when the images are byte-identical. See
+[agents.md](agents.md#verifying-reproducibility) for how to interpret the output.
+
 The completed image file will be in the `images` subdirectory.
 ```bash
 cd images
