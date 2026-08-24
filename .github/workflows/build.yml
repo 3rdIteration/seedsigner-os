@@ -140,11 +140,24 @@ jobs:
             --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
 
+      # actions/cache tars the directory as the unprivileged runner user, but
+      # the container fills it as root -- and cargo's unpacked crate sources
+      # under br-cargo-home land unreadable, so tar hit hundreds of "Cannot
+      # open: Permission denied", exited 2, and the save was abandoned (run
+      # 32685520661: every leg built fine, no cache was written). Hand the tree
+      # back before the post-save step runs. Cheap: metadata only.
+      - name: Make download cache readable by the runner
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" buildroot_dl
+
       # Sizing data for the caching decisions still open: how much each board
       # actually contributes to the shared download cache, and how big the
       # buildroot ccache (mounted, but not cached) grows. Lets the 10GB per-repo
       # budget be planned from measurements rather than guesses. Runs on failure
       # too -- a build that died partway still says something useful about size.
+      # tee'd rather than just redirected because step summaries are not exposed
+      # over the REST API, so the log is the only way to read these numbers back
+      # without opening the run in a browser.
       - name: Report cache sizes
         if: always()
         run: |
@@ -182,7 +195,7 @@ jobs:
             echo '```'
             echo
             echo "</details>"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
