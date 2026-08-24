@@ -97,7 +97,34 @@ else
     _ss_default_jobs="$_ss_cpu_jobs"
 fi
 export BUILD_JOBS="${BUILD_JOBS:-$_ss_default_jobs}"
-export MAKEFLAGS="-j${BUILD_JOBS}"
+
+# DO NOT export MAKEFLAGS="-j$BUILD_JOBS" here. It corrupts the image.
+#
+# GNU make propagates MAKEFLAGS into every sub-make, including the SDK's
+# sysdrv build, and sysdrv/Makefile is not parallel-safe:
+#
+#     rootfs: rootfs_prepare pctools buildroot boardtools drv
+#     rootfs_prepare: ; rm -rf $(SYSDRV_DIR_OUT_ROOTFS) ...
+#
+# Those are sibling prerequisites with no ordering between them and no
+# .NOTPARALLEL in the file, and rootfs_prepare `rm -rf`s the very directory
+# boardtools installs into. Serial make walks prerequisites left to right, so
+# rootfs_prepare runs first and everything is fine -- which is what the
+# validated CI workflow gets, because it never sets MAKEFLAGS. Under -j they
+# race, and when rootfs_prepare loses the race it deletes the board tools that
+# were already installed. The rootfs tarball is then sealed without them.
+#
+# Observed exactly that: the Docker image was missing 84 files against the CI
+# image -- eudev, mtd-utils, rockchip_test, memtester, stressapptest, adbd,
+# usbdevice and the dosfstools binaries S02fsck needs -- with 0 extra files,
+# every time. In the CI log `prepare rootfs` runs first; in the Docker log it
+# ran after the boardtools installs.
+#
+# BR2_JLEVEL still gives Buildroot its parallelism (that is Buildroot's own
+# knob and does not leak into sysdrv), and build-local.sh has never exported
+# MAKEFLAGS either, so this brings all three builds into line. The wall-clock
+# cost is nil: the CI build without MAKEFLAGS took 3h30, the Docker build with
+# it took 3h46.
 export BR2_JLEVEL="${BUILD_JOBS}"
 
 # LLVM's per-translation-unit cost (~2 GB) is the heaviest in buildroot, and
@@ -119,10 +146,32 @@ else
 fi
 export RUST_BUILD_JOBS="${RUST_BUILD_JOBS:-$_ss_rust_default_jobs}"
 export FORCE_UNSAFE_CONFIGURE=1
+# Reproducible builds: the epoch compilers and packaging tools stamp into their
+# output. Same value and same reasoning as the Pi/La Frite path (opt/build.sh:5),
+# which the Luckfox build never picked up. Notably U-Boot's mkimage honours it
+# for the FIT `timestamp` field in boot.img, and e2fsprogs for ext4 superblock
+# times -- two things that otherwise differ on every single build.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
 export BUILD_MODEL="${BUILD_MODEL:-both}"
 export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
-export DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-1}"
+# Serial console (ttyFIQ0). Accepts auto|true|false and the legacy 1|0, matching
+# build-luckfox.yml's disable_uart2_console_debug input.
+#
+# The default used to be a flat 1 -- console always stripped, whatever the
+# variant -- while CI's "auto" keeps the console on a dev build. So a Docker dev
+# image had no serial console and the CI dev image did, from the same source.
+# That is the whole point of a dev image, and it is not something you discover
+# until the board is on the bench and silent.
+#
+# Resolved after SEEDSIGNER_BUILD_VARIANT is known, in resolve_uart2_console().
+export DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-auto}"
 export DEFAULT_PYTHON_VERSION="${DEFAULT_PYTHON_VERSION:-3.12}"
+# Host Rust toolchain cache (see rust-toolchain-cache.sh). Unset = no caching,
+# i.e. host-rust (and therefore LLVM) is compiled from source every build, which
+# is what the Docker path always did. build.sh sets this when given --cache-dir;
+# CI sets it and wraps the directory in actions/cache. Deliberately outside the
+# SDK tree, which prepare-sdk-checkout.sh wipes before every build.
+export RUST_TOOLCHAIN_CACHE="${RUST_TOOLCHAIN_CACHE:-}"
 
 # Colors for output
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -137,6 +186,46 @@ print_info() { echo -e "\n${YELLOW}[INFO] $1${NC}\n"; }
 # happened once the build got far enough for those files to exist.
 # build-local.sh has always defined it; this is the two drifting apart again.
 print_warning() { echo -e "\n${YELLOW}[WARNING] $1${NC}\n"; }
+
+# Normalise DISABLE_UART2_CONSOLE_DEBUG to a plain 1|0 before anything reads it,
+# applying the same rule as build-luckfox.yml: an explicit true/false (or the
+# legacy 1/0) wins; auto follows the build variant -- non-dev strips the serial
+# console, dev keeps it. The three apply_uart2_* functions below then only ever
+# see 1 or 0, so the policy lives in exactly one place.
+resolve_uart2_console() {
+    case "$DISABLE_UART2_CONSOLE_DEBUG" in
+        1|true)  DISABLE_UART2_CONSOLE_DEBUG=1 ;;
+        0|false) DISABLE_UART2_CONSOLE_DEBUG=0 ;;
+        *)
+            if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
+                DISABLE_UART2_CONSOLE_DEBUG=1
+            else
+                DISABLE_UART2_CONSOLE_DEBUG=0
+            fi
+            ;;
+    esac
+    export DISABLE_UART2_CONSOLE_DEBUG
+}
+resolve_uart2_console
+
+# Deterministic tarball. Plain `tar -czf` records each entry's mtime, uid/gid and
+# whatever order readdir happened to return, and gzip stamps its own header with
+# the current time -- so the three bundles below differed on every build even
+# when their contents were byte-identical. Same treatment the Pi/La Frite rootfs
+# archive gets in opt/build.sh:340.
+#
+# --sort=name fixes entry order, --mtime/--owner/--group fix the metadata, and
+# gzip -n omits the timestamp and original filename from the gzip header.
+SS_REPRODUCIBLE_MTIME="@${SOURCE_DATE_EPOCH:-0}"
+ss_tar_deterministic() {  # <output.tar.gz> <-C dir> <member>
+    local out="$1" dir="$2" member="$3"
+    tar --sort=name \
+        --mtime="$SS_REPRODUCIBLE_MTIME" \
+        --owner=root:0 --group=root:0 --numeric-owner \
+        --format=gnu \
+        -cf - -C "$dir" "$member" | gzip -n > "$out"
+    touch -d "@${SOURCE_DATE_EPOCH:-0}" "$out"
+}
 
 debug_uart_bootargs_file() {
     local file_path="$1"
@@ -247,8 +336,10 @@ show_usage() {
     echo "  - Model selector via BUILD_MODEL=mini|max|pi|both"
     echo "  - Mini CMA override via MINI_CMA_SIZE (default: 1M)"
     echo "  - 'both' builds mini+max; use 'pi' to build the Pico Pi (eMMC only)"
-    echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=1|0 (default: 1)"
-    echo "  - Rust toolchain: always built from source in Docker (no caching)"
+    echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=auto|true|false (default: auto)"
+    echo "    auto follows the variant: non-dev strips the console, dev keeps it"
+    echo "  - SDK revision pinned by opt/luckfox/SDK_COMMIT"
+    echo "    (override with LUCKFOX_COMMIT=<sha> or LUCKFOX_BRANCH=<branch>)"
     echo ""
 }
 
@@ -258,14 +349,13 @@ clone_repositories() {
     mkdir -p "$REPOS_DIR"
     cd "$REPOS_DIR"
     
-    # Clone luckfox-pico SDK
-    if [[ ! -d "luckfox-pico" ]]; then
-        print_info "Cloning luckfox-pico SDK..."
-        git clone "$LUCKFOX_REPO_URL" --depth=1 --single-branch luckfox-pico
-        print_success "luckfox-pico cloned"
-    else
-        print_info "luckfox-pico already exists"
-    fi
+    # Put the SDK on the pinned revision, in a pristine tree. NOT a bare
+    # `if [[ ! -d luckfox-pico ]]`: that clone was unpinned (default branch,
+    # whatever it meant that day) AND reused a tree the previous build had
+    # already patched in place, since $REPOS_DIR is a Docker volume that
+    # outlives the build. Shared with CI and build-local.sh -- see
+    # prepare-sdk-checkout.sh for the full account.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/prepare-sdk-checkout.sh" "$REPOS_DIR" "$LUCKFOX_REPO_URL"
     
     # SeedSigner OS Buildroot packages are part of this repo and mounted at
     # $SEEDSIGNER_OS_PACKAGES_DIR (see build.sh); nothing to clone here.
@@ -901,7 +991,7 @@ resolve_rootfs_dir() {
 
 create_nand_image_artifacts() {
     local board_profile="$1"
-    local ts="$2"
+    local tag="$2"
     local profile_medium="${3:-unknown}"
 
     print_step "Creating NAND-Flashable Image Artifacts (${board_profile})"
@@ -920,9 +1010,22 @@ create_nand_image_artifacts() {
         exit 1
     fi
 
-    local nand_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-nand-files-${ts}"
+    local nand_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-nand-files-${tag}"
     mkdir -p "$nand_bundle_dir"
 
+    # userdata.img is required, not optional. Mini/Max/Pi all declare a userdata
+    # partition, and /userdata is the only non-rootfs writable store the app saves
+    # settings to -- on a read-only-rootfs build it is the ONLY writable store at
+    # all. A bundle without it flashes a board that boots, looks healthy, and
+    # silently discards every setting: a failure with no symptom until a user
+    # loses state, which is why it belongs in the required list rather than being
+    # copied opportunistically.
+    #
+    # This was missing here (and in build-local.sh) while the inline CI packaged
+    # it and hard-failed without it, so only CI ever produced a complete bundle.
+    # The partition layout itself was already reconciled across the three builds
+    # (see apply-partition-layout.sh and the note in apply_sdk_patches); the
+    # PACKAGING of it never was.
     local required_bundle_files=(
         update.img
         download.bin
@@ -932,6 +1035,7 @@ create_nand_image_artifacts() {
         boot.img
         oem.img
         rootfs.img
+        userdata.img
         sd_update.txt
         tftp_update.txt
     )
@@ -969,8 +1073,8 @@ Flash guidance:
 - Use sd_update.txt / tftp_update.txt with U-Boot workflows.
 EOF
 
-    local nand_bundle="seedsigner-luckfox-pico-${board_profile}-nand-bundle-${ts}.tar.gz"
-    tar -czf "$OUTPUT_DIR/$nand_bundle" -C "$OUTPUT_DIR" "$(basename "$nand_bundle_dir")"
+    local nand_bundle="seedsigner-luckfox-pico-${board_profile}-nand-bundle-${tag}.tar.gz"
+    ss_tar_deterministic "$OUTPUT_DIR/$nand_bundle" "$OUTPUT_DIR" "$(basename "$nand_bundle_dir")"
     print_success "NAND bundle folder created: $nand_bundle_dir"
     print_success "NAND bundle archive created: $OUTPUT_DIR/$nand_bundle"
 }
@@ -978,7 +1082,7 @@ EOF
 
 create_emmc_bundle() {
     local board_profile="$1"
-    local ts="$2"
+    local tag="$2"
 
     print_step "Creating eMMC-Flashable Bundle (${board_profile})"
 
@@ -996,9 +1100,12 @@ create_emmc_bundle() {
         exit 1
     fi
 
-    local emmc_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-emmc-files-${ts}"
+    local emmc_bundle_dir="$OUTPUT_DIR/seedsigner-luckfox-pico-${board_profile}-emmc-files-${tag}"
     mkdir -p "$emmc_bundle_dir"
 
+    # userdata.img is required here too -- same reasoning as the NAND bundle
+    # above. The Pi BoardConfig declares 256M(userdata) with userdata@ext4, so
+    # the SDK does emit it; it simply was never copied.
     local emmc_files=(
         update.img
         download.bin
@@ -1008,6 +1115,7 @@ create_emmc_bundle() {
         boot.img
         oem.img
         rootfs.img
+        userdata.img
     )
 
     for file in "${emmc_files[@]}"; do
@@ -1017,6 +1125,18 @@ create_emmc_bundle() {
             print_info "Optional file not found, skipping: $file"
         fi
     done
+
+    # The loop above treats every file as optional, so listing userdata.img in
+    # emmc_files is not enough on its own -- a missing one would be skipped with
+    # an INFO line and the bundle would ship incomplete. Check explicitly, the
+    # way the CI workflow did before this packaging moved here.
+    if [[ ! -f "$emmc_bundle_dir/userdata.img" ]]; then
+        print_error "userdata.img missing from the eMMC bundle."
+        echo "   The Pi BoardConfig declares 256M(userdata) and userdata@/userdata@ext4,"
+        echo "   so the SDK should have emitted it. Check RK_PRE_BUILD_USERDATA_SCRIPT"
+        echo "   and the partition layout step (apply-partition-layout.sh)."
+        exit 1
+    fi
 
     cat > "$emmc_bundle_dir/README.txt" << 'EOF'
 SeedSigner Luckfox eMMC Flash Bundle
@@ -1031,8 +1151,8 @@ Flash guidance:
 - See: https://wiki.luckfox.com/Luckfox-Pico-Plus-Mini/Flash-image
 EOF
 
-    local emmc_bundle="seedsigner-luckfox-pico-${board_profile}-emmc-bundle-${ts}.tar.gz"
-    tar -czf "$OUTPUT_DIR/$emmc_bundle" -C "$OUTPUT_DIR" "$(basename "$emmc_bundle_dir")"
+    local emmc_bundle="seedsigner-luckfox-pico-${board_profile}-emmc-bundle-${tag}.tar.gz"
+    ss_tar_deterministic "$OUTPUT_DIR/$emmc_bundle" "$OUTPUT_DIR" "$(basename "$emmc_bundle_dir")"
     print_success "eMMC bundle folder created: $emmc_bundle_dir"
     print_success "eMMC bundle archive created: $OUTPUT_DIR/$emmc_bundle"
 }
@@ -1067,7 +1187,7 @@ validate_nand_oriented_output() {
 
 export_official_nand_image_dir() {
     local board_profile="$1"
-    local ts="$2"
+    local tag="$2"
     local image_root="$LUCKFOX_SDK_DIR/IMAGE"
 
     if [[ ! -d "$image_root" ]]; then
@@ -1083,8 +1203,8 @@ export_official_nand_image_dir() {
         return 0
     fi
 
-    local bundle_name="seedsigner-luckfox-pico-${board_profile}-nand-sdk-images-${ts}.tar.gz"
-    tar -czf "$OUTPUT_DIR/$bundle_name" -C "$image_root" "$(basename "$latest_dir")"
+    local bundle_name="seedsigner-luckfox-pico-${board_profile}-nand-sdk-images-${tag}.tar.gz"
+    ss_tar_deterministic "$OUTPUT_DIR/$bundle_name" "$image_root" "$(basename "$latest_dir")"
     print_success "Exported official SDK NAND image directory: $OUTPUT_DIR/$bundle_name"
 }
 
@@ -1147,10 +1267,35 @@ build_profile_artifacts() {
     select_board_profile "$board_profile" "$boot_medium"
     apply_mini_cma_profile
 
-    print_step "Cleaning Previous Build (${board_profile}/${boot_medium})"
-    ./build.sh clean
+    # DO NOT run `./build.sh clean` here.
+    #
+    # It was destroying the image. The SDK's clean runs boardtools_clean,
+    # `clean drv` and `clean tools which run on pc`, which delete the PREBUILT
+    # board tools that ship in the SDK checkout -- udev, mtd-utils, memtester,
+    # stressapptest, rockchip_test, adbd and usbdevice. Nothing rebuilds them,
+    # so they never reach the rootfs tarball that build_rootfs extracts, and the
+    # image silently ships ~84 files lighter than the validated CI build,
+    # including fsck.vfat, which S02fsck and fat-fsck-hotplug need.
+    #
+    # The validated CI workflow never cleans -- it builds one hardware/boot
+    # combination per matrix job in a fresh checkout, so it never needs to. This
+    # script can build several profiles in one run, which is the only reason the
+    # clean was here.
+    #
+    # So: never clean for the first profile (identical to CI), and between
+    # profiles restore the SDK with git instead. That is strictly better than
+    # the SDK's clean -- it puts back the prebuilts and the files earlier
+    # profiles patched in place, which `./build.sh clean` does not.
+    if [[ -n "${SS_PROFILE_BUILT:-}" ]]; then
+        print_step "Restoring pristine SDK before ${board_profile}/${boot_medium}"
+        bash "$SEEDSIGNER_LUCKFOX_DIR/prepare-sdk-checkout.sh" "$REPOS_DIR" "$LUCKFOX_REPO_URL"
+        cd "$LUCKFOX_SDK_DIR"
+    else
+        print_info "First profile of this run: SDK left as cloned (matches CI, which never cleans)"
+    fi
+    export SS_PROFILE_BUILT=1
 
-    # Some SDK clean paths may reset board context; force board selection again.
+    # The SDK reset above drops board context; force board selection again.
     select_board_profile "$board_profile" "$boot_medium"
     apply_uart2_console_config "$board_profile" "$boot_medium"
     apply_uart2_console_dts_patch "$board_profile"
@@ -1377,6 +1522,14 @@ s/^endef\nendif/endef\nendif\nendif/
         bash "$SEEDSIGNER_LUCKFOX_DIR/uboot-recovery-config.sh" "$LUCKFOX_SDK_DIR"
     fi
 
+    # Restore the cached host Rust toolchain, if the caller provided a cache.
+    # Must land after ensure_buildroot_tree (the tree it unpacks into has to
+    # exist) and before the first step that can trigger the Rust build.
+    if [[ -n "$RUST_TOOLCHAIN_CACHE" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/rust-toolchain-cache.sh" restore \
+            "$LUCKFOX_SDK_DIR" "$RUST_TOOLCHAIN_CACHE"
+    fi
+
     print_step "Building U-Boot"
     ./build.sh uboot
 
@@ -1392,6 +1545,15 @@ s/^endef\nendif/endef\nendif\nendif/
 
     print_step "Building Rootfs"
     ./build.sh rootfs
+
+    # host-rust is built and installed by now, so this is the first point the
+    # toolchain can be captured. Runs unconditionally when a cache path is set:
+    # the script no-ops when the toolchain came from the cache unchanged.
+    if [[ -n "$RUST_TOOLCHAIN_CACHE" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/rust-toolchain-cache.sh" package \
+            "$LUCKFOX_SDK_DIR" "$RUST_TOOLCHAIN_CACHE" || \
+            print_info "Rust toolchain caching failed (build continues)"
+    fi
 
     print_step "Building Media Support"
     ./build.sh media
@@ -1412,8 +1574,12 @@ s/^endef\nendif/endef\nendif\nendif/
     cp -a "$SEEDSIGNER_CODE_DIR/." "$ROOTFS_DIR/opt/"
 
     # Generate the SeedSigner OS identity + provenance marker. App git data comes
-    # from the cloned repo; OS git data is unavailable inside the build container,
-    # so it falls back to "unknown" (gen-os-release.sh is mounted at /build by build.sh).
+    # from the cloned repo. There is no seedsigner-os checkout inside the
+    # container, so the OS fields have to be supplied from outside: build.sh
+    # forwards SEEDSIGNER_OS_{REPO,BRANCH,COMMIT,DATE} when the caller sets them
+    # (CI does), and gen-os-release.sh reads them straight from the environment.
+    # Unset -> "unknown", which is what every Docker build recorded before those
+    # variables were forwarded. (gen-os-release.sh is mounted at /build.)
     if [ -f /build/gen-os-release.sh ]; then
         SEEDSIGNER_APP_REPO="$SEEDSIGNER_REPO_URL" \
         SEEDSIGNER_APP_BRANCH="$SEEDSIGNER_BRANCH" \
@@ -1451,6 +1617,55 @@ s/^endef\nendif/endef\nendif\nendif/
     find "$ROOTFS_DIR/opt/src/seedsigner/resources/seedsigner-translations/l10n" \
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
+
+    # Mini hardware_config (FOX_22 vs FOX_40).
+    #
+    # NOTE: this is currently a NO-OP, deliberately kept in step with CI rather
+    # than removed. The app has no checked-in src/settings.json -- it is a
+    # RUNTIME file the app writes into the OS data dir -- so there is nothing
+    # here to patch, and the inline CI's identical block has only ever printed
+    # "settings.json not found" and moved on. The Mini therefore does NOT get
+    # its hardware_config from the build, and any theory that it does is wrong.
+    #
+    # Kept (a) so the two implementations stay comparable, and (b) so that if a
+    # future app version does ship a template, both patch it the same way.
+    # Explicitly NOT fatal: making it fatal turned a harmless no-op into a
+    # failed build 3h46m in.
+    local settings_json="$ROOTFS_DIR/opt/src/settings.json"
+    if [[ "$board_profile" == "mini" ]]; then
+        if [[ -f "$settings_json" ]]; then
+            sed -i 's/"hardware_config":[[:space:]]*"FOX_40"/"hardware_config": "FOX_22"/g' "$settings_json"
+            print_success "settings.json patched for Mini hardware (FOX_22)"
+        else
+            print_info "no src/settings.json in the app checkout — nothing to patch (expected)"
+        fi
+    fi
+
+    # pyzbar dlopens zbar.so by bare name, so it has to be resolvable from the
+    # default library path -- the shared object itself is installed under
+    # site-packages. Missing here while both the inline CI and build-local.sh
+    # created it: without it `import pyzbar` raises at app startup, which again
+    # ends as a Loader reboot rather than an error anyone can see.
+    local rootfs_python
+    rootfs_python="$(ls "$ROOTFS_DIR/usr/lib/" | grep -E '^python3\.[0-9]+$' | head -n 1)"
+    if [[ -n "$rootfs_python" ]]; then
+        local site_packages="$ROOTFS_DIR/usr/lib/$rootfs_python/site-packages"
+        if [[ -f "$site_packages/zbar.so" ]]; then
+            # A failure HERE is a real error -- the source exists and the link
+            # could not be made. Absence of zbar.so is only a warning, matching
+            # CI, so this cannot false-fail a build the validated path allows.
+            if ! ln -sf "$rootfs_python/site-packages/zbar.so" "$ROOTFS_DIR/usr/lib/zbar.so"; then
+                print_error "Could not create /usr/lib/zbar.so symlink"
+                exit 1
+            fi
+            print_success "Created /usr/lib/zbar.so -> $rootfs_python/site-packages/zbar.so"
+        else
+            print_warning "zbar.so not found at $site_packages/zbar.so — pyzbar will fail to import"
+            find "$ROOTFS_DIR" -name 'zbar.so' 2>/dev/null || true
+        fi
+    else
+        print_warning "Could not detect the python3.x directory in $ROOTFS_DIR/usr/lib/"
+    fi
 
     # Diagnostic aid (off by default): when SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=1
     # is set in the build environment, ship the marker that enables the app's
@@ -1621,21 +1836,21 @@ s/^endef\nendif/endef\nendif\nendif/
 
     cd "$LUCKFOX_SDK_DIR/output/image"
 
-    local ts
-    ts=$(date +%Y%m%d_%H%M%S)
-    export LAST_PROFILE_BUILD_TS="$ts"
-    if [[ "$board_profile" == "mini" ]]; then
-        export LAST_MINI_BUILD_TS="$ts"
-    elif [[ "$board_profile" == "max" ]]; then
-        export LAST_MAX_BUILD_TS="$ts"
-    elif [[ "$board_profile" == "pi" ]]; then
-        export LAST_PI_BUILD_TS="$ts"
-    fi
+    # Artifact name tag. This used to be $(date +%Y%m%d_%H%M%S), which put a
+    # wall-clock stamp in the name of every image and bundle -- so two builds of
+    # identical source could never even produce the same FILENAME, let alone be
+    # compared by hash. Keyed on the app ref instead, exactly as the Pi/La Frite
+    # naming does in opt/build.sh (seedsigner_os.<ref>.<config>.img).
+    #
+    # The four LAST_*_BUILD_TS exports that used to live here had no readers
+    # anywhere in the repo and are gone.
+    local tag
+    tag="$(printf '%s' "$SEEDSIGNER_BRANCH" | tr -c 'A-Za-z0-9_.-' '_')"
 
     if [[ "$boot_medium" == "sd" ]]; then
         print_step "Creating Final SD Image (${board_profile})"
 
-        local sd_image="seedsigner-luckfox-pico-${board_profile}-sd-${ts}.img"
+        local sd_image="seedsigner-luckfox-pico-${board_profile}-sd-${tag}.img"
 
         if [[ -f "/build/blkenvflash" ]]; then
             "/build/blkenvflash" "$sd_image"
@@ -1653,13 +1868,13 @@ s/^endef\nendif/endef\nendif\nendif/
         print_success "SD image created for ${board_profile}: $OUTPUT_DIR/$sd_image"
     elif [[ "$boot_medium" == "emmc" ]]; then
         print_step "Creating eMMC Bundle (${board_profile})"
-        create_emmc_bundle "$board_profile" "$ts"
+        create_emmc_bundle "$board_profile" "$tag"
     fi
 
     if [[ "$include_nand" == "true" ]]; then
         print_step "Packaging NAND artifacts (${board_profile})"
-        create_nand_image_artifacts "$board_profile" "$ts" "$boot_medium"
-        export_official_nand_image_dir "$board_profile" "$ts"
+        create_nand_image_artifacts "$board_profile" "$tag" "$boot_medium"
+        export_official_nand_image_dir "$board_profile" "$tag"
     fi
 
     cd "$LUCKFOX_SDK_DIR"
@@ -1685,7 +1900,7 @@ run_automated_build() {
         echo "   (capped by memory: ~2 GB/job for the LLVM build in host-rust;"
         echo "    override with --jobs N)"
     fi
-    echo "   MAKEFLAGS: $MAKEFLAGS"
+    echo "   BR2_JLEVEL: $BR2_JLEVEL (MAKEFLAGS deliberately unset -- sysdrv is not parallel-safe)"
     echo "   Build Directory: $BUILD_DIR"
     echo "   Output Directory: $OUTPUT_DIR"
 
@@ -1746,10 +1961,61 @@ run_automated_build() {
         exit 1
     fi
 
+    write_artifact_checksums
+
     print_success "Build Complete! ($built combination(s) built, $skipped skipped)"
     echo ""
     echo "Build artifacts:"
     ls -la "$OUTPUT_DIR/"
+}
+
+# Normalise artifact mtimes and record a checksum manifest.
+#
+# Luckfox published no hashes at all -- not in the build log, not as a file --
+# so there was nothing for a third party to reproduce AGAINST, which makes a
+# reproducible build unverifiable even once it is byte-identical. The Pi path
+# has printed sha256sum since the beginning (opt/build.sh:331); this also writes
+# a manifest, which CI collects across the matrix.
+#
+# The mtime normalisation matters because the .img files are consumed by `tar`
+# and `zip` downstream (the release upload zips bundle directories), and both
+# record mtimes.
+write_artifact_checksums() {
+    local manifest="$OUTPUT_DIR/sha256sums.txt"
+    local f
+
+    shopt -s nullglob
+    local artifacts=("$OUTPUT_DIR"/*.img "$OUTPUT_DIR"/*.tar.gz)
+    shopt -u nullglob
+
+    if [[ ${#artifacts[@]} -eq 0 ]]; then
+        print_info "No artifacts to checksum"
+        return 0
+    fi
+
+    for f in "${artifacts[@]}"; do
+        touch -d "@${SOURCE_DATE_EPOCH:-0}" "$f"
+    done
+
+    # Also the loose files inside the *-files-* bundle directories. They are not
+    # in the manifest (the .tar.gz of the same content is), but the release
+    # upload step zips these directories, and zip records mtimes -- so without
+    # this the published .zip differs on every build even though the tarball of
+    # exactly the same bytes does not.
+    find "$OUTPUT_DIR" -mindepth 2 -exec touch -d "@${SOURCE_DATE_EPOCH:-0}" {} +
+
+    # Basenames only, so the manifest does not leak the build directory, and
+    # generated from inside $OUTPUT_DIR because a bash glob is already sorted --
+    # under LC_ALL=C, deterministically so. The manifest is therefore itself
+    # reproducible, which matters as much as the artifacts it lists.
+    (
+        cd "$OUTPUT_DIR" || exit 1
+        shopt -s nullglob
+        LC_ALL=C sha256sum -- *.img *.tar.gz > "$(basename "$manifest")"
+    )
+
+    print_step "Artifact checksums (sha256)"
+    cat "$manifest"
 }
 
 start_interactive_mode() {
@@ -1784,28 +2050,31 @@ start_interactive_mode() {
 #
 # Checking up front turns that into a five-second failure instead: the guards
 # exist to tolerate an optional script, not to tolerate a broken image.
-assert_shared_scripts_present() {
+assert_shared_build_files() {
     local missing=()
     local checked=0
     local s
-    for s in apply-partition-layout.sh pin-spidev-bufsiz.sh readonly-rootfs.sh \
+    for s in prepare-sdk-checkout.sh rust-toolchain-cache.sh \
+             apply-partition-layout.sh \
+             pin-spidev-bufsiz.sh readonly-rootfs.sh \
              assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
              install-gnupg-home.sh \
-             uboot-recovery-config.sh compile-translations.sh; do
+             uboot-recovery-config.sh compile-translations.sh \
+             SDK_COMMIT; do
         checked=$((checked + 1))
         [[ -f "$SEEDSIGNER_LUCKFOX_DIR/$s" ]] || missing+=("$s")
     done
 
     if [[ ${#missing[@]} -ne 0 ]]; then
-        print_error "Shared build scripts missing from $SEEDSIGNER_LUCKFOX_DIR:"
+        print_error "Shared build files missing from $SEEDSIGNER_LUCKFOX_DIR:"
         for s in "${missing[@]}"; do echo "    - $s"; done
         print_error "The Docker image is stale or incomplete. Rebuild it:"
         print_error "  ./build.sh --luckfox build --force ..."
         exit 1
     fi
-    print_info "All $checked shared build scripts present"
+    print_info "All $checked shared build files present"
 }
 
 # Main entry point
@@ -1813,7 +2082,7 @@ main() {
     local mode="${1:-auto}"
 
     case "${1:-auto}" in
-        auto|auto-nand|auto-nand-only) assert_shared_scripts_present ;;
+        auto|auto-nand|auto-nand-only) assert_shared_build_files ;;
     esac
 
     case "$mode" in
