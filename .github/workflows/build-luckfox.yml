@@ -627,13 +627,23 @@ jobs:
           path: manifests
 
       - name: Merge into one manifest
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
         run: |
           set -euo pipefail
           shopt -s nullglob
 
           parts=(manifests/*/sha256sums.txt)
           if [ ${#parts[@]} -eq 0 ]; then
-            echo "No checksum manifests were produced -- every build combination failed." >&2
+            # When the build itself failed there is nothing to checksum, and
+            # failing here too just puts a second red X on the run for the same
+            # root cause, pointing at the wrong job. Only treat "no manifests"
+            # as an error when the build reported success.
+            if [ "$BUILD_RESULT" != "success" ]; then
+              echo "::notice::build result was '$BUILD_RESULT' -- no artifacts to checksum"
+              exit 0
+            fi
+            echo "Build succeeded but produced no checksum manifests." >&2
             exit 1
           fi
 
