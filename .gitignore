@@ -2,6 +2,7 @@
 .idea/
 .buildroot-ccache/
 .ccache/
+buildroot_dl/
 opt/output/
 
 # Luckfox Pico build (opt/luckfox)

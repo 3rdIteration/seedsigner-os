@@ -92,6 +92,29 @@ jobs:
           mkdir -p images
           mkdir -p buildroot_dl
 
+      # The tarballs buildroot downloads are a function of the buildroot pin
+      # (which fixes every package version), the defconfigs, and our external
+      # packages. Rotating the key on all three keeps the cache from going
+      # permanently stale after a submodule bump. (The defconfig glob also
+      # sweeps in luckfox's, which this workflow does not build -- costs at
+      # worst one extra cache miss, and is not worth a hand-maintained list.)
+      - name: Compute buildroot cache key input
+        id: dlkey
+        run: echo "br=$(git rev-parse HEAD:opt/buildroot)" >> "$GITHUB_OUTPUT"
+
+      # Deliberately not keyed on matrix.config: the five boards' download sets
+      # overlap almost entirely, so one shared entry (~1-1.5GB) serves them all
+      # and stays well inside the repo's 10GB cache budget. Every leg restores
+      # it, the first to finish saves it, the rest no-op. A stale or partial
+      # cache is harmless -- buildroot hash-checks each tarball and re-downloads
+      # whatever is missing, so the worst case is the uncached behaviour.
+      - name: Cache buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: buildroot_dl
+          key: buildroot-dl-${{ steps.dlkey.outputs.br }}-${{ hashFiles('opt/*/configs/*_defconfig', 'opt/external-packages/**') }}
+          restore-keys: buildroot-dl-
+
       - name: Capture OS provenance
         run: |
           echo "SEEDSIGNER_OS_REPO=https://github.com/${{ github.repository }}" >> "$GITHUB_ENV"
