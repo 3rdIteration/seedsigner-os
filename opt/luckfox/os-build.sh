@@ -33,6 +33,10 @@ export SEEDSIGNER_DEBUG_NETWORK="${SEEDSIGNER_DEBUG_NETWORK:-auto}"
 # Read-only (squashfs) rootfs with tmpfs overlays: auto|on|off. auto follows the
 # build variant, matching the CI input of the same name.
 export SEEDSIGNER_READONLY_ROOTFS="${SEEDSIGNER_READONLY_ROOTFS:-auto}"
+# Compressed swap in RAM (mirrors build-luckfox.yml's zram): on|off. On for every
+# board and variant -- the 64 MB Mini is the reason it exists, and it costs the
+# larger boards nothing. Off is a bisect lever, not a supported configuration.
+export SEEDSIGNER_ZRAM="${SEEDSIGNER_ZRAM:-on}"
 # Persistent boot log (mirrors build-luckfox.yml's boot_log): on|off. on bakes
 # /etc/seedsigner-boot-log so start-seedsigner.sh records every boot to /userdata.
 # Default off: a production device must write nothing to flash.
@@ -766,6 +770,58 @@ apply_readonly_rootfs() {
         "$board_config" "$kernel_cfg_file" "$ro_rootfs"
 }
 
+# Compressed swap in RAM. Shared with CI via enable-zram.sh; the runtime half is
+# files/S03zram. Applies to every board and every variant: the 64 MB Mini is the
+# reason it exists, and on the larger boards an unused zram device costs nothing
+# because zsmalloc only allocates as pages are actually swapped.
+apply_zram() {
+    local board_profile="$1"
+    local boot_medium="$2"
+
+    local sdk_hardware sdk_boot_medium
+    case "$board_profile" in
+        mini) sdk_hardware="RV1103_Luckfox_Pico_Mini" ;;
+        max)  sdk_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
+        pi)   sdk_hardware="RV1106_Luckfox_Pico_Pi" ;;
+        *) print_error "Unsupported board profile for zram: $board_profile"; exit 1 ;;
+    esac
+    case "$boot_medium" in
+        sd)   sdk_boot_medium="SD_CARD" ;;
+        nand) sdk_boot_medium="SPI_NAND" ;;
+        emmc) sdk_boot_medium="EMMC" ;;
+        *) print_error "Unsupported boot medium for zram: $boot_medium"; exit 1 ;;
+    esac
+
+    local board_config="$LUCKFOX_SDK_DIR/project/cfg/BoardConfig_IPC/BoardConfig-${sdk_boot_medium}-Buildroot-${sdk_hardware}-IPC.mk"
+    if [[ ! -f "$board_config" && -L "$LUCKFOX_SDK_DIR/.BoardConfig.mk" ]]; then
+        board_config="$(readlink -f "$LUCKFOX_SDK_DIR/.BoardConfig.mk")"
+    fi
+    if [[ ! -f "$board_config" ]]; then
+        print_error "Board config file not found for zram: $board_config"
+        exit 1
+    fi
+
+    local kernel_defconfig
+    kernel_defconfig="$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$board_config" | head -n1)"
+    [[ -n "$kernel_defconfig" ]] || kernel_defconfig="luckfox_rv1106_linux_defconfig"
+
+    local kernel_cfg_file="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/arch/arm/configs/$kernel_defconfig"
+    if [[ ! -f "$kernel_cfg_file" ]]; then
+        print_error "Kernel defconfig not found for zram: $kernel_cfg_file"
+        exit 1
+    fi
+
+    local zram_enabled
+    case "$SEEDSIGNER_ZRAM" in
+        off) zram_enabled=0 ;;
+        *)   zram_enabled=1 ;;
+    esac
+    export SS_ZRAM="$zram_enabled"
+
+    print_step "Configuring zram compressed swap (enabled=$zram_enabled)"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/enable-zram.sh" "$kernel_cfg_file" "$zram_enabled"
+}
+
 # Pin spidev.bufsiz on the kernel command line. Shared with CI via
 # pin-spidev-bufsiz.sh — without it the 64 MB Mini fails an order-6 allocation in
 # spidev_open() and the display never opens, while the pre-app splash on the same
@@ -1157,6 +1213,7 @@ build_profile_artifacts() {
     apply_uart2_fiq_kernel_patch "$board_profile" "$boot_medium"
     apply_kernel_network_strip "$board_profile" "$boot_medium"
     apply_readonly_rootfs "$board_profile" "$boot_medium"
+    apply_zram "$board_profile" "$boot_medium"
     apply_spidev_bufsiz "$board_profile"
     apply_hwrng_crypto_kernel_patch "$board_profile" "$boot_medium"
     apply_crypto_dts_patch "$board_profile"
@@ -1389,6 +1446,10 @@ s/^endef\nendif/endef\nendif\nendif/
         bash "$SEEDSIGNER_LUCKFOX_DIR/assert-kernel-network.sh" "$LUCKFOX_SDK_DIR" "${SS_STRIP_NET:-1}" 1 1
         bash "$SEEDSIGNER_LUCKFOX_DIR/assert-readonly-rootfs.sh" "$LUCKFOX_SDK_DIR" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
+    # Not gated on the variant: zram is configured for dev and non-dev alike
+    # (unlike the network strip), so verifying it only on non-dev would leave the
+    # dev image -- the one used to actually test the thing on hardware -- unchecked.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/assert-zram.sh" "$LUCKFOX_SDK_DIR" "${SS_ZRAM:-1}"
 
     print_step "Building Rootfs"
     ./build.sh rootfs
@@ -1503,11 +1564,15 @@ s/^endef\nendif/endef\nendif\nendif/
     # Must sort before every other init script: luckfox-config rewrites
     # /etc/luckfox.cfg at S99 and needs /etc writable by then.
     [[ -f "/build/files/S01overlay" ]] && cp -v "/build/files/S01overlay" "$ROOTFS_DIR/etc/init.d/"
+    # Swap before anything that allocates: S10mdev, pcscd, the vendor camera
+    # stack and the app at S99 are all downstream of this.
+    [[ -f "/build/files/S03zram" ]] && cp -v "/build/files/S03zram" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S02fsck" ]] && cp -v "/build/files/S02fsck" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S10mdev" ]] && cp -v "/build/files/S10mdev" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S60pcscd" ]] && cp -v "/build/files/S60pcscd" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "/build/files/S99seedsigner" ]] && cp -v "/build/files/S99seedsigner" "$ROOTFS_DIR/etc/init.d/"
     [[ -f "$ROOTFS_DIR/etc/init.d/S01overlay" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S01overlay"
+    [[ -f "$ROOTFS_DIR/etc/init.d/S03zram" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S03zram"
     [[ -f "$ROOTFS_DIR/etc/init.d/S02fsck" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S02fsck"
     [[ -f "$ROOTFS_DIR/etc/init.d/S10mdev" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S10mdev"
     [[ -f "$ROOTFS_DIR/etc/init.d/S60pcscd" ]] && chmod +x "$ROOTFS_DIR/etc/init.d/S60pcscd"
@@ -1617,6 +1682,10 @@ s/^endef\nendif/endef\nendif\nendif/
         bash "$SEEDSIGNER_LUCKFOX_DIR/assert-kernel-network.sh" "$LUCKFOX_SDK_DIR" "${SS_STRIP_NET:-1}" 1 1
         bash "$SEEDSIGNER_LUCKFOX_DIR/assert-readonly-rootfs.sh" "$LUCKFOX_SDK_DIR" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
+    # Not gated on the variant: zram is configured for dev and non-dev alike
+    # (unlike the network strip), so verifying it only on non-dev would leave the
+    # dev image -- the one used to actually test the thing on hardware -- unchecked.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/assert-zram.sh" "$LUCKFOX_SDK_DIR" "${SS_ZRAM:-1}"
     debug_uart_bootargs_outputs
 
     cd "$LUCKFOX_SDK_DIR/output/image"
@@ -1789,7 +1858,8 @@ assert_shared_scripts_present() {
     local checked=0
     local s
     for s in apply-partition-layout.sh pin-spidev-bufsiz.sh readonly-rootfs.sh \
-             assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
+             assert-readonly-rootfs.sh enable-zram.sh assert-zram.sh \
+             strip-kernel-network.sh assert-kernel-network.sh \
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
              install-gnupg-home.sh \

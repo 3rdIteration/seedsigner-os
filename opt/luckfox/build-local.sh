@@ -17,6 +17,10 @@ USB_MODE="${SEEDSIGNER_USB_MODE:-auto}"
 DEBUG_NETWORK="${SEEDSIGNER_DEBUG_NETWORK:-auto}"
 # Read-only squashfs rootfs (mirrors build-luckfox.yml's readonly_rootfs): auto|on|off.
 READONLY_ROOTFS="${READONLY_ROOTFS:-${SEEDSIGNER_READONLY_ROOTFS:-auto}}"
+# Compressed swap in RAM (mirrors build-luckfox.yml's zram): on|off. On for every
+# board and variant -- the 64 MB Mini is the reason it exists, and it costs the
+# larger boards nothing. Off is a bisect lever, not a supported configuration.
+ZRAM="${ZRAM:-${SEEDSIGNER_ZRAM:-on}}"
 # Persistent boot log (mirrors build-luckfox.yml's boot_log): on|off. on bakes
 # /etc/seedsigner-boot-log so start-seedsigner.sh records every boot to /userdata.
 # Default off: a production device must write nothing to flash.
@@ -147,6 +151,7 @@ Options:
   --boot MEDIUM      - Boot medium: sd|nand|emmc (default: sd)
   --variant V        - non-dev (hardened) | dev (default: non-dev)
   --readonly-rootfs V - auto|on|off; read-only squashfs root (default: auto)
+  --zram V            - on|off; compressed swap in RAM (default: on)
   --seedsigner-ref R - SeedSigner app branch, release tag or commit (default: dev)
   --seedsigner-repo URL - SeedSigner app repo
   --enable-uart2-console - Keep UART2 console/debug enabled (default: disabled)
@@ -877,6 +882,57 @@ apply_readonly_rootfs() {
         "$board_config" "$kernel_cfg_file" "$SS_RO_ROOTFS"
 }
 
+# Compressed swap in RAM. Shared with CI via enable-zram.sh; the runtime half is
+# files/S03zram. Applies to every board and every variant: the 64 MB Mini is the
+# reason it exists, and on the larger boards an unused zram device costs nothing
+# because zsmalloc only allocates as pages are actually swapped.
+apply_zram() {
+    local hardware="$1"
+    local boot_medium="$2"
+
+    local sdk_hardware sdk_boot_medium
+    case "$hardware" in
+        mini) sdk_hardware="RV1103_Luckfox_Pico_Mini" ;;
+        max)  sdk_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
+        pi)   sdk_hardware="RV1106_Luckfox_Pico_Pi" ;;
+        *) print_error "Unknown hardware type for zram: $hardware"; exit 1 ;;
+    esac
+    case "$boot_medium" in
+        sd)   sdk_boot_medium="SD_CARD" ;;
+        nand) sdk_boot_medium="SPI_NAND" ;;
+        emmc) sdk_boot_medium="EMMC" ;;
+        *) print_error "Unknown boot medium for zram: $boot_medium"; exit 1 ;;
+    esac
+
+    local board_config="$WORK_DIR/luckfox-pico/project/cfg/BoardConfig_IPC/BoardConfig-${sdk_boot_medium}-Buildroot-${sdk_hardware}-IPC.mk"
+    if [ ! -f "$board_config" ] && [ -L "$WORK_DIR/luckfox-pico/.BoardConfig.mk" ]; then
+        board_config="$(readlink -f "$WORK_DIR/luckfox-pico/.BoardConfig.mk")"
+    fi
+    if [ ! -f "$board_config" ]; then
+        print_error "Board config file not found for zram: $board_config"
+        exit 1
+    fi
+
+    local kernel_defconfig
+    kernel_defconfig="$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$board_config" | head -n1)"
+    [ -n "$kernel_defconfig" ] || kernel_defconfig="luckfox_rv1106_linux_defconfig"
+
+    local kernel_cfg_file="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/configs/$kernel_defconfig"
+    if [ ! -f "$kernel_cfg_file" ]; then
+        print_error "Kernel defconfig not found for zram: $kernel_cfg_file"
+        exit 1
+    fi
+
+    case "${ZRAM:-on}" in
+        off) SS_ZRAM=0 ;;
+        *)   SS_ZRAM=1 ;;
+    esac
+    export SS_ZRAM
+
+    print_header "Configuring zram compressed swap (enabled=$SS_ZRAM)"
+    bash "$SCRIPT_DIR/enable-zram.sh" "$kernel_cfg_file" "$SS_ZRAM"
+}
+
 # Pin spidev.bufsiz on the kernel command line. Shared with CI via
 # pin-spidev-bufsiz.sh — without it the 64 MB Mini fails an order-6 allocation in
 # spidev_open() and the display never opens, while the pre-app splash on the same
@@ -1289,6 +1345,10 @@ build_system() {
         bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1 1
         bash "$SCRIPT_DIR/assert-readonly-rootfs.sh" "$WORK_DIR/luckfox-pico" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
+    # Not gated on the variant: zram is configured for dev and non-dev alike
+    # (unlike the network strip), so verifying it only on non-dev would leave the
+    # dev image -- the one used to actually test the thing on hardware -- unchecked.
+    bash "$SCRIPT_DIR/assert-zram.sh" "$WORK_DIR/luckfox-pico" "${SS_ZRAM:-1}"
 
     print_info "Building Rootfs..."
     ./build.sh rootfs
@@ -1440,11 +1500,15 @@ install_seedsigner_app() {
     # /etc/luckfox.cfg at S99 and needs /etc writable by then.
     cp -v "$SCRIPT_DIR/files/S01overlay" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S02fsck" "$rootfs_dir/etc/init.d/"
+    # Swap before anything that allocates: S10mdev, pcscd, the vendor camera
+    # stack and the app at S99 are all downstream of this.
+    cp -v "$SCRIPT_DIR/files/S03zram" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S10mdev" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S60pcscd" "$rootfs_dir/etc/init.d/"
     cp -v "$SCRIPT_DIR/files/S99seedsigner" "$rootfs_dir/etc/init.d/"
     chmod +x "$rootfs_dir/etc/init.d/S01overlay"
     chmod +x "$rootfs_dir/etc/init.d/S02fsck"
+    chmod +x "$rootfs_dir/etc/init.d/S03zram"
     chmod +x "$rootfs_dir/etc/init.d/S10mdev"
     chmod +x "$rootfs_dir/etc/init.d/S60pcscd"
     chmod +x "$rootfs_dir/etc/init.d/S99seedsigner"
@@ -1554,6 +1618,9 @@ package_firmware() {
         bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1 1
         bash "$SCRIPT_DIR/assert-readonly-rootfs.sh" "$WORK_DIR/luckfox-pico" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
+    # Re-run with the rootfs staged so the S03zram install is checked too; the
+    # earlier run could only see the kernel config. Both variants, as above.
+    bash "$SCRIPT_DIR/assert-zram.sh" "$WORK_DIR/luckfox-pico" "${SS_ZRAM:-1}"
     debug_uart_bootargs_outputs
 
     print_success "Firmware packaged"
@@ -1779,6 +1846,13 @@ main() {
                     print_error "Invalid or missing argument for --readonly-rootfs (use: auto|on|off)"; exit 1
                 fi
                 ;;
+            --zram)
+                if [[ -n "$2" && "$2" =~ ^(on|off)$ ]]; then
+                    ZRAM="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --zram (use: on|off)"; exit 1
+                fi
+                ;;
             --boot)
                 if [[ -n "$2" && "$2" =~ ^(sd|nand|emmc)$ ]]; then
                     boot_medium="$2"
@@ -1866,6 +1940,7 @@ main() {
     apply_crypto_dts_patch "$hardware"
     apply_kernel_network_strip "$hardware" "$boot_medium"
     apply_readonly_rootfs "$hardware" "$boot_medium"
+    apply_zram "$hardware" "$boot_medium"
     apply_spidev_bufsiz "$hardware"
     apply_usb_mode_config "$hardware"
     apply_mini_cma_config "$hardware" "$boot_medium"

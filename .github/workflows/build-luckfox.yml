@@ -81,6 +81,14 @@ on:
           - 'on'
           - 'off'
         default: 'auto'
+      zram:
+        description: 'Compressed swap in RAM (zram): a swap device backed by compressed pages in memory, sized at boot from total RAM (50% capacity, capped at 25% of RAM actually consumed). Nothing is ever written to flash. Mainly for the 64 MB Mini, where the only previous answer to memory pressure was the OOM killer. off is a bisect lever, not a supported configuration.'
+        required: false
+        type: choice
+        options:
+          - 'on'
+          - 'off'
+        default: 'on'
       boot_log:
         description: 'Persistent boot log (/userdata/seedsigner-boot.log): on = the build bakes /etc/seedsigner-boot-log and start-seedsigner.sh records every boot (rotated, 128 KiB cap, deleted on a successful boot); off = the log is never initialized and the device writes nothing to flash (default). Off by default so production images stay write-free; enable only for an instrumented/debug build.'
         required: false
@@ -687,6 +695,33 @@ jobs:
           "$BOARD_CONFIG" "$KERNEL_CFG_FILE" "$SS_RO_ROOTFS"
         echo "SS_RO_ROOTFS=$SS_RO_ROOTFS" >> "$GITHUB_ENV"
 
+    # Compressed swap in RAM. Applies to every board and variant: the 64 MB Mini
+    # is what it is for, and on the larger boards an unused zram device costs
+    # nothing (zsmalloc only allocates as pages are actually swapped). Must land
+    # before `./build.sh kernel` -- it edits the kernel defconfig. The runtime
+    # half is files/S03zram, installed with the other init scripts below.
+    - name: Configure zram compressed swap
+      run: |
+        cd luckfox-pico
+
+        BOARD_CONFIG="$BOARD_CONFIG_PATH"
+        if [ ! -f "$BOARD_CONFIG" ] && [ -L ".BoardConfig.mk" ]; then
+          BOARD_CONFIG="$(readlink -f .BoardConfig.mk)"
+        fi
+        if [ ! -f "$BOARD_CONFIG" ]; then
+          echo "ERROR: Board config file not found for zram: $BOARD_CONFIG"; exit 1
+        fi
+        KERNEL_DEFCONFIG=$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$BOARD_CONFIG" | head -n1)
+        [ -n "$KERNEL_DEFCONFIG" ] || KERNEL_DEFCONFIG="luckfox_rv1106_linux_defconfig"
+        KERNEL_CFG_FILE="sysdrv/source/kernel/arch/arm/configs/${KERNEL_DEFCONFIG}"
+
+        case "${{ inputs.zram || 'on' }}" in
+          off) SS_ZRAM=0 ;;
+          *)   SS_ZRAM=1 ;;
+        esac
+        bash ../seedsigner-os/opt/luckfox/enable-zram.sh "$KERNEL_CFG_FILE" "$SS_ZRAM"
+        echo "SS_ZRAM=$SS_ZRAM" >> "$GITHUB_ENV"
+
     - name: Enable HWRNG and hardware crypto in kernel defconfig and DTS
       run: |
         cd luckfox-pico
@@ -1144,6 +1179,15 @@ jobs:
         bash seedsigner-os/opt/luckfox/assert-readonly-rootfs.sh \
           luckfox-pico "$BOARD_CONFIG" "${SS_RO_ROOTFS:-0}"
 
+    - name: Verify zram
+      run: |
+        # Same reasoning as above: CONFIG_ZRAM `depends on` CONFIG_ZSMALLOC, and
+        # an unmet dependency is dropped by Kconfig without a word -- a kernel
+        # with no zram at all, from a green build. Also asserts
+        # CONFIG_ZRAM_WRITEBACK stayed off: it would let zram push swapped pages
+        # (seed material) out to flash.
+        bash seedsigner-os/opt/luckfox/assert-zram.sh luckfox-pico "${SS_ZRAM:-1}"
+
     - name: Package Rust toolchain for caching
       if: steps.rust-cache.outputs.cache-hit != 'true' || env.RUST_FROM_CACHE != 'true'
       run: |
@@ -1315,11 +1359,15 @@ jobs:
         # /etc/luckfox.cfg at S99 and needs /etc writable by then.
         cp -v ../seedsigner-os/opt/luckfox/files/S01overlay "$ROOTFS_DIR/etc/init.d/"
         cp -v ../seedsigner-os/opt/luckfox/files/S02fsck "$ROOTFS_DIR/etc/init.d/"
+        # Swap before anything that allocates: S10mdev, pcscd, the vendor camera
+        # stack and the app at S99 are all downstream of this.
+        cp -v ../seedsigner-os/opt/luckfox/files/S03zram "$ROOTFS_DIR/etc/init.d/"
         cp -v ../seedsigner-os/opt/luckfox/files/S10mdev "$ROOTFS_DIR/etc/init.d/"
         cp -v ../seedsigner-os/opt/luckfox/files/S60pcscd "$ROOTFS_DIR/etc/init.d/"
         cp -v ../seedsigner-os/opt/luckfox/files/S99seedsigner "$ROOTFS_DIR/etc/init.d/"
         chmod +x "$ROOTFS_DIR/etc/init.d/S01overlay"
         chmod +x "$ROOTFS_DIR/etc/init.d/S02fsck"
+        chmod +x "$ROOTFS_DIR/etc/init.d/S03zram"
         chmod +x "$ROOTFS_DIR/etc/init.d/S10mdev"
         chmod +x "$ROOTFS_DIR/etc/init.d/S60pcscd"
         chmod +x "$ROOTFS_DIR/etc/init.d/S99seedsigner"
@@ -1476,6 +1524,10 @@ jobs:
         [ -f "$RO_BOARD_CONFIG" ] || RO_BOARD_CONFIG="$(readlink -f .BoardConfig.mk 2>/dev/null || true)"
         bash ../seedsigner-os/opt/luckfox/assert-readonly-rootfs.sh \
           . "$RO_BOARD_CONFIG" "${SS_RO_ROOTFS:-0}"
+
+        # Re-run with the rootfs staged so the S03zram install is checked too;
+        # the earlier run could only see the kernel config.
+        bash ../seedsigner-os/opt/luckfox/assert-zram.sh . "${SS_ZRAM:-1}"
 
         echo "UART bootargs debug (post-firmware image metadata):"
         FOUND_UART_FILES=false

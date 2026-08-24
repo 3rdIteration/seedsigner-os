@@ -175,6 +175,7 @@ There are three ways to build: `.github/workflows/build-luckfox.yml` (CI),
 | `apply-partition-layout.sh` | flash layout incl. the `userdata` partition |
 | `pin-spidev-bufsiz.sh` | `spidev.bufsiz=8192` on the kernel command line |
 | `readonly-rootfs.sh` / `assert-readonly-rootfs.sh` | squashfs root + overlay, and its verification |
+| `enable-zram.sh` / `assert-zram.sh` | compressed swap in RAM, and its verification |
 | `install-gnupg-home.sh` | stages the GnuPG agent/scdaemon config seeded into `GNUPGHOME` |
 | `strip-kernel-network.sh` / `assert-kernel-network.sh` | network/WiFi/coredump strip, and its verification |
 | `configure-usb-mode.sh`, `harden-nondev.sh`, `optimize-nondev.sh`, `patch-s50usbdevice.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`, `uboot-recovery-config.sh`, `compile-translations.sh` | as named |
@@ -193,7 +194,8 @@ both copies drifted into shipping a different device:
 Neither had a build-time signal. Both are now single scripts that hard-fail if their result is wrong.
 
 `opt/luckfox/build.sh` (the Docker wrapper) mirrors the CI workflow inputs: `--variant`,
-`--readonly-rootfs`, `--usb-mode`, `--debug-network`, `--seedsigner-ref`, and `--model mini|max|pi|both`.
+`--readonly-rootfs`, `--zram`, `--usb-mode`, `--debug-network`, `--seedsigner-ref`, and
+`--model mini|max|pi|both`.
 Previously only `BUILD_MODEL`/`BUILD_JOBS` crossed the container boundary, so a Docker build silently took
 the defaults no matter what was asked for.
 
@@ -279,6 +281,55 @@ routes scdaemon through pcscd instead of letting it grab the SEC1210 reader dire
 the per-boot `luckfox.cfg` rewrite has been observed), but it is the remaining writable filesystem that is
 mounted on every boot. The SDK does support `oem@/oem@squashfs`; converting it is a separate change needing
 its own hardware verification.
+
+## Compressed swap in RAM (zram)
+
+The Mini has **64 MB of RAM** and, before this, no swap of any kind: the only response to memory pressure was
+reclaiming page cache and then the OOM killer. Several existing workarounds in this tree are the same shortage
+seen from different angles — `pin-spidev-bufsiz.sh` exists because `spidev_open()`'s order-6 allocation fails
+once memory is fragmented, the Mini runs a 1 MB CMA, and `start-seedsigner.sh` staggers camera startup because
+the display otherwise loses the race for memory. zram does not replace any of them; it widens the margin they
+all work in.
+
+| | |
+|---|---|
+| Capacity presented | **50%** of `MemTotal` (~25 MiB on a Mini, whose `MemTotal` is ~50 MiB after kernel + CMA) |
+| Real RAM it may consume | **capped at 25%** of `MemTotal` via `/sys/block/zram0/mem_limit` |
+| Compressor | `lzo-rle` (this kernel's default; `lzo`/`lz4` are fallbacks — zstd is deliberately not used: too slow on this CPU) |
+| `vm.swappiness` | `100` — the backing store is RAM, so there is no seek or flash write to avoid, only CPU |
+| `vm.page-cluster` | `0` — swap readahead just decompresses pages nobody asked for |
+| Applies to | every board and both variants (`zram` input / `--zram`, `on` by default) |
+
+The two numbers work together. At a typical CPython compression ratio (~3:1) the 50% capacity is what binds,
+and ~25 MiB of swapped pages cost ~8 MiB of real RAM. If what gets swapped turns out to be **incompressible**
+(already-compressed buffers, key material), zram would otherwise approach 1:1 and spend as much RAM as it
+frees — so the 25% cap is what binds instead: further writes to the device fail, the page stays where it is,
+and reclaim moves on. That costs CPU (pages compressed and then not stored), but the memory itself is never
+worse off than with no zram, which is the property the cap exists to guarantee.
+
+**Nothing is ever written to flash.** A compressed page stays in RAM, so a "swap in" is a decompression, not a
+storage read — no wear, and nothing at rest. That is a requirement here, not a bonus: seed material lives in
+the app's address space, and a swap file or partition would be seed material on flash. It is also why
+`CONFIG_ZRAM_WRITEBACK` is **off at the kernel level and asserted off** — it would let zram push incompressible
+or idle pages out to a backing block device, re-creating exactly the flash-backed swap the design rules out.
+(A read-only squashfs root independently rules out a swap file: there is nowhere on `/` to put one.)
+
+**Moving parts.** `enable-zram.sh` (build time) sets `CONFIG_ZRAM`, `CONFIG_ZSMALLOC`, `CONFIG_CRYPTO_LZO` and
+`CONFIG_SWAP` **built-in** (`=y`, not `=m` — modules are packaged to `/oem/usr/ko` and inserted by the vendor's
+`RkLunch.sh` long after the boot window the headroom is for). `files/S03zram` sizes the device and swaps it on
+at **S03** — after `S01overlay`/`S02fsck`, and before `S10mdev`, pcscd, the camera stack and the app at S99,
+because swap that arrives after the pressure it was meant to absorb does nothing.
+
+**Failure policy is the opposite of the overlay's.** Every failure path in `S03zram` logs and returns 0: swap
+is headroom, not a dependency, and a board that boots without it beats a board that does not boot. The
+**build**, however, does fail — `assert-zram.sh` checks the **generated** kernel `.config`, because
+`CONFIG_ZRAM` `depends on` `CONFIG_ZSMALLOC` and Kconfig drops an unmet dependency without a word, which would
+produce a kernel with no zram at all from a completely green build. That failure is invisible from the outside
+until the device OOMs in someone's hands and the report reads "it froze while signing".
+
+`tests/test_zram_init.sh` and `tests/test_zram_kernel_config.sh` cover the sizing arithmetic, the sysfs write
+order (`comp_algorithm` before `disksize`, or the driver returns `-EBUSY`), the skip-cleanly paths, and each
+way the build could silently lose the feature.
 
 ## Boot recovery & auto-failover to Loader
 
