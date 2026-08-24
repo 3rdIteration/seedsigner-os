@@ -109,11 +109,18 @@ jobs:
       # cache is harmless -- buildroot hash-checks each tarball and re-downloads
       # whatever is missing, so the worst case is the uncached behaviour.
       - name: Cache buildroot downloads
+        id: dlcache
         uses: actions/cache@v4
         with:
           path: buildroot_dl
           key: buildroot-dl-${{ steps.dlkey.outputs.br }}-${{ hashFiles('opt/*/configs/*_defconfig', 'opt/external-packages/**') }}
           restore-keys: buildroot-dl-
+
+      # Baseline for the cache report at the end of the job. Buildroot only ever
+      # appends to the download dir, so (final - restored) is exactly what this
+      # board pulled that the shared cache did not already have.
+      - name: Measure restored download cache
+        run: echo "DL_BYTES_BEFORE=$(sudo du -sb buildroot_dl | cut -f1)" >> "$GITHUB_ENV"
 
       - name: Capture OS provenance
         run: |
@@ -132,6 +139,50 @@ jobs:
             --app-repo=${{ inputs.app_repo || 'https://github.com/3rdIteration/seedsigner' }}
             --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
+
+      # Sizing data for the caching decisions still open: how much each board
+      # actually contributes to the shared download cache, and how big the
+      # buildroot ccache (mounted, but not cached) grows. Lets the 10GB per-repo
+      # budget be planned from measurements rather than guesses. Runs on failure
+      # too -- a build that died partway still says something useful about size.
+      - name: Report cache sizes
+        if: always()
+        run: |
+          # sudo because the container creates these dirs as root; "|| true" so a
+          # missing dir (build died early) reports 0 instead of failing the step.
+          size() { local b=0; b=$(sudo du -sb "$1" 2>/dev/null | cut -f1) || true; echo "${b:-0}"; }
+          human() { numfmt --to=iec --suffix=B "${1:-0}"; }
+
+          dl_before=${DL_BYTES_BEFORE:-0}
+          dl_after=$(size buildroot_dl)
+          dl_delta=$(( dl_after - dl_before ))
+          br_ccache=$(size .buildroot-ccache)
+          host_ccache=$(size .ccache)
+
+          {
+            echo "## Cache report — \`${{ matrix.config }}\`"
+            echo
+            echo "Download cache: **${{ steps.dlcache.outputs.cache-hit == 'true' && 'exact hit' || 'miss or partial restore' }}**"
+            echo
+            echo "| Directory | Size | Cached today? |"
+            echo "| --- | --: | --- |"
+            echo "| \`buildroot_dl\` restored at job start | $(human $dl_before) | yes, shared by all boards |"
+            echo "| \`buildroot_dl\` added by this board | $(human $dl_delta) | this board's unique contribution |"
+            echo "| \`buildroot_dl\` final | $(human $dl_after) | yes, this is what gets saved |"
+            echo "| \`.buildroot-ccache\` | $(human $br_ccache) | **no** — per board, uncapped |"
+            echo "| \`.ccache\` | $(human $host_ccache) | yes, host tools only |"
+            echo
+            echo "Budget is 10GB per repo. Caching \`.buildroot-ccache\` for all five boards"
+            echo "at this size would need ~$(human $(( br_ccache * 5 ))), before anything else."
+            echo
+            echo "<details><summary>Largest downloads</summary>"
+            echo
+            echo '```'
+            sudo du -sh buildroot_dl/* 2>/dev/null | sort -rh | head -20 || true
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
