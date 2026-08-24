@@ -1,2 +1,2 @@
-# sha256 from https://github.com/3rdIteration/PyGP/releases
-sha256 55490e56c8573d3168511d200f96b281a018fc271e45260ad840e4a5fa462de1  python-pygp-0.2a.tar.gz
+# sha256 computed locally from https://github.com/3rdIteration/PyGP
+sha256 b4cc8546cc185095abc096ddc3c2485e75c1b7ebff5568672c0a9072907c58fc  python-pygp-0.3a.tar.gz
