@@ -97,7 +97,34 @@ else
     _ss_default_jobs="$_ss_cpu_jobs"
 fi
 export BUILD_JOBS="${BUILD_JOBS:-$_ss_default_jobs}"
-export MAKEFLAGS="-j${BUILD_JOBS}"
+
+# DO NOT export MAKEFLAGS="-j$BUILD_JOBS" here. It corrupts the image.
+#
+# GNU make propagates MAKEFLAGS into every sub-make, including the SDK's
+# sysdrv build, and sysdrv/Makefile is not parallel-safe:
+#
+#     rootfs: rootfs_prepare pctools buildroot boardtools drv
+#     rootfs_prepare: ; rm -rf $(SYSDRV_DIR_OUT_ROOTFS) ...
+#
+# Those are sibling prerequisites with no ordering between them and no
+# .NOTPARALLEL in the file, and rootfs_prepare `rm -rf`s the very directory
+# boardtools installs into. Serial make walks prerequisites left to right, so
+# rootfs_prepare runs first and everything is fine -- which is what the
+# validated CI workflow gets, because it never sets MAKEFLAGS. Under -j they
+# race, and when rootfs_prepare loses the race it deletes the board tools that
+# were already installed. The rootfs tarball is then sealed without them.
+#
+# Observed exactly that: the Docker image was missing 84 files against the CI
+# image -- eudev, mtd-utils, rockchip_test, memtester, stressapptest, adbd,
+# usbdevice and the dosfstools binaries S02fsck needs -- with 0 extra files,
+# every time. In the CI log `prepare rootfs` runs first; in the Docker log it
+# ran after the boardtools installs.
+#
+# BR2_JLEVEL still gives Buildroot its parallelism (that is Buildroot's own
+# knob and does not leak into sysdrv), and build-local.sh has never exported
+# MAKEFLAGS either, so this brings all three builds into line. The wall-clock
+# cost is nil: the CI build without MAKEFLAGS took 3h30, the Docker build with
+# it took 3h46.
 export BR2_JLEVEL="${BUILD_JOBS}"
 
 # LLVM's per-translation-unit cost (~2 GB) is the heaviest in buildroot, and
@@ -1873,7 +1900,7 @@ run_automated_build() {
         echo "   (capped by memory: ~2 GB/job for the LLVM build in host-rust;"
         echo "    override with --jobs N)"
     fi
-    echo "   MAKEFLAGS: $MAKEFLAGS"
+    echo "   BR2_JLEVEL: $BR2_JLEVEL (MAKEFLAGS deliberately unset -- sysdrv is not parallel-safe)"
     echo "   Build Directory: $BUILD_DIR"
     echo "   Output Directory: $OUTPUT_DIR"
 
