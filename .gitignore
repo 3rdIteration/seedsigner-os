@@ -4,6 +4,9 @@
 .ccache/
 buildroot_dl/
 opt/output/
+# Scratch dir the smartcard post-image scripts build the DIY-tools image in;
+# only removed on success, so a failed build leaves it behind
+opt/tmp/
 
 # Luckfox Pico build (opt/luckfox)
 opt/luckfox/build-output/

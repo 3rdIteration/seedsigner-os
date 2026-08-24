@@ -91,13 +91,17 @@ jobs:
         run: |
           mkdir -p images
           mkdir -p buildroot_dl
+          mkdir -p .buildroot-ccache
 
-      # The tarballs buildroot downloads are a function of the buildroot pin
-      # (which fixes every package version), the defconfigs, and our external
-      # packages. Rotating the key on all three keeps the cache from going
-      # permanently stale after a submodule bump. (The defconfig glob also
-      # sweeps in luckfox's, which this workflow does not build -- costs at
-      # worst one extra cache miss, and is not worth a hand-maintained list.)
+      # What gets downloaded is a function of the buildroot pin (which fixes
+      # every package version), the defconfigs, our external packages, and the
+      # post-image scripts (they fetch the JDK/Ant tarballs into the same dir).
+      # Rotating the key on all four keeps the cache from going permanently
+      # stale: without the post-image scripts in here, bumping the JDK version
+      # would leave the new tarball re-downloaded on every run forever, because
+      # an exact key hit skips the save. (The defconfig glob also sweeps in
+      # luckfox's, which this workflow does not build -- costs at worst one
+      # extra cache miss, and is not worth a hand-maintained list.)
       - name: Compute buildroot cache key input
         id: dlkey
         run: echo "br=$(git rev-parse HEAD:opt/buildroot)" >> "$GITHUB_OUTPUT"
@@ -113,8 +117,27 @@ jobs:
         uses: actions/cache@v4
         with:
           path: buildroot_dl
-          key: buildroot-dl-${{ steps.dlkey.outputs.br }}-${{ hashFiles('opt/*/configs/*_defconfig', 'opt/external-packages/**') }}
+          key: buildroot-dl-${{ steps.dlkey.outputs.br }}-${{ hashFiles('opt/*/configs/*_defconfig', 'opt/external-packages/**', 'opt/*/board/post-image-seedsigner.sh') }}
           restore-keys: buildroot-dl-
+
+      # Buildroot's real ccache (BR2_CCACHE=y points at /root/.buildroot-ccache,
+      # which docker-compose mounts here). Distinct from the .ccache above, which
+      # only serves the few host tools built before buildroot takes over -- hence
+      # that one being 41MB while this is ~380MB per Pi board, 729MB for La Frite.
+      # Worth caching because opt/build.sh wipes the output dir every run, so
+      # every package is recompiled from scratch on a cold cache.
+      #
+      # Keyed per config (each board has its own toolchain) but on the same
+      # stable inputs as the download cache rather than github.sha. A rolling
+      # per-commit key would mint ~2GB of fresh entries every run and thrash the
+      # 10GB budget; these inputs fully determine what gets compiled, so one
+      # capture per input set is complete and later runs restore it unchanged.
+      - name: Cache buildroot ccache
+        uses: actions/cache@v4
+        with:
+          path: .buildroot-ccache
+          key: buildroot-ccache-${{ matrix.config }}-${{ steps.dlkey.outputs.br }}-${{ hashFiles('opt/*/configs/*_defconfig', 'opt/external-packages/**') }}
+          restore-keys: buildroot-ccache-${{ matrix.config }}-
 
       # Baseline for the cache report at the end of the job. Buildroot only ever
       # appends to the download dir, so (final - restored) is exactly what this
@@ -140,21 +163,20 @@ jobs:
             --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
 
-      # actions/cache tars the directory as the unprivileged runner user, but
-      # the container fills it as root -- and cargo's unpacked crate sources
-      # under br-cargo-home land unreadable, so tar hit hundreds of "Cannot
-      # open: Permission denied", exited 2, and the save was abandoned (run
-      # 32685520661: every leg built fine, no cache was written). Hand the tree
-      # back before the post-save step runs. Cheap: metadata only.
-      - name: Make download cache readable by the runner
+      # actions/cache tars these as the unprivileged runner user, but the
+      # container fills them as root -- and cargo's unpacked crate sources under
+      # br-cargo-home land unreadable, so tar hit hundreds of "Cannot open:
+      # Permission denied", exited 2, and the save was abandoned (run
+      # 32685520661: every leg built fine, no cache was written). Hand the trees
+      # back before the post-save steps run. Cheap: metadata only.
+      - name: Make caches readable by the runner
         if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" buildroot_dl
+        run: sudo chown -R "$(id -u):$(id -g)" buildroot_dl .buildroot-ccache
 
-      # Sizing data for the caching decisions still open: how much each board
-      # actually contributes to the shared download cache, and how big the
-      # buildroot ccache (mounted, but not cached) grows. Lets the 10GB per-repo
-      # budget be planned from measurements rather than guesses. Runs on failure
-      # too -- a build that died partway still says something useful about size.
+      # Keeps the 10GB per-repo budget answerable from measurements rather than
+      # guesses: how much each board contributes to the shared download cache,
+      # and how big its ccache has grown. Runs on failure too -- a build that
+      # died partway still says something useful about size.
       # tee'd rather than just redirected because step summaries are not exposed
       # over the REST API, so the log is the only way to read these numbers back
       # without opening the run in a browser.
@@ -182,11 +204,13 @@ jobs:
             echo "| \`buildroot_dl\` restored at job start | $(human $dl_before) | yes, shared by all boards |"
             echo "| \`buildroot_dl\` added by this board | $(human $dl_delta) | this board's unique contribution |"
             echo "| \`buildroot_dl\` final | $(human $dl_after) | yes, this is what gets saved |"
-            echo "| \`.buildroot-ccache\` | $(human $br_ccache) | **no** — per board, uncapped |"
+            echo "| \`.buildroot-ccache\` | $(human $br_ccache) | yes, per board |"
             echo "| \`.ccache\` | $(human $host_ccache) | yes, host tools only |"
             echo
-            echo "Budget is 10GB per repo. Caching \`.buildroot-ccache\` for all five boards"
-            echo "at this size would need ~$(human $(( br_ccache * 5 ))), before anything else."
+            echo "Sizes are on disk; cache entries are compressed and land smaller."
+            echo "The repo-wide budget is 10GB shared across every branch, and no"
+            echo "single job can see its siblings -- sum these across the five jobs"
+            echo "for the fleet total, or read it straight off \`gh cache list\`."
             echo
             echo "<details><summary>Largest downloads</summary>"
             echo

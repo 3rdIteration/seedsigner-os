@@ -9,13 +9,44 @@ check_sha256() {
   echo "${expected_sha256}  ${file}" | sha256sum -c -
 }
 
+# The JDK and Ant tarballs are ~210MB per board per build, pulled from CDNs
+# that do go down: an Apache 503 here failed the La Frite build outright in run
+# 32726173869. Keep them in buildroot's download dir, which CI mounts from the
+# host and caches, so a repeat build reuses them instead of re-fetching.
+# BR2_DL_DIR is exported to post-image scripts by buildroot's EXTRA_ENV.
+#
+# The cached copy is checksummed before use exactly like a fresh download, so a
+# truncated or tampered file falls back to downloading rather than being
+# trusted. Caching changes where the bytes come from, never whether they are
+# verified.
 download_and_verify() {
   local url="$1"
   local expected_sha256="$2"
   local output_file="${3:-$(basename "${url}")}"
+  local cache_dir="${BR2_DL_DIR:-/buildroot_dl}/seedsigner-diy-tools"
+  local cached="${cache_dir}/$(basename "${output_file}")"
+
+  if [ -f "${cached}" ] && echo "${expected_sha256}  ${cached}" | sha256sum -c --status -; then
+    echo "Using cached $(basename "${output_file}") from ${cache_dir}"
+    cp "${cached}" "${output_file}"
+    return 0
+  fi
 
   wget -O "${output_file}" "${url}"
-  check_sha256 "${output_file}" "${expected_sha256}"
+
+  # Explicit rather than leaning on "set -e": this function no longer ends with
+  # the checksum, so without this a mismatch would be masked by the exit status
+  # of the caching copy below, and the bad file would be cached to boot.
+  if ! check_sha256 "${output_file}" "${expected_sha256}"; then
+    rm -f "${output_file}"
+    return 1
+  fi
+
+  # Write via a temp name so an interrupted job cannot leave a half-copied file
+  # for the next run to find (it would fail the checksum, but re-download every
+  # time until something overwrote it).
+  mkdir -p "${cache_dir}"
+  cp "${output_file}" "${cached}.$$" && mv -f "${cached}.$$" "${cached}"
 }
 
 verify_git_head() {
@@ -33,7 +64,12 @@ verify_git_head() {
 echo *****Generating DIY-Tools Image*****
 
 # Download DIY tools and package them into an image file for easy mounting
-mkdir ../tmp
+# rm first, and -p: opt/build.sh re-runs make from scratch when it retries a
+# transient failure, so this script can run twice in one build. A bare mkdir on
+# the directory left by the first attempt aborted the retry with "File exists",
+# turning a recoverable CDN blip into a failed build (run 32726173869).
+rm -rf ../tmp
+mkdir -p ../tmp
 
 cd ../tmp
 
