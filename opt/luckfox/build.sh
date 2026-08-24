@@ -52,6 +52,14 @@ name, so a local build can reproduce what CI ships):
                           (default: off — the device writes nothing to flash)
   --usb-mode V          - auto|gadget|host|otg (default: auto)
   --debug-network V     - auto|on|off (default: auto)
+  --harden-adb V        - on|off. Strip the adb userspace on non-dev
+                          (default: on)
+  --testing-build V     - on|off. Ship /etc/seedsigner-testing-build, which
+                          swaps the app's Home menu for the hardware test menu
+                          (I/O Test, Test Smartcard, Flash Applet, Settings).
+                          NOT for a production image (default: off)
+  --error-diagnostics V - on|off. Opt-in "Save to MicroSD" button on OS/package
+                          error screens (default: off)
   --seedsigner-ref R    - SeedSigner app branch, RELEASE TAG or commit
                           (default: dev). --seedsigner-branch is an alias.
 
@@ -66,6 +74,9 @@ Examples:
 
   # Build against a release tag:
   ./build.sh build --model max --microsd --seedsigner-ref SeSi-0.8.7+ShSi-B11
+
+  # Hardware bring-up image (test menu instead of Home):
+  ./build.sh build --model pi --variant dev --testing-build on
 
   # Everything, matching the CI matrix (long!):
   ./build.sh build --all --variant non-dev --readonly-rootfs on
@@ -167,12 +178,24 @@ run_build() {
     # image. `docker run -e VAR` with no value passes the host's value through and
     # omits the variable entirely when it is unset, so os-build.sh's own defaults
     # still apply when nothing is specified.
+    #
+    # SEEDSIGNER_TESTING_BUILD and SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS were both
+    # absent from this list while os-build.sh already acted on them, so the code
+    # that writes their marker files was unreachable from a Docker build --
+    # docker-compose.yml's comment claiming parity with
+    # opt/luckfox/{os-build,build-local}.sh was simply untrue. The same applies to
+    # DISABLE_UART2_CONSOLE_DEBUG and the SEEDSIGNER_OS_* provenance fields: CI
+    # sets them, a Docker build had no way to.
     local passthrough
     for passthrough in SEEDSIGNER_BUILD_VARIANT SEEDSIGNER_READONLY_ROOTFS \
                        SEEDSIGNER_USB_MODE SEEDSIGNER_DEBUG_NETWORK \
                        SEEDSIGNER_HARDEN_ADB SEEDSIGNER_REPO_URL \
                        SEEDSIGNER_REF SEEDSIGNER_BRANCH \
-                       SEEDSIGNER_BOOT_LOG; do
+                       SEEDSIGNER_BOOT_LOG SEEDSIGNER_TESTING_BUILD \
+                       SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS \
+                       DISABLE_UART2_CONSOLE_DEBUG \
+                       SEEDSIGNER_OS_REPO SEEDSIGNER_OS_BRANCH \
+                       SEEDSIGNER_OS_COMMIT SEEDSIGNER_OS_DATE; do
         if [[ -n "${!passthrough:-}" ]]; then
             env_args="$env_args -e $passthrough=${!passthrough}"
             print_success "$passthrough=${!passthrough}"
@@ -431,6 +454,50 @@ main() {
                     export SEEDSIGNER_BOOT_LOG="$2"; shift 2
                 else
                     print_error "Invalid or missing argument for --boot-log (use: on|off)"; exit 1
+                fi
+                ;;
+            # Testing build, off by default. Ships /etc/seedsigner-testing-build,
+            # which swaps the app's Home menu for the hardware test menu (see the
+            # seedsigner repo: helpers/seedsigner_os.py is_testing_build_enabled()).
+            # os-build.sh has always honoured SEEDSIGNER_TESTING_BUILD; there was
+            # no way to set it from here, and exporting it by hand did nothing
+            # because build.sh did not forward it into the container.
+            --testing-build)
+                if [[ -n "$2" && "$2" =~ ^(on|off)$ ]]; then
+                    # os-build.sh tests for the literal "1", so translate here
+                    # rather than forwarding "on"/"off" it would ignore.
+                    if [[ "$2" == "on" ]]; then
+                        export SEEDSIGNER_TESTING_BUILD=1
+                    else
+                        export SEEDSIGNER_TESTING_BUILD=0
+                    fi
+                    shift 2
+                else
+                    print_error "Invalid or missing argument for --testing-build (use: on|off)"; exit 1
+                fi
+                ;;
+            # Same shape, same previously-unreachable marker: ships
+            # /etc/seedsigner-error-microsd-export, the opt-in "Save to MicroSD"
+            # button on OS/package error screens.
+            --error-diagnostics)
+                if [[ -n "$2" && "$2" =~ ^(on|off)$ ]]; then
+                    if [[ "$2" == "on" ]]; then
+                        export SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=1
+                    else
+                        export SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=0
+                    fi
+                    shift 2
+                else
+                    print_error "Invalid or missing argument for --error-diagnostics (use: on|off)"; exit 1
+                fi
+                ;;
+            # Strip the adb userspace on non-dev. Mirrors the CI input of the same
+            # name; forwarded as SEEDSIGNER_HARDEN_ADB.
+            --harden-adb)
+                if [[ -n "$2" && "$2" =~ ^(on|off)$ ]]; then
+                    export SEEDSIGNER_HARDEN_ADB="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --harden-adb (use: on|off)"; exit 1
                 fi
                 ;;
             --usb-mode)
