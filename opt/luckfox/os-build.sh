@@ -152,6 +152,14 @@ export FORCE_UNSAFE_CONFIGURE=1
 # for the FIT `timestamp` field in boot.img, and e2fsprogs for ext4 superblock
 # times -- two things that otherwise differ on every single build.
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+
+# Kernel reproducibility. Without these the kernel records the build time, the
+# building user and the host name, so boot.img differs on every build -- the
+# FIT data-size moved by 152 bytes between two builds of identical source.
+# These are the kernel's own documented knobs (Documentation/kbuild).
+export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-@${SOURCE_DATE_EPOCH}}"
+export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-seedsigner}"
+export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-seedsigner-os}"
 export BUILD_MODEL="${BUILD_MODEL:-both}"
 export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
 # Serial console (ttyFIQ0). Accepts auto|true|false and the legacy 1|0, matching
@@ -207,6 +215,33 @@ resolve_uart2_console() {
     export DISABLE_UART2_CONSOLE_DEBUG
 }
 resolve_uart2_console
+
+# Run an SDK build stage with address-space randomisation disabled.
+#
+# The Rockchip image tools write uninitialised host memory into the FIT
+# /memreserve/ entries of uboot.img and boot.img. Two builds of identical
+# source produced, respectively:
+#
+#     /memreserve/ 0x7c00b3301000 0x600;
+#     /memreserve/ 0x73874da5c000 0x600;
+#
+# Those are host mmap addresses -- so the value changes with ASLR on every
+# single run, and no amount of SOURCE_DATE_EPOCH will settle it. Disabling
+# randomisation makes the leaked pointers constant, which makes the images
+# reproducible without changing what the tools actually do. Zeroing the
+# entries afterwards would alter image semantics; this does not.
+#
+# This is a workaround for an SDK bug and is worth reporting upstream.
+# setarch is util-linux and present in the build image; if it is somehow
+# missing, fall back to running unwrapped rather than failing the build.
+sdk_build() {
+    if command -v setarch >/dev/null 2>&1; then
+        setarch "$(uname -m)" -R ./build.sh "$@"
+    else
+        print_warning "setarch unavailable -- FIT /memreserve/ will vary between builds"
+        ./build.sh "$@"
+    fi
+}
 
 # Deterministic tarball. Plain `tar -czf` records each entry's mtime, uid/gid and
 # whatever order readdir happened to return, and gzip stamps its own header with
@@ -402,6 +437,11 @@ apply_sdk_patches() {
     # therefore had nowhere to persist settings or write a boot log -- and since
     # the rootfs became read-only squashfs, nowhere writable at all.
     bash "$SEEDSIGNER_LUCKFOX_DIR/apply-partition-layout.sh" "$LUCKFOX_SDK_DIR"
+
+    # Pin ubinize's image_seq and mksquashfs's timestamps. Must run before
+    # `build.sh rootfs`, because the pctools step copies these scripts from
+    # sysdrv/tools/pc into sysdrv/out/pc and it is the copies that get used.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-fs-determinism.sh" "$LUCKFOX_SDK_DIR"
 }
 
 validate_environment() {
@@ -1531,10 +1571,10 @@ s/^endef\nendif/endef\nendif\nendif/
     fi
 
     print_step "Building U-Boot"
-    ./build.sh uboot
+    sdk_build uboot
 
     print_step "Building Kernel"
-    ./build.sh kernel
+    sdk_build kernel
 
     # Assert the strip took effect against the GENERATED .config — Kconfig
     # silently drops defconfig lines whose symbol/deps don't resolve.
@@ -1544,7 +1584,7 @@ s/^endef\nendif/endef\nendif\nendif/
     fi
 
     print_step "Building Rootfs"
-    ./build.sh rootfs
+    sdk_build rootfs
 
     # host-rust is built and installed by now, so this is the first point the
     # toolchain can be captured. Runs unconditionally when a cache path is set:
@@ -1556,13 +1596,13 @@ s/^endef\nendif/endef\nendif\nendif/
     fi
 
     print_step "Building Media Support"
-    ./build.sh media
+    sdk_build media
 
     # Keep vendor RkLunch.sh camera bring-up behavior on all builds.
     print_info "Keeping RkLunch.sh rkipc autostart enabled"
 
     print_step "Building Applications"
-    ./build.sh app
+    sdk_build app
 
     resolve_rootfs_dir
 
@@ -1824,7 +1864,7 @@ s/^endef\nendif/endef\nendif\nendif/
     fi
 
     print_step "Packaging Firmware"
-    ./build.sh firmware
+    sdk_build firmware
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.
@@ -2055,6 +2095,7 @@ assert_shared_build_files() {
     local checked=0
     local s
     for s in prepare-sdk-checkout.sh rust-toolchain-cache.sh \
+             patch-fs-determinism.sh \
              apply-partition-layout.sh \
              pin-spidev-bufsiz.sh readonly-rootfs.sh \
              assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \

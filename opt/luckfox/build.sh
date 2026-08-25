@@ -255,8 +255,23 @@ run_build() {
         gen_os_release_arg="-v $gen_os_release:/build/gen-os-release.sh:ro"
     fi
 
-    # Docker run arguments with persistent volume
+    # seccomp=unconfined is needed for ONE reason: os-build.sh runs the SDK
+    # build stages under `setarch -R` to disable address-space randomisation.
+    # The Rockchip image tools leak uninitialised host pointers into the FIT
+    # /memreserve/ entries of uboot.img and boot.img, so with ASLR on those
+    # images differ on every build. setarch uses the personality() syscall,
+    # which Docker's default seccomp profile denies:
+    #
+    #     setarch: failed to set personality to x86_64: Operation not permitted
+    #
+    # Without this the build still succeeds -- sdk_build falls back to running
+    # unwrapped and warns -- but those two images stay unreproducible.
+    #
+    # This is a build container: it already runs as root and compiles arbitrary
+    # upstream source, so relaxing seccomp for it does not meaningfully change
+    # the security posture. Nothing here is a long-lived service.
     local docker_args="$PLATFORM_ARGS
+                       --security-opt seccomp=unconfined
                        --name $CONTAINER_NAME
                        --rm
                        -v $repos_mount:/build/repos
