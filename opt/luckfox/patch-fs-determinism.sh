@@ -37,6 +37,7 @@ if [ -z "$LUCKFOX_DIR" ] || [ ! -d "$LUCKFOX_DIR" ]; then
     exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EPOCH="${SOURCE_DATE_EPOCH:-0}"
 UBI_TOOL="$LUCKFOX_DIR/sysdrv/tools/pc/mtd-utils/mkfs_ubi.sh"
 SQUASH_TOOL="$LUCKFOX_DIR/sysdrv/tools/pc/mksquashfs/mkfs_squashfs.sh"
@@ -127,6 +128,53 @@ else
         echo "    - source mtimes normalised to $EPOCH before packing"
         echo "    - superblock mkfs_time overwritten to $EPOCH after packing"
     fi
+fi
+
+# --- 3. mkfs_ubi.sh's OWN mksquashfs call --------------------------------
+#
+# THIS is the one that builds rootfs.img on a readonly_rootfs SPI_NAND image.
+# mkfs_ubi.sh does not call mkfs_squashfs.sh -- for a squashfs-on-UBI volume it
+# has its own mksquashfs invocation, echoed into a fakeroot script. Patching
+# mkfs_squashfs.sh alone left rootfs.img differing in 88% of its bytes while the
+# UBI headers were already pinned, because that file only serves the plain
+# squashfs rootfs type, which this build does not use.
+#
+# The work is delegated to ss-fs-normalise.sh rather than echoed inline: the
+# superblock write needs binary escapes, and threading those through awk into a
+# generated script turns them into literal NUL bytes and corrupts the file.
+HELPER="$SCRIPT_DIR/ss-fs-normalise.sh"
+if [ ! -f "$HELPER" ]; then
+    echo "patch-fs-determinism: helper not found at $HELPER" >&2
+    exit 1
+fi
+
+if grep -q 'SS_DETERMINISM' "$UBI_TOOL"; then
+    echo "  mkfs_ubi.sh squashfs call already pinned (idempotent re-run)"
+else
+    awk -v epoch="$EPOCH" -v helper="$HELPER" '
+        # Before the mksquashfs call: pin the source mtimes.
+        /if \[ "\$squashfs_compression_args" = "lz4" \]; then/ && !pre {
+            print "			# SS_DETERMINISM: pin source mtimes (bundled mksquashfs is 4.3,"
+            print "			# which has no -all-time)."
+            print "			echo \"" helper " mtimes $UBI_SRC_DIR " epoch "\" >> $UBI_IMAGE_FAKEROOT"
+            pre = 1
+        }
+        { print }
+        # After it: pin the resulting squashfs superblock mkfs_time.
+        /^[[:space:]]*fi[[:space:]]*$/ && pre && !post {
+            print "			# SS_DETERMINISM: pin the squashfs superblock mkfs_time."
+            print "			echo \"" helper " sqfs-time $temp_image " epoch "\" >> $UBI_IMAGE_FAKEROOT"
+            post = 1
+        }
+    ' "$UBI_TOOL" > "$UBI_TOOL.tmp" && mv "$UBI_TOOL.tmp" "$UBI_TOOL"
+    chmod +x "$UBI_TOOL"
+
+    # Two marker comments are injected: one before mksquashfs, one after.
+    if [ "$(grep -c 'SS_DETERMINISM' "$UBI_TOOL")" -lt 2 ]; then
+        echo "patch-fs-determinism: failed to patch the mksquashfs call inside $UBI_TOOL" >&2
+        exit 1
+    fi
+    echo "  mkfs_ubi.sh: squashfs mtimes + superblock mkfs_time pinned to $EPOCH"
 fi
 
 echo "patch-fs-determinism: done (SOURCE_DATE_EPOCH=$EPOCH)"

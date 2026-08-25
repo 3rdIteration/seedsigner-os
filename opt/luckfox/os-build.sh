@@ -2110,7 +2110,7 @@ assert_shared_build_files() {
     local checked=0
     local s
     for s in prepare-sdk-checkout.sh rust-toolchain-cache.sh \
-             patch-fs-determinism.sh \
+             patch-fs-determinism.sh ss-fs-normalise.sh \
              apply-partition-layout.sh \
              pin-spidev-bufsiz.sh readonly-rootfs.sh \
              assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
