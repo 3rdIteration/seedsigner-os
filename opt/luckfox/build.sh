@@ -270,8 +270,13 @@ run_build() {
     # This is a build container: it already runs as root and compiles arbitrary
     # upstream source, so relaxing seccomp for it does not meaningfully change
     # the security posture. Nothing here is a long-lived service.
+    # A fixed hostname, because the container's default hostname is its ID and
+    # that leaks into built binaries. stressapptest bakes in
+    # "root @ <hostname> on <date>", so two builds embedded e4994963c544 and
+    # 3e84f603d2bb -- different on every single run.
     local docker_args="$PLATFORM_ARGS
                        --security-opt seccomp=unconfined
+                       --hostname seedsigner-build
                        --name $CONTAINER_NAME
                        --rm
                        -v $repos_mount:/build/repos

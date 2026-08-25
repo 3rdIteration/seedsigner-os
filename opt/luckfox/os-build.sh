@@ -1844,6 +1844,21 @@ s/^endef\nendif/endef\nendif\nendif/
     # every boot (the Pi profiles precompile at build time for the same reason).
     # Runs after hardening/optimization, which prune parts of the python tree.
     # Shared with CI via precompile-bytecode.sh.
+    # /bin/sdkinfo is a shell script the SDK generates with a live `date`:
+    #
+    #     echo Build Time:  2026-08-25-14:46:01
+    #
+    # It was one of only two files (of 3121) whose CONTENT differed between two
+    # builds of identical source. Rewrite that one line to SOURCE_DATE_EPOCH.
+    # Left in place rather than deleted: it is in the validated image, and
+    # matching that image file-for-file is the point.
+    if [[ -f "$ROOTFS_DIR/bin/sdkinfo" ]]; then
+        local fixed_build_time
+        fixed_build_time="$(date -u -d "@${SOURCE_DATE_EPOCH:-0}" +%Y-%m-%d-%H:%M:%S 2>/dev/null || echo 1970-01-01-00:00:00)"
+        sed -i "s|^echo Build Time:.*|echo Build Time:  $fixed_build_time|" "$ROOTFS_DIR/bin/sdkinfo"
+        print_info "sdkinfo build time pinned to $fixed_build_time"
+    fi
+
     bash "$SEEDSIGNER_LUCKFOX_DIR/precompile-bytecode.sh" "$ROOTFS_DIR" "$LUCKFOX_SDK_DIR"
 
     # Install the oem iqfiles prune into the SDK's pre-build-OEM hook. The oem
