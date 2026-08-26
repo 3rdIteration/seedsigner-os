@@ -442,6 +442,43 @@ apply_sdk_patches() {
     # `build.sh rootfs`, because the pctools step copies these scripts from
     # sysdrv/tools/pc into sysdrv/out/pc and it is the copies that get used.
     bash "$SEEDSIGNER_LUCKFOX_DIR/patch-fs-determinism.sh" "$LUCKFOX_SDK_DIR"
+
+    # /bin/sdkinfo carries a live build timestamp. project/build.sh's
+    # __PACKAGE_ROOTFS() (invoked during `./build.sh firmware`) does:
+    #
+    #     cat >$RK_PROJECT_PACKAGE_ROOTFS_DIR/bin/sdkinfo <<EOF
+    #     echo Build Time:  $(date "+%Y-%m-%d-%T")
+    #     ...
+    #
+    # Patching the FILE this generates is useless -- __PACKAGE_ROOTFS runs
+    # during firmware packaging, after everything else, and rewrites it fresh
+    # every time. Patching the GENERATOR is the only thing that works.
+    # Confirmed: two builds shipped sdkinfo build times exactly as far apart as
+    # the two runs were, i.e. genuinely live, not a stale cached value.
+    local project_build_sh="$LUCKFOX_SDK_DIR/project/build.sh"
+    if [[ ! -f "$project_build_sh" ]]; then
+        print_error "$project_build_sh not found -- cannot pin sdkinfo Build Time"
+        exit 1
+    fi
+    # The idempotency check and the post-sed verification both look for the
+    # SAME marker (a literal "-d @", which only the patched form contains) --
+    # not for "$(date", which is present in both the patched and unpatched
+    # line and so cannot tell them apart. An earlier version checked for the
+    # substituted EPOCH VALUE rather than this marker, which is never present
+    # as that literal string; the verification always failed and exit 1'd on
+    # every single run, patched or not.
+    if grep -q 'echo Build Time:.*date -u -d @' "$project_build_sh"; then
+        print_info "sdkinfo Build Time already pinned (idempotent re-run)"
+    else
+        sed -i "s|echo Build Time:  \$(date \"+%Y-%m-%d-%T\")|echo Build Time:  \$(date -u -d @${SOURCE_DATE_EPOCH:-0} \"+%Y-%m-%d-%T\")|" "$project_build_sh"
+        if grep -q 'echo Build Time:.*date -u -d @' "$project_build_sh"; then
+            print_success "sdkinfo Build Time pinned to SOURCE_DATE_EPOCH in project/build.sh"
+        else
+            print_error "Failed to pin sdkinfo Build Time in $project_build_sh"
+            grep -n 'Build Time' "$project_build_sh" || true
+            exit 1
+        fi
+    fi
 }
 
 validate_environment() {
@@ -1844,21 +1881,6 @@ s/^endef\nendif/endef\nendif\nendif/
     # every boot (the Pi profiles precompile at build time for the same reason).
     # Runs after hardening/optimization, which prune parts of the python tree.
     # Shared with CI via precompile-bytecode.sh.
-    # /bin/sdkinfo is a shell script the SDK generates with a live `date`:
-    #
-    #     echo Build Time:  2026-08-25-14:46:01
-    #
-    # It was one of only two files (of 3121) whose CONTENT differed between two
-    # builds of identical source. Rewrite that one line to SOURCE_DATE_EPOCH.
-    # Left in place rather than deleted: it is in the validated image, and
-    # matching that image file-for-file is the point.
-    if [[ -f "$ROOTFS_DIR/bin/sdkinfo" ]]; then
-        local fixed_build_time
-        fixed_build_time="$(date -u -d "@${SOURCE_DATE_EPOCH:-0}" +%Y-%m-%d-%H:%M:%S 2>/dev/null || echo 1970-01-01-00:00:00)"
-        sed -i "s|^echo Build Time:.*|echo Build Time:  $fixed_build_time|" "$ROOTFS_DIR/bin/sdkinfo"
-        print_info "sdkinfo build time pinned to $fixed_build_time"
-    fi
-
     bash "$SEEDSIGNER_LUCKFOX_DIR/precompile-bytecode.sh" "$ROOTFS_DIR" "$LUCKFOX_SDK_DIR"
 
     # Install the oem iqfiles prune into the SDK's pre-build-OEM hook. The oem
