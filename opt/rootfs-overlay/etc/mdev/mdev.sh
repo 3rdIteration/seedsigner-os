@@ -12,66 +12,57 @@ if [ "$ACTION" = "add" ] && [ -n "$DEVNAME" ]; then
     fi
     LOG=/mnt/microsd/diy-mount.log
     echo "$(date) ADD $DEVNAME: microsd mounted" >> "$LOG"
-    echo "$(date) --- mounts ---" >> "$LOG"
-    cat /proc/mounts >> "$LOG" 2>&1
-    echo "$(date) --- /mnt/microsd listing ---" >> "$LOG"
-    ls -la /mnt/microsd >> "$LOG" 2>&1
+
+    # Notify userspace that a microSD was inserted.
     echo -n "add" > /tmp/mdev_fifo
 
-    if [ -f /mnt/microsd/diy-tools.squashfs ]; then
-        echo "$(date) diy-tools.squashfs present on microsd" >> "$LOG"
-        if [ -f "$DIY_HASH_FILE" ]; then
-            echo "$(date) $DIY_HASH_FILE present" >> "$LOG"
-            # Pick the pinned hash for this device's architecture.
-            case "$(uname -m)" in
-                aarch64) key=aarch64 ;;
-                *) key=armhf ;;
-            esac
-            pinned="$(awk -F: -v k="$key" '$1==k{print $2}' "$DIY_HASH_FILE")"
-            echo "$(date) arch=$(uname -m) key=$key pinned=$pinned" >> "$LOG"
+    # Locate sha256sum (minimal PATH under mdev).
+    SHA256SUM="$(command -v sha256sum 2>/dev/null || echo /usr/bin/sha256sum)"
 
-            # Verify with `sha256sum -c` -- the same busybox-safe check
-            # SeedSigner's gpg code uses (gpg_views.py). mdev runs with a
-            # minimal PATH, so locate sha256sum explicitly, then verify a
-            # relative checksum file from inside the mounted microSD.
-            SHA256SUM="$(command -v sha256sum 2>/dev/null || echo /usr/bin/sha256sum)"
-            echo "$(date) sha256sum=$SHA256SUM" >> "$LOG"
-            actual="$("$SHA256SUM" /mnt/microsd/diy-tools.squashfs 2>/tmp/diy-sha.err | cut -d' ' -f1)"
-            echo "$(date) computed=$actual" >> "$LOG"
-            if [ -z "$actual" ]; then
-                echo "$(date) sha256sum produced no hash: $(cat /tmp/diy-sha.err)" >> "$LOG"
-            fi
+    # Read the squashfs directly via open(). Do NOT gate on [ -f ]: on a 32-bit
+    # kernel, stat() of a FAT file whose on-disk date is post-2038 (e.g. 2098,
+    # which is what SOURCE_DATE_EPOCH=0 becomes when the buildroot mtools wraps
+    # the pre-1980 date) returns EOVERFLOW, so a plain existence test wrongly
+    # reports the file as missing. open()/read() still succeed, so verify by
+    # hashing the file directly instead.
+    actual="$("$SHA256SUM" /mnt/microsd/diy-tools.squashfs 2>/tmp/diy-sha.err | cut -d' ' -f1)"
+    if [ -z "$actual" ]; then
+        echo "$(date) diy-tools.squashfs NOT present/unreadable on microsd: $(cat /tmp/diy-sha.err)" >> "$LOG"
+        ls -la /mnt/microsd >> "$LOG" 2>&1
+        exit 0
+    fi
 
-            printf '%s  diy-tools.squashfs\n' "$pinned" > /tmp/diy-tools.sha256
-            ( cd /mnt/microsd && "$SHA256SUM" -c /tmp/diy-tools.sha256 ) >> "$LOG" 2>&1
-            if [ $? -eq 0 ]; then
-                mkdir -p /mnt/diy
-                mount /mnt/microsd/diy-tools.squashfs /mnt/diy 2>>"$LOG"
-                if [ $? -eq 0 ]; then
-                    echo "$(date) DIY OK: /mnt/diy mounted" >> "$LOG"
-                    echo "$(date) /mnt/diy listing:" >> "$LOG"
-                    ls -la /mnt/diy >> "$LOG" 2>&1
-                    for p in jdk ant Satochip-DIY; do
-                        if [ -e /mnt/diy/$p ]; then
-                            echo "$(date) present: /mnt/diy/$p" >> "$LOG"
-                        else
-                            echo "$(date) MISSING: /mnt/diy/$p" >> "$LOG"
-                        fi
-                    done
-                else
-                    echo "$(date) DIY FAIL: mount /mnt/diy returned $?" >> "$LOG"
-                fi
+    if [ ! -f "$DIY_HASH_FILE" ]; then
+        echo "$(date) REFUSED: $DIY_HASH_FILE missing" >> "$LOG"
+        exit 0
+    fi
+
+    # Pick the pinned hash for this device's architecture.
+    case "$(uname -m)" in
+        aarch64) key=aarch64 ;;
+        *) key=armhf ;;
+    esac
+    pinned="$(awk -F: -v k="$key" '$1==k{print $2}' "$DIY_HASH_FILE")"
+    echo "$(date) arch=$(uname -m) key=$key computed=$actual pinned=$pinned" >> "$LOG"
+
+    if [ "$actual" != "$pinned" ]; then
+        echo "$(date) DIY REFUSED: hash mismatch (computed != pinned)" >> "$LOG"
+        exit 0
+    fi
+
+    mkdir -p /mnt/diy
+    mount /mnt/microsd/diy-tools.squashfs /mnt/diy 2>>"$LOG"
+    if [ $? -eq 0 ]; then
+        echo "$(date) DIY OK: /mnt/diy mounted" >> "$LOG"
+        for p in jdk ant Satochip-DIY; do
+            if [ -e /mnt/diy/$p ]; then
+                echo "$(date) present: /mnt/diy/$p" >> "$LOG"
             else
-                echo "$(date) DIY REFUSED: hash mismatch (computed != pinned)" >> "$LOG"
+                echo "$(date) MISSING: /mnt/diy/$p" >> "$LOG"
             fi
-            rm -f /tmp/diy-tools.sha256
-        else
-            echo "$(date) REFUSED: $DIY_HASH_FILE missing" >> "$LOG"
-        fi
+        done
     else
-        echo "$(date) diy-tools.squashfs NOT present on microsd" >> "$LOG"
-        echo "$(date) any *.squashfs anywhere under /mnt/microsd:" >> "$LOG"
-        find /mnt/microsd -name '*.squashfs' >> "$LOG" 2>&1
+        echo "$(date) DIY FAIL: mount /mnt/diy returned $?" >> "$LOG"
     fi
 elif [ "$ACTION" = "remove" ] && [ -n "$DEVNAME" ]; then
     umount /mnt/diy 2>/dev/null; echo "$(date) remove: umount /mnt/diy rc=$?" >> /tmp/diy-mount.log 2>/dev/null
