@@ -177,4 +177,43 @@ else
     echo "  mkfs_ubi.sh: squashfs mtimes + superblock mkfs_time pinned to $EPOCH"
 fi
 
+# --- 4. Force single-threaded mksquashfs -----------------------------------
+#
+# The mtime/superblock-time fixes above were not enough: rootfs.img was still
+# byte-different between two builds even with EVERY file hashing identical and
+# the squashfs metadata (inode count, fragment count, id/xattr counts, the
+# full name/size/permission listing) identical too -- only the compressed
+# image size differed, by a handful of bytes.
+#
+# Reproduced directly: the same 400-file input compressed twice with
+# `-processors 4` produced two images differing in 2.3 MB of 6.9 MB; the same
+# input with `-processors 1` produced byte-identical output both times.
+# Multi-threaded xz compression in this mksquashfs is not deterministic --
+# a known limitation of older squashfs-tools, not something SOURCE_DATE_EPOCH
+# or file ordering can fix.
+#
+# `-processors N` appears twice per file (the lz4 branch and the default
+# branch) in both mkfs_squashfs.sh and mkfs_ubi.sh's embedded squashfs call.
+# The value being replaced ($parallel_jobs) is a shell variable in a plain
+# script, not text destined for a further-nested Makefile or fakeroot layer,
+# so a direct literal substitution is enough -- no $$-escaping concerns here.
+#
+# Squashfs packing is a small fraction of total build time next to the kernel
+# and Rust builds, so trading multi-core speed for a build that reproduces at
+# all is the right side of that trade.
+for f in "$SQUASH_TOOL" "$UBI_TOOL"; do
+    [ -f "$f" ] || continue
+    if grep -q -- '-processors 1 ' "$f"; then
+        echo "  $(basename "$f"): already forced to -processors 1 (idempotent re-run)"
+        continue
+    fi
+    sed -i 's|-processors \$parallel_jobs|-processors 1|g' "$f"
+    if ! grep -q -- '-processors 1 ' "$f"; then
+        echo "patch-fs-determinism: failed to force -processors 1 in $f" >&2
+        grep -n -- '-processors' "$f" >&2 || true
+        exit 1
+    fi
+    echo "  $(basename "$f"): forced -processors 1 (multi-threaded xz is non-deterministic)"
+done
+
 echo "patch-fs-determinism: done (SOURCE_DATE_EPOCH=$EPOCH)"
