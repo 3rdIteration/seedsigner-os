@@ -12,6 +12,10 @@ if [ "$ACTION" = "add" ] && [ -n "$DEVNAME" ]; then
     fi
     LOG=/mnt/microsd/diy-mount.log
     echo "$(date) ADD $DEVNAME: microsd mounted" >> "$LOG"
+    echo "$(date) --- mounts ---" >> "$LOG"
+    cat /proc/mounts >> "$LOG" 2>&1
+    echo "$(date) --- /mnt/microsd listing ---" >> "$LOG"
+    ls -la /mnt/microsd >> "$LOG" 2>&1
     echo -n "add" > /tmp/mdev_fifo
 
     if [ -f /mnt/microsd/diy-tools.squashfs ]; then
@@ -66,6 +70,8 @@ if [ "$ACTION" = "add" ] && [ -n "$DEVNAME" ]; then
         fi
     else
         echo "$(date) diy-tools.squashfs NOT present on microsd" >> "$LOG"
+        echo "$(date) any *.squashfs anywhere under /mnt/microsd:" >> "$LOG"
+        find /mnt/microsd -name '*.squashfs' >> "$LOG" 2>&1
     fi
 elif [ "$ACTION" = "remove" ] && [ -n "$DEVNAME" ]; then
     umount /mnt/diy 2>/dev/null; echo "$(date) remove: umount /mnt/diy rc=$?" >> /tmp/diy-mount.log 2>/dev/null
