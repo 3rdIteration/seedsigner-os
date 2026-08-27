@@ -3,7 +3,7 @@
 DEVNAME="/dev/$MDEV"
 DIY_HASH_FILE="/etc/diy-tools.sha256"
 
-if [ $ACTION == "add" ] && [ -n "$DEVNAME" ]; then
+if [ "$ACTION" = "add" ] && [ -n "$DEVNAME" ]; then
     mkdir -p /mnt/microsd
     mount -o sync $DEVNAME /mnt/microsd 2>/tmp/diy-mount.err
     if [ $? -ne 0 ]; then
@@ -45,6 +45,15 @@ if [ $ACTION == "add" ] && [ -n "$DEVNAME" ]; then
                 mount /mnt/microsd/diy-tools.squashfs /mnt/diy 2>>"$LOG"
                 if [ $? -eq 0 ]; then
                     echo "$(date) DIY OK: /mnt/diy mounted" >> "$LOG"
+                    echo "$(date) /mnt/diy listing:" >> "$LOG"
+                    ls -la /mnt/diy >> "$LOG" 2>&1
+                    for p in jdk ant Satochip-DIY; do
+                        if [ -e /mnt/diy/$p ]; then
+                            echo "$(date) present: /mnt/diy/$p" >> "$LOG"
+                        else
+                            echo "$(date) MISSING: /mnt/diy/$p" >> "$LOG"
+                        fi
+                    done
                 else
                     echo "$(date) DIY FAIL: mount /mnt/diy returned $?" >> "$LOG"
                 fi
@@ -58,7 +67,7 @@ if [ $ACTION == "add" ] && [ -n "$DEVNAME" ]; then
     else
         echo "$(date) diy-tools.squashfs NOT present on microsd" >> "$LOG"
     fi
-elif [ $ACTION == "remove" ] && [ -n "$DEVNAME" ]; then
+elif [ "$ACTION" = "remove" ] && [ -n "$DEVNAME" ]; then
     umount /mnt/diy 2>/dev/null; echo "$(date) remove: umount /mnt/diy rc=$?" >> /tmp/diy-mount.log 2>/dev/null
     rmdir /mnt/diy 2>/dev/null
     umount /mnt/microsd 2>/dev/null
