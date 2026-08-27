@@ -49,6 +49,7 @@ DIY_TMP="$(mktemp -d)"
 ( cd "${DIY_TMP}" && download_and_verify "https://github.com/3rdIteration/seedsigner-diy-tools/releases/download/${DIY_TAG}/diy-tools-${DIY_ARCH}.squashfs" "${DIY_HASH}" "diy-tools.squashfs" )
 mv "${DIY_TMP}/diy-tools.squashfs" "${BINARIES_DIR}/diy-tools.squashfs"
 rm -rf "${DIY_TMP}"
+cd "$(dirname "$0")/../.."
 
 
 rm -R -f ./tmp/
