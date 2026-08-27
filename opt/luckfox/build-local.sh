@@ -1547,6 +1547,31 @@ package_firmware() {
     fi
 
     ./build.sh firmware
+
+    # Pin the wall-clock releaseTime that boot_merger (download.bin) and
+    # rkImageMaker (update.img) stamp into their headers, and repair each file's
+    # trailer checksum -- see normalise_boot_images in os-build.sh. Both are
+    # prebuilt SDK binaries, so the output is normalized instead of patched.
+    # Order matters: update.img embeds a verbatim copy of download.bin, so
+    # normalise the LDR first and re-run the pack step before pinning RKFW.
+    local image_dir="$WORK_DIR/luckfox-pico/output/image"
+    if [ -f "$image_dir/download.bin" ] && [ -f "$image_dir/update.img" ]; then
+        bash "$SCRIPT_DIR/ss-fs-normalise.sh" bootimg \
+            "$image_dir/download.bin" "${SOURCE_DATE_EPOCH:-0}"
+
+        local chip="rv1106"
+        if [ -f "$WORK_DIR/luckfox-pico/.BoardConfig.mk" ]; then
+            local cfg_chip
+            cfg_chip="$(grep -E '^export RK_CHIP=' "$WORK_DIR/luckfox-pico/.BoardConfig.mk" | head -n 1 | cut -d= -f2)"
+            [ -n "$cfg_chip" ] && chip="$cfg_chip"
+        fi
+        bash "$WORK_DIR/luckfox-pico/tools/linux/Linux_Pack_Firmware/mk-update_pack.sh" \
+            -id "$chip" -i "$image_dir"
+
+        bash "$SCRIPT_DIR/ss-fs-normalise.sh" bootimg \
+            "$image_dir/update.img" "${SOURCE_DATE_EPOCH:-0}"
+    fi
+
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.

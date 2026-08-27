@@ -1140,6 +1140,54 @@ resolve_rootfs_dir() {
     print_info "Using rootfs directory: $ROOTFS_DIR"
 }
 
+normalise_boot_images() {
+    # Pin the wall-clock releaseTime that two prebuilt SDK tools stamp into the
+    # boot images, then repair each file's trailer checksum:
+    #   - download.bin (tag "LDR ") is packed by rkbin/tools/boot_merger during
+    #     `make uboot`; it writes localtime(time(NULL)) into the header.
+    #   - update.img (tag "RKFW") is packed by Linux_Pack_Firmware/rkImageMaker
+    #     in build_updateimg; same live-clock stamp, plus an ASCII MD5 trailer
+    #     over everything before it that changes with the stamp.
+    # Both are prebuilt binaries, so there is no source to patch -- normalise
+    # the output instead (ss-fs-normalise.sh bootimg rewrites releaseTime to
+    # SOURCE_DATE_EPOCH and recomputes the trailer).
+    #
+    # Order matters: update.img EMBEDS a verbatim copy of download.bin (the
+    # "bootloader" partition, right after its own 102-byte RKFW header), so the
+    # LDR file must be normalised FIRST and the pack step re-run to rebuild
+    # update.img from the normalised input -- otherwise the embedded copy keeps
+    # the live-clock stamp (and its CRC) inside an otherwise-identical image.
+    # The re-pack is deterministic given identical inputs: a double-pack test
+    # showed only the RKFW header time and the MD5 trailer vary between runs,
+    # which step 3 then pins. Everything downstream (bundle copies,
+    # sha256sums.txt) reads these files from output/image, so doing it here
+    # once covers the SD, eMMC and NAND artifact paths.
+    local image_dir="$LUCKFOX_SDK_DIR/output/image"
+
+    if [[ ! -f "$image_dir/download.bin" || ! -f "$image_dir/update.img" ]]; then
+        print_error "Boot images missing from $image_dir -- cannot normalise (run 'build.sh firmware' first)"
+        exit 1
+    fi
+
+    bash "$SEEDSIGNER_LUCKFOX_DIR/ss-fs-normalise.sh" bootimg \
+        "$image_dir/download.bin" "${SOURCE_DATE_EPOCH}"
+
+    # Re-run the SDK's own pack step so update.img embeds the normalised LDR.
+    # Same invocation as build_updateimg in project/build.sh; the chip id comes
+    # from the active BoardConfig (rv1106 for every Luckfox Pico profile).
+    local chip="rv1106"
+    if [[ -f "$LUCKFOX_SDK_DIR/.BoardConfig.mk" ]]; then
+        local cfg_chip
+        cfg_chip="$(grep -E '^export RK_CHIP=' "$LUCKFOX_SDK_DIR/.BoardConfig.mk" | head -n 1 | cut -d= -f2)"
+        [[ -n "$cfg_chip" ]] && chip="$cfg_chip"
+    fi
+    bash "$LUCKFOX_SDK_DIR/tools/linux/Linux_Pack_Firmware/mk-update_pack.sh" \
+        -id "$chip" -i "$image_dir"
+
+    bash "$SEEDSIGNER_LUCKFOX_DIR/ss-fs-normalise.sh" bootimg \
+        "$image_dir/update.img" "${SOURCE_DATE_EPOCH}"
+}
+
 create_nand_image_artifacts() {
     local board_profile="$1"
     local tag="$2"
@@ -1976,6 +2024,7 @@ s/^endef\nendif/endef\nendif\nendif/
 
     print_step "Packaging Firmware"
     sdk_build firmware
+    normalise_boot_images
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.

@@ -177,20 +177,37 @@ else
     echo "  mkfs_ubi.sh: squashfs mtimes + superblock mkfs_time pinned to $EPOCH"
 fi
 
-# --- 4. Force single-threaded mksquashfs -----------------------------------
+# --- 4. Force single-threaded mksquashfs and disable fragments --------------
 #
 # The mtime/superblock-time fixes above were not enough: rootfs.img was still
-# byte-different between two builds even with EVERY file hashing identical and
-# the squashfs metadata (inode count, fragment count, id/xattr counts, the
-# full name/size/permission listing) identical too -- only the compressed
-# image size differed, by a handful of bytes.
+# byte-different between two builds even with EVERY file hashing identical,
+# the squashfs metadata (inode count, fragment count, id/xattr counts)
+# identical, and the full name/size/permission listing in the same order --
+# only the compressed bytes differed, by megabytes, plus a few bytes of total
+# size.
 #
-# Reproduced directly: the same 400-file input compressed twice with
-# `-processors 4` produced two images differing in 2.3 MB of 6.9 MB; the same
-# input with `-processors 1` produced byte-identical output both times.
-# Multi-threaded xz compression in this mksquashfs is not deterministic --
-# a known limitation of older squashfs-tools, not something SOURCE_DATE_EPOCH
-# or file ordering can fix.
+# Two independent non-determinisms in this mksquashfs (4.3-git 2014) were
+# found by re-running it directly against a surviving copy of the packed
+# source tree:
+#
+# (a) Multi-threaded compression (-processors N>1): reproduced with random
+#     input, outputs differed in megabytes; -processors 1 settled that part.
+#     (Note: that reproduction used urandom files, which are stored raw and
+#     never reach xz -- it proved nothing about single-threaded xz itself.)
+#
+# (b) Fragment packing: even with -processors 1, two runs on the identical
+#     tree still differed in ~5 MB of bytes and by a few bytes of total size,
+#     while every extracted file hashed identically. Isolated with a small
+#     controlled input: default flags DIFFER, -no-fragments IDENTICAL,
+#     -no-duplicates alone still DIFFERS -- the non-determinism is in how
+#     fragment blocks are built and compressed (the 4.3-git fragment buffer
+#     carries uninitialised tail bytes into the xz stream; only the used
+#     length is recorded, so extracted content stays correct while the
+#     compressed bytes vary run to run). A modern mksquashfs (tested 4.5)
+#     packs fragments deterministically, but -no-fragments avoids swapping
+#     binaries: each partial block becomes its own data block instead of
+#     sharing a fragment block. Cost on this rootfs: ~1.7 MB for 349
+#     fragments, against a 93 MB partition -- acceptable.
 #
 # `-processors N` appears twice per file (the lz4 branch and the default
 # branch) in both mkfs_squashfs.sh and mkfs_ubi.sh's embedded squashfs call.
@@ -203,17 +220,59 @@ fi
 # all is the right side of that trade.
 for f in "$SQUASH_TOOL" "$UBI_TOOL"; do
     [ -f "$f" ] || continue
-    if grep -q -- '-processors 1 ' "$f"; then
-        echo "  $(basename "$f"): already forced to -processors 1 (idempotent re-run)"
+    if grep -q -- '-processors 1 -no-fragments' "$f"; then
+        echo "  $(basename "$f"): already forced to -processors 1 -no-fragments (idempotent re-run)"
         continue
     fi
-    sed -i 's|-processors \$parallel_jobs|-processors 1|g' "$f"
-    if ! grep -q -- '-processors 1 ' "$f"; then
-        echo "patch-fs-determinism: failed to force -processors 1 in $f" >&2
+    sed -i 's|-processors \$parallel_jobs|-processors 1 -no-fragments|g' "$f"
+    if ! grep -q -- '-processors 1 -no-fragments' "$f"; then
+        echo "patch-fs-determinism: failed to force -processors 1 -no-fragments in $f" >&2
         grep -n -- '-processors' "$f" >&2 || true
         exit 1
     fi
-    echo "  $(basename "$f"): forced -processors 1 (multi-threaded xz is non-deterministic)"
+    echo "  $(basename "$f"): forced -processors 1 -no-fragments (multi-threaded xz and fragment packing are non-deterministic)"
 done
+
+# --- 5. mkfs.ubifs: pin the random uuid and stat() times --------------------
+#
+# The ubifs volumes (oem, userdata) were still byte-different between two
+# builds after all of the above. Extracting them and walking every node with a
+# CRC-verified parser showed ALL differing bytes fall in exactly two places:
+#
+#   - the superblock node carries a RANDOM uuid[16] -- write_super() calls
+#     uuid_generate_random(). It lands at node offset 108..123 and perturbs
+#     that node's CRC (offsets 4-7).
+#   - every inode node stores atime_sec/ctime_sec/mtime_sec straight from
+#     stat() of the source tree. ctime cannot be normalised with touch, so a
+#     pre-pack mtime pass is not enough; the fields are pinned in the image
+#     itself instead (node offset 56..79), again perturbing each node's CRC.
+#
+# Everything else -- sqnums, LEB allocation, index layout, lzo-compressed data
+# nodes -- was verified byte-stable by re-running mkfs.ubifs twice on a
+# surviving source tree (only the uuid and its CRC differed).
+#
+# The fix runs ss-fs-normalise.sh ubifs over each volume right after
+# mkfs.ubifs produces it: zero the uuid, set the three time fields to EPOCH,
+# recompute mtd_crc32 for every touched node so on-mount verification passes.
+if grep -q 'SS_UBIFS_NORMALISE' "$UBI_TOOL"; then
+    echo "  mkfs_ubi.sh ubifs call already pinned (idempotent re-run)"
+else
+    awk -v epoch="$EPOCH" '
+        { print }
+        /echo "\$MKUBIFS_TOOL -x / && !post {
+            print "			# SS_UBIFS_NORMALISE: pin the random uuid and stat() times"
+            print "			# mkfs.ubifs bakes into the image (see ss-fs-normalise.sh ubifs)."
+            print "			echo \"/build/ss-fs-normalise.sh ubifs $temp_image " epoch "\" >> $UBI_IMAGE_FAKEROOT"
+            post = 1
+        }
+    ' "$UBI_TOOL" > "$UBI_TOOL.tmp" && mv "$UBI_TOOL.tmp" "$UBI_TOOL"
+    chmod +x "$UBI_TOOL"
+
+    if ! grep -q 'SS_UBIFS_NORMALISE' "$UBI_TOOL"; then
+        echo "patch-fs-determinism: failed to patch the mkfs.ubifs call inside $UBI_TOOL" >&2
+        exit 1
+    fi
+    echo "  mkfs_ubi.sh: ubifs uuid + inode times pinned to $EPOCH (CRCs repaired)"
+fi
 
 echo "patch-fs-determinism: done (SOURCE_DATE_EPOCH=$EPOCH)"
