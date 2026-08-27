@@ -479,6 +479,80 @@ apply_sdk_patches() {
             exit 1
         fi
     fi
+
+    # stressapptest embeds its own build stamp -- same class of problem as
+    # sdkinfo, different mechanism. Its configure.ac has:
+    #
+    #     timestamp=$(date)
+    #     AC_DEFINE_UNQUOTED([STRESSAPPTEST_TIMESTAMP],
+    #                        "$username @ $hostname on $timestamp", ...)
+    #
+    # and the SDK ships a pre-generated `configure` with that line already
+    # expanded verbatim, so a plain sed on the committed script is enough --
+    # no autoreconf involved. $username/$hostname are already covered: the
+    # container runs as root with a fixed --hostname (opt/luckfox/build.sh),
+    # so this is the one remaining live value.
+    #
+    # The SDK's own Makefile already seds this exact `configure` for an
+    # unrelated fix (an armv7a detection bug), immediately before running it,
+    # so a sibling sed line is the established pattern here, not a new one.
+    # That Makefile rule only re-extracts+builds when
+    # sysdrv/tools/board/stressapptest/out/bin/stressapptest is absent -- true
+    # on every build starting from a pristine SDK, since that path is
+    # untracked build output.
+    #
+    # Delegated to Python rather than shell: the text being inserted is a
+    # MAKEFILE RECIPE that itself contains a shell `sed` command, so a literal
+    # `$(` that must survive both Make's expansion and the shell's quoting
+    # needs `$$(` in the Makefile source -- three semantic layers deep. Getting
+    # that right by hand in bash produced a syntax-breaking mess on the first
+    # attempt; Python string concatenation with explicit chr() for backslash
+    # and newline is unambiguous, and this exact approach was verified with
+    # `make --just-print` (confirms the shell receives the sed argument
+    # exactly as intended) and by executing the patched line twice (confirms
+    # it evaluates to a fixed value both times).
+    local stressapptest_mk="$LUCKFOX_SDK_DIR/sysdrv/tools/board/stressapptest/Makefile"
+    if [[ -f "$stressapptest_mk" ]]; then
+        SS_EPOCH="${SOURCE_DATE_EPOCH:-0}" python3 - "$stressapptest_mk" <<'PYEOF'
+import io, os, sys
+
+path = sys.argv[1]
+epoch = os.environ.get("SS_EPOCH", "0")
+BS, NL, TAB = chr(92), chr(10), chr(9)
+
+s = io.open(path, encoding='utf-8').read()
+
+marker = "timestamp=$$(date)"
+if marker in s:
+    print("stressapptest build timestamp already pinned (idempotent re-run)")
+    sys.exit(0)
+
+anchor = (TAB + TAB + 'sed -i "s/' + BS + '*armv7a' + BS + '*) :/ arm '
+          + BS + '| &/" ./configure; ' + BS + NL)
+if anchor not in s:
+    print("ERROR: armv7a anchor line not found in " + path, file=sys.stderr)
+    sys.exit(1)
+
+inject = (TAB + TAB + "sed -i 's|timestamp=$$(date)|timestamp=$$(date -u -d @"
+          + epoch + ")|' ./configure; " + BS + NL)
+
+s = s.replace(anchor, anchor + inject, 1)
+io.open(path, 'w', encoding='utf-8').write(s)
+
+if marker not in s:
+    print("ERROR: patch did not take in " + path, file=sys.stderr)
+    sys.exit(1)
+print("stressapptest build timestamp pinned to SOURCE_DATE_EPOCH=" + epoch)
+PYEOF
+        ss_status=$?
+        if [[ $ss_status -ne 0 ]]; then
+            print_error "Failed to pin stressapptest build timestamp in $stressapptest_mk"
+            exit 1
+        fi
+        print_success "stressapptest build timestamp step complete"
+    else
+        print_info "stressapptest Makefile not found at $stressapptest_mk -- skipping (SDK layout may have changed)"
+    fi
 }
 
 validate_environment() {
