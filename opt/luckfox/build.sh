@@ -219,8 +219,34 @@ run_build() {
     # that writes their marker files was unreachable from a Docker build --
     # docker-compose.yml's comment claiming parity with
     # opt/luckfox/{os-build,build-local}.sh was simply untrue. The same applies to
-    # DISABLE_UART2_CONSOLE_DEBUG and the SEEDSIGNER_OS_* provenance fields: CI
-    # sets them, a Docker build had no way to.
+    # DISABLE_UART2_CONSOLE_DEBUG; the SEEDSIGNER_OS_* provenance fields are
+    # resolved below when the caller does not supply them.
+    #
+    # Resolve seedsigner-os provenance from this checkout when the caller did not
+    # supply it. CI forwards explicit values (build-luckfox.yml's "Prepare build
+    # metadata" step); a local Docker build derives them here with the SAME
+    # expressions, so identical settings produce byte-identical images in both
+    # environments: REPO from the origin remote in https form, BRANCH and COMMIT
+    # via rev-parse (a detached checkout records "HEAD", exactly as CI does), and
+    # DATE as %cI -- the latest commit's committer date, not the build time. A
+    # wall-clock stamp would make two builds of the same checkout differ. Outside
+    # a git checkout with a github.com origin the fields stay unset and
+    # gen-os-release.sh records "unknown", as before.
+    local os_repo_root os_remote_url=""
+    os_repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    if git -C "$os_repo_root" rev-parse --git-dir >/dev/null 2>&1; then
+        os_remote_url="$(git -C "$os_repo_root" remote get-url origin 2>/dev/null || true)"
+        case "$os_remote_url" in
+            https://github.com/*) os_remote_url="${os_remote_url%.git}" ;;
+            git@github.com:*)    os_remote_url="https://github.com/${os_remote_url#git@github.com:}"; os_remote_url="${os_remote_url%.git}" ;;
+            *)                   os_remote_url="" ;;
+        esac
+        SEEDSIGNER_OS_REPO="${SEEDSIGNER_OS_REPO:-$os_remote_url}"
+        SEEDSIGNER_OS_BRANCH="${SEEDSIGNER_OS_BRANCH:-$(git -C "$os_repo_root" rev-parse --abbrev-ref HEAD)}"
+        SEEDSIGNER_OS_COMMIT="${SEEDSIGNER_OS_COMMIT:-$(git -C "$os_repo_root" rev-parse HEAD)}"
+        SEEDSIGNER_OS_DATE="${SEEDSIGNER_OS_DATE:-$(git -C "$os_repo_root" log -1 --format=%cI)}"
+    fi
+
     local passthrough
     for passthrough in SEEDSIGNER_BUILD_VARIANT SEEDSIGNER_READONLY_ROOTFS \
                        SEEDSIGNER_USB_MODE SEEDSIGNER_DEBUG_NETWORK \

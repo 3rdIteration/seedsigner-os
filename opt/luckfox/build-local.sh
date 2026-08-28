@@ -1332,10 +1332,30 @@ install_seedsigner_app() {
     mkdir -p "$rootfs_dir/opt"
     cp -a "$WORK_DIR/seedsigner/." "$rootfs_dir/opt/"
 
-    # Generate the SeedSigner OS identity + provenance marker (host build has both
-    # git checkouts available: this repo for OS data, the clone for app data).
-    SEEDSIGNER_OS_REPO="https://github.com/3rdIteration/seedsigner-os" \
-    SEEDSIGNER_OS_GIT_DIR="$SCRIPT_DIR/../.." \
+    # Generate the SeedSigner OS identity + provenance marker. The OS fields use
+    # the SAME expressions as build.sh and CI (build-luckfox.yml's "Prepare build
+    # metadata" step): REPO from the origin remote in https form, BRANCH/COMMIT
+    # via rev-parse (a detached checkout records "HEAD", exactly as CI does), DATE
+    # as %cI -- the latest commit's committer date, not the build time. App git
+    # data comes from the cloned repo. Outside a git checkout with a github.com
+    # origin the OS fields stay unset and gen-os-release.sh records "unknown".
+    local os_repo_root os_remote_url=""
+    os_repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    if git -C "$os_repo_root" rev-parse --git-dir >/dev/null 2>&1; then
+        os_remote_url="$(git -C "$os_repo_root" remote get-url origin 2>/dev/null || true)"
+        case "$os_remote_url" in
+            https://github.com/*) os_remote_url="${os_remote_url%.git}" ;;
+            git@github.com:*)    os_remote_url="https://github.com/${os_remote_url#git@github.com:}"; os_remote_url="${os_remote_url%.git}" ;;
+            *)                   os_remote_url="" ;;
+        esac
+        SEEDSIGNER_OS_BRANCH="${SEEDSIGNER_OS_BRANCH:-$(git -C "$os_repo_root" rev-parse --abbrev-ref HEAD)}"
+        SEEDSIGNER_OS_COMMIT="${SEEDSIGNER_OS_COMMIT:-$(git -C "$os_repo_root" rev-parse HEAD)}"
+        SEEDSIGNER_OS_DATE="${SEEDSIGNER_OS_DATE:-$(git -C "$os_repo_root" log -1 --format=%cI)}"
+    fi
+    SEEDSIGNER_OS_REPO="${SEEDSIGNER_OS_REPO:-$os_remote_url}" \
+    SEEDSIGNER_OS_BRANCH="${SEEDSIGNER_OS_BRANCH:-}" \
+    SEEDSIGNER_OS_COMMIT="${SEEDSIGNER_OS_COMMIT:-}" \
+    SEEDSIGNER_OS_DATE="${SEEDSIGNER_OS_DATE:-}" \
     SEEDSIGNER_APP_GIT_DIR="$WORK_DIR/seedsigner" \
       bash "$SCRIPT_DIR/../gen-os-release.sh" "$rootfs_dir/etc/seedsigner-os-release" \
       || print_warning "Could not generate seedsigner-os-release"
