@@ -275,4 +275,41 @@ else
     echo "  mkfs_ubi.sh: ubifs uuid + inode times pinned to $EPOCH (CRCs repaired)"
 fi
 
+# --- 6. mkfs.ubifs: deterministic inode numbering ----------------------------
+#
+# oem.img and userdata.img were still byte-different between two builds after
+# all of the above, even though every file in the /oem tree hashed identical.
+# Walking both ubifs images node by node showed the file CONTENTS matched
+# exactly; what differed was inode NUMBERING (e.g. /usr/bin was ino 66 on one
+# machine and 77 on the other), which shifted every INO/DATA/DENT key, the
+# physical node layout, sqnums and LPT entries downstream of it.
+#
+# Cause: stock mkfs.ubifs numbers inodes in readdir() order, which depends on
+# the host file system (ext4 vs overlayfs vs tmpfs), not on the tree's
+# contents. The fix rebuilds mkfs.ubifs from the pinned SDK source with a
+# patch that sorts directory entries by name before processing them, then
+# forces that binary onto mkfs_ubi.sh via MKUBIFS_TOOL (the PATH-based lookup
+# would otherwise pick up the SDK's prebuilt static copy). See
+# mkfs-ubifs-determinism/build-mkfs-ubifs.sh for details.
+BUILD_MKFS="$SCRIPT_DIR/mkfs-ubifs-determinism/build-mkfs-ubifs.sh"
+if [ ! -f "$BUILD_MKFS" ]; then
+    echo "patch-fs-determinism: $BUILD_MKFS not found" >&2
+    exit 1
+fi
+
+DETERMINISTIC_MKFS="$LUCKFOX_DIR/output/ss-tools/mkfs.ubifs"
+bash "$BUILD_MKFS" "$LUCKFOX_DIR" "$DETERMINISTIC_MKFS"
+
+if grep -q "MKUBIFS_TOOL=$DETERMINISTIC_MKFS" "$UBI_TOOL"; then
+    echo "  mkfs_ubi.sh already uses the deterministic mkfs.ubifs (idempotent re-run)"
+else
+    sed -i "s|^MKUBIFS_TOOL=mkfs\.ubifs$|MKUBIFS_TOOL=$DETERMINISTIC_MKFS|" "$UBI_TOOL"
+    if ! grep -q "MKUBIFS_TOOL=$DETERMINISTIC_MKFS" "$UBI_TOOL"; then
+        echo "patch-fs-determinism: failed to point MKUBIFS_TOOL at $DETERMINISTIC_MKFS in $UBI_TOOL" >&2
+        grep -n 'MKUBIFS_TOOL=' "$UBI_TOOL" >&2 || true
+        exit 1
+    fi
+    echo "  mkfs_ubi.sh: MKUBIFS_TOOL -> $DETERMINISTIC_MKFS (sorted directory traversal)"
+fi
+
 echo "patch-fs-determinism: done (SOURCE_DATE_EPOCH=$EPOCH)"

@@ -1334,20 +1334,28 @@ install_seedsigner_app() {
 
     # Generate the SeedSigner OS identity + provenance marker. The OS fields use
     # the SAME expressions as build.sh and CI (build-luckfox.yml's "Prepare build
-    # metadata" step): REPO from the origin remote in https form, BRANCH/COMMIT
+    # metadata" step): REPO from the origin remote canonicalised to exactly
+    # https://github.com/owner/repo (no ".git", no trailing slash -- CI records
+    # github.repository bare, and any other form desyncs the image), BRANCH/COMMIT
     # via rev-parse (a detached checkout records "HEAD", exactly as CI does), DATE
     # as %cI -- the latest commit's committer date, not the build time. App git
     # data comes from the cloned repo. Outside a git checkout with a github.com
     # origin the OS fields stay unset and gen-os-release.sh records "unknown".
-    local os_repo_root os_remote_url=""
+    local os_repo_root os_remote_url="" os_repo_path
     os_repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
     if git -C "$os_repo_root" rev-parse --git-dir >/dev/null 2>&1; then
         os_remote_url="$(git -C "$os_repo_root" remote get-url origin 2>/dev/null || true)"
         case "$os_remote_url" in
-            https://github.com/*) os_remote_url="${os_remote_url%.git}" ;;
-            git@github.com:*)    os_remote_url="https://github.com/${os_remote_url#git@github.com:}"; os_remote_url="${os_remote_url%.git}" ;;
-            *)                   os_remote_url="" ;;
+            https://github.com/*) os_repo_path="${os_remote_url#https://github.com/}" ;;
+            git@github.com:*)    os_repo_path="${os_remote_url#git@github.com:}" ;;
+            *)                   os_repo_path="" ;;
         esac
+        if [ -n "$os_repo_path" ]; then
+            while [ "${os_repo_path%/}" != "$os_repo_path" ]; do os_repo_path="${os_repo_path%/}"; done
+            os_remote_url="https://github.com/${os_repo_path%.git}"
+        else
+            os_remote_url=""
+        fi
         SEEDSIGNER_OS_BRANCH="${SEEDSIGNER_OS_BRANCH:-$(git -C "$os_repo_root" rev-parse --abbrev-ref HEAD)}"
         SEEDSIGNER_OS_COMMIT="${SEEDSIGNER_OS_COMMIT:-$(git -C "$os_repo_root" rev-parse HEAD)}"
         SEEDSIGNER_OS_DATE="${SEEDSIGNER_OS_DATE:-$(git -C "$os_repo_root" log -1 --format=%cI)}"

@@ -226,21 +226,29 @@ run_build() {
     # supply it. CI forwards explicit values (build-luckfox.yml's "Prepare build
     # metadata" step); a local Docker build derives them here with the SAME
     # expressions, so identical settings produce byte-identical images in both
-    # environments: REPO from the origin remote in https form, BRANCH and COMMIT
-    # via rev-parse (a detached checkout records "HEAD", exactly as CI does), and
-    # DATE as %cI -- the latest commit's committer date, not the build time. A
-    # wall-clock stamp would make two builds of the same checkout differ. Outside
-    # a git checkout with a github.com origin the fields stay unset and
+    # environments: REPO from the origin remote canonicalised to exactly
+    # https://github.com/owner/repo (no ".git", no trailing slash -- CI records
+    # github.repository bare, and any other form desyncs the image), BRANCH and
+    # COMMIT via rev-parse (a detached checkout records "HEAD", exactly as CI
+    # does), and DATE as %cI -- the latest commit's committer date, not the build
+    # time. A wall-clock stamp would make two builds of the same checkout differ.
+    # Outside a git checkout with a github.com origin the fields stay unset and
     # gen-os-release.sh records "unknown", as before.
-    local os_repo_root os_remote_url=""
+    local os_repo_root os_remote_url="" os_repo_path
     os_repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
     if git -C "$os_repo_root" rev-parse --git-dir >/dev/null 2>&1; then
         os_remote_url="$(git -C "$os_repo_root" remote get-url origin 2>/dev/null || true)"
         case "$os_remote_url" in
-            https://github.com/*) os_remote_url="${os_remote_url%.git}" ;;
-            git@github.com:*)    os_remote_url="https://github.com/${os_remote_url#git@github.com:}"; os_remote_url="${os_remote_url%.git}" ;;
-            *)                   os_remote_url="" ;;
+            https://github.com/*) os_repo_path="${os_remote_url#https://github.com/}" ;;
+            git@github.com:*)    os_repo_path="${os_remote_url#git@github.com:}" ;;
+            *)                   os_repo_path="" ;;
         esac
+        if [ -n "$os_repo_path" ]; then
+            while [ "${os_repo_path%/}" != "$os_repo_path" ]; do os_repo_path="${os_repo_path%/}"; done
+            os_remote_url="https://github.com/${os_repo_path%.git}"
+        else
+            os_remote_url=""
+        fi
         SEEDSIGNER_OS_REPO="${SEEDSIGNER_OS_REPO:-$os_remote_url}"
         SEEDSIGNER_OS_BRANCH="${SEEDSIGNER_OS_BRANCH:-$(git -C "$os_repo_root" rev-parse --abbrev-ref HEAD)}"
         SEEDSIGNER_OS_COMMIT="${SEEDSIGNER_OS_COMMIT:-$(git -C "$os_repo_root" rev-parse HEAD)}"
