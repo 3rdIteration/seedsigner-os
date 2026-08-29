@@ -2262,8 +2262,14 @@ assert_shared_build_files() {
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
              install-gnupg-home.sh \
-             uboot-recovery-config.sh compile-translations.sh \
-             SDK_COMMIT; do
+              uboot-recovery-config.sh compile-translations.sh \
+              SDK_COMMIT \
+              mkfs-ubifs-determinism/build-mkfs-ubifs.sh \
+              mkfs-ubifs-determinism/sort-dirents.patch \
+              mkfs-ubifs-determinism/lzo/lzo1x.h \
+              mkfs-ubifs-determinism/lzo/lzoconf.h \
+              mkfs-ubifs-determinism/lzo/lzodefs.h \
+              mkfs-ubifs-determinism/uuid.h; do
         checked=$((checked + 1))
         [[ -f "$SEEDSIGNER_LUCKFOX_DIR/$s" ]] || missing+=("$s")
     done
