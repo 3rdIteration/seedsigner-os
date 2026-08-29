@@ -1489,6 +1489,18 @@ build_profile_artifacts() {
         print_step "Restoring pristine SDK before ${board_profile}/${boot_medium}"
         bash "$SEEDSIGNER_LUCKFOX_DIR/prepare-sdk-checkout.sh" "$REPOS_DIR" "$LUCKFOX_REPO_URL"
         cd "$LUCKFOX_SDK_DIR"
+
+        # The reset above reverts EVERY in-place patch the previous profile left
+        # behind: partition layout, all of patch-fs-determinism (including the
+        # rebuilt mkfs.ubifs under output/ss-tools), and the sdkinfo/stressapptest
+        # timestamp pins. CI never sees this -- it builds one combination per job
+        # from a fresh checkout where apply_sdk_patches ran once before the
+        # profile. Re-run it here so every profile starts patched exactly like its
+        # CI job does; without this, profiles 2..N of a multi-profile run build
+        # unpinned (random ubinize image_seq, live timestamps, host-dependent
+        # inode numbering) and WITHOUT the userdata partition layout. All four
+        # parts are idempotent and self-verifying, so re-running is safe.
+        apply_sdk_patches
     else
         print_info "First profile of this run: SDK left as cloned (matches CI, which never cleans)"
     fi
