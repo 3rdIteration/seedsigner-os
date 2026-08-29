@@ -154,6 +154,34 @@ if [ "$HAVE" != "$REF" ]; then
     echo "↻ SDK checkout is $(checkout_desc), moving to $REF"
 fi
 git -C "$DIR" reset --hard "$TARGET"
-echo "Cleaning SDK tree (reverting previous build's in-place patches and output)..."
-git -C "$DIR" clean -ffdx
+
+# git clean can transiently fail on Docker Desktop's volume filesystem ("failed
+# to remove ...: Directory not empty") while a file is mid-lookup. Retry, then
+# verify the tree is actually pristine; if anything survived, remove it by name
+# and check again. A dirty tree here silently breaks reproducibility (stale
+# in-place patches or build output leaking into the next profile), so this must
+# end clean or fail loudly -- never continue with unknown state.
+clean_ok=0
+for attempt in 1 2 3; do
+    echo "Cleaning SDK tree (reverting previous build's in-place patches and output)..."
+    if git -C "$DIR" clean -ffdx && [ -z "$(git -C "$DIR" status --porcelain)" ]; then
+        clean_ok=1
+        break
+    fi
+    sleep 2
+done
+
+if [ "$clean_ok" != 1 ]; then
+    echo "Stragglers git clean could not remove; removing by name:" >&2
+    while read -r _status path; do
+        [ -n "${path:-}" ] && rm -rf -- "$path" 2>/dev/null || true
+    done < <(git -C "$DIR" status --porcelain)
+fi
+
+if [ -n "$(git -C "$DIR" status --porcelain)" ]; then
+    echo "prepare-sdk-checkout: SDK tree is not pristine after clean; refusing to build." >&2
+    git -C "$DIR" status --porcelain >&2 || true
+    exit 1
+fi
+
 echo "✅ luckfox-pico pristine at $(checkout_desc)"
