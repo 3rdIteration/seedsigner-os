@@ -312,4 +312,56 @@ else
     echo "  mkfs_ubi.sh: MKUBIFS_TOOL -> $DETERMINISTIC_MKFS (sorted directory traversal)"
 fi
 
+# --- 7. mkfs_ext4.sh: deterministic ext4 builder ------------------------------
+#
+# The SD images and the eMMC bundle carry oem.img/userdata.img as EXT4 (the
+# NAND bundles use ubifs, pinned above). Those were still byte-different
+# between two builds after all of the above. Extracting the ext4 from a local
+# vs a CI image showed:
+#
+#   - identical file contents and directory tree, but different inode
+#     NUMBERING (e.g. /usr/bin was ino 24 on one machine and 13 on the other),
+#     which shifted block placement across ~16 MB of a 35 MB oem.img;
+#   - a random UUID per build (no -U passed);
+#   - wall-clock s_wtime/s_lastcheck, a random directory hash seed, and
+#     atime/ctime/mtime on every inode -- including the reserved metadata
+#     inodes (bad_ino, resize_inode, journal) that mke2fs itself stamps.
+#
+# Cause: the stock script runs `mkfs.ext4 -d <src>`, which populates by
+# walking the source tree with readdir() -- host-filesystem-dependent order,
+# the same class of leak as mkfs.ubifs's inode numbering (section 6). The fix
+# replaces the whole script with mkfs-ext4-deterministic.sh: empty fs with a
+# fixed UUID and pinned hash seed, populate via debugfs from an explicitly
+# sorted file list, then pin every remaining timestamp to EPOCH and verify
+# with e2fsck -fn. Same three-argument interface as the stock script.
+EXT4_TOOL="$LUCKFOX_DIR/sysdrv/tools/pc/e2fsprogs/mkfs_ext4.sh"
+DETERMINISTIC_EXT4="$SCRIPT_DIR/mkfs-ext4-deterministic.sh"
+if [ ! -f "$EXT4_TOOL" ]; then
+    echo "patch-fs-determinism: $EXT4_TOOL not found" >&2
+    exit 1
+fi
+
+if grep -q 'SS_DETERMINISM' "$EXT4_TOOL"; then
+    echo "  mkfs_ext4.sh already replaced (idempotent re-run)"
+else
+    # Fail loudly if the SDK's script changed shape: this replacement assumes
+    # the stock non-deterministic call is what we are swapping out.
+    if ! grep -q 'mkfs.ext4 -d $src' "$EXT4_TOOL"; then
+        echo "patch-fs-determinism: $EXT4_TOOL no longer contains the expected" >&2
+        echo "'mkfs.ext4 -d \$src' call -- SDK changed, review before re-pinning." >&2
+        exit 1
+    fi
+    if [ ! -f "$DETERMINISTIC_EXT4" ]; then
+        echo "patch-fs-determinism: $DETERMINISTIC_EXT4 not found" >&2
+        exit 1
+    fi
+    cp "$DETERMINISTIC_EXT4" "$EXT4_TOOL"
+    chmod +x "$EXT4_TOOL"
+    if ! grep -q 'SS_DETERMINISM' "$EXT4_TOOL"; then
+        echo "patch-fs-determinism: replacement of $EXT4_TOOL failed verification" >&2
+        exit 1
+    fi
+    echo "  mkfs_ext4.sh: replaced with deterministic builder (sorted populate, fixed UUID, pinned times)"
+fi
+
 echo "patch-fs-determinism: done (SOURCE_DATE_EPOCH=$EPOCH)"
