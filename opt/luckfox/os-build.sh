@@ -1464,7 +1464,6 @@ build_profile_artifacts() {
 
     cd "$LUCKFOX_SDK_DIR"
     select_board_profile "$board_profile" "$boot_medium"
-    apply_mini_cma_profile
 
     # DO NOT run `./build.sh clean` here.
     #
@@ -1492,14 +1491,15 @@ build_profile_artifacts() {
 
         # The reset above reverts EVERY in-place patch the previous profile left
         # behind: partition layout, all of patch-fs-determinism (including the
-        # rebuilt mkfs.ubifs under output/ss-tools), and the sdkinfo/stressapptest
-        # timestamp pins. CI never sees this -- it builds one combination per job
-        # from a fresh checkout where apply_sdk_patches ran once before the
-        # profile. Re-run it here so every profile starts patched exactly like its
-        # CI job does; without this, profiles 2..N of a multi-profile run build
-        # unpinned (random ubinize image_seq, live timestamps, host-dependent
-        # inode numbering) and WITHOUT the userdata partition layout. All four
-        # parts are idempotent and self-verifying, so re-running is safe.
+        # rebuilt mkfs.ubifs under output/ss-tools), the sdkinfo/stressapptest
+        # timestamp pins, and the Mini CMA size sed. CI never sees this -- it
+        # builds one combination per job from a fresh checkout where
+        # apply_sdk_patches ran once before the profile. Re-run it here so every
+        # profile starts patched exactly like its CI job does; without this,
+        # profiles 2..N of a multi-profile run build unpinned (random ubinize
+        # image_seq, live timestamps, host-dependent inode numbering) and WITHOUT
+        # the userdata partition layout. All four parts are idempotent and
+        # self-verifying, so re-running is safe.
         apply_sdk_patches
     else
         print_info "First profile of this run: SDK left as cloned (matches CI, which never cleans)"
@@ -1508,6 +1508,11 @@ build_profile_artifacts() {
 
     # The SDK reset above drops board context; force board selection again.
     select_board_profile "$board_profile" "$boot_medium"
+    # AFTER the reset, not before it: the pristine-SDK restore reverts this sed
+    # (it edits the SDK's BoardConfig in place), so a call earlier would be
+    # undone for profiles 2..N and their env.img would ship the upstream CMA
+    # size (24M on Mini) instead of $MINI_CMA_SIZE. Idempotent, like the rest.
+    apply_mini_cma_profile
     apply_uart2_console_config "$board_profile" "$boot_medium"
     apply_uart2_console_dts_patch "$board_profile"
     apply_uart2_fiq_kernel_patch "$board_profile" "$boot_medium"
