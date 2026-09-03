@@ -176,6 +176,7 @@ There are three ways to build: `.github/workflows/build-luckfox.yml` (CI),
 | `pin-spidev-bufsiz.sh` | `spidev.bufsiz=8192` on the kernel command line |
 | `readonly-rootfs.sh` / `assert-readonly-rootfs.sh` | squashfs root + overlay, and its verification |
 | `install-gnupg-home.sh` | stages the GnuPG agent/scdaemon config seeded into `GNUPGHOME` |
+| `install-build-time.sh` | bakes `/etc/seedsigner-build-time` from the pinned app commit; the boot clock's default |
 | `strip-kernel-network.sh` / `assert-kernel-network.sh` | network/WiFi/coredump strip, and its verification |
 | `configure-usb-mode.sh`, `harden-nondev.sh`, `optimize-nondev.sh`, `patch-s50usbdevice.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`, `uboot-recovery-config.sh`, `compile-translations.sh` | as named |
 
@@ -214,6 +215,37 @@ prefers over the branch, since a tag build is a detached checkout that would oth
 
 `build-local.sh` **reuses an existing `seedsigner/` checkout rather than re-cloning**, so it reports the ref
 and commit it found and warns when they do not match what was requested. Delete the checkout to switch refs.
+
+## System clock
+
+The RV1106 has **no battery-backed RTC**, these images carry **no NTP** and no network, and there is no
+tzdata anywhere in the tree — everything runs in UTC. Nothing set the clock at all until this existed, so
+the device came up at whatever the SoC left in its timer, in practice a date well in the future.
+
+That broke GPG outright. The SeedSigner app validates a new key's expiry against
+`datetime.now(timezone.utc)` and rejects any expiry that is not after it, so with the clock past the
+offered default (`2029-12-31` for RSA-2048, `2035-12-31` for everything else) key generation failed at the
+prompt with **"Invalid expiration date"**, before it could `gpg --batch --import` anything. It matters past
+the prompt too: a key's creation time is an input to its fingerprint, so a key generated under a wrong
+clock is permanently wrong and cannot be corrected afterwards.
+
+`start-seedsigner.sh` now sets the clock in `init_system_clock()`, called before anything else so the boot
+log's own timestamps are real dates. Sources, last wins:
+
+1. `CLOCK_FALLBACK`, the hard-coded `2025-02-28 12:00`. Deliberately the same constant the Pi uses, so the
+   string is a recognisable signature meaning *the build-time bake did not happen* — not a plausible date.
+2. `/etc/seedsigner-build-time`, baked by `install-build-time.sh` from the **pinned app commit's** committer
+   date. This is the normal path, and it is reproducible: same OS commit + same `--seedsigner-ref` → same byte.
+3. `/mnt/microsd/time.txt`, the user escape hatch — same filename and `YYYY-MM-DD HH:MM` format as the Pi.
+   Best-effort here: the card is mounted by the `fat-fsck-hotplug` mdev rule rather than at boot, so a card
+   present at power-on may not be mounted yet. The override is therefore re-checked before each app launch
+   attempt, guarded on the file existing so a normal boot never rewinds its clock.
+
+The set is **unconditional** by design. Do not add a "only if the clock looks wrong" or "only move forward"
+guard: the fault this fixes is a clock in the *future*, which such a guard would never repair. And never
+source the value from `SOURCE_DATE_EPOCH` — it is `0`, and a 1970 clock is the invisible version of this bug
+(it passes the app's expiry check while stamping every key with a 1970 creation date). `install-build-time.sh`
+enforces a year floor of 2020 to fail the build on exactly that edit.
 
 ## Read-only root filesystem
 

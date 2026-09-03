@@ -1368,6 +1368,15 @@ install_seedsigner_app() {
       bash "$SCRIPT_DIR/../gen-os-release.sh" "$rootfs_dir/etc/seedsigner-os-release" \
       || print_warning "Could not generate seedsigner-os-release"
 
+    # Bake the default the boot clock is set from. The RV1106 has no RTC and
+    # these images have no NTP, so without this the device comes up at whatever
+    # the SoC left behind — which broke GPG key generation outright. Derived
+    # from the pinned app commit, so it stays reproducible. Shared with CI via
+    # install-build-time.sh; fails the build rather than shipping a bad clock.
+    if [ -f "$SCRIPT_DIR/install-build-time.sh" ]; then
+        bash "$SCRIPT_DIR/install-build-time.sh" "$rootfs_dir" "$WORK_DIR/seedsigner"
+    fi
+
     # Persistent boot log is OFF by default: a production device writes nothing
     # to flash, and the log captures app output that would otherwise sit in
     # /userdata (which survives a reflash) long after the failure. Bake the

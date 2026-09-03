@@ -67,10 +67,14 @@ else
     cd /opt/src/ || exit 1
 fi
 
-#/usr/bin/python3 main.py >> /dev/kmsg 2>&1 &  # version that writes output to dmesg
-/usr/bin/python3 main.py &
-
-# Set the date to release so that GPG can work
+# Set the date to release so that GPG can work. Must run BEFORE the app is
+# launched: the app validates a new GPG key's expiry against the current clock
+# and refuses any expiry that is not after it, so anything it timestamps at
+# import time needs a real date already in place. It also has to stay AFTER the
+# MicroSD mount wait above, or $TIME_FILE below is invisible.
+#
+# TIME_DEFAULT_FILE deliberately keeps pointing at the EMBEDDED build even when
+# this image is running from the card's src/ — the card checkout has no such file.
 TIME_DEFAULT_FILE="/opt/src/.build_commit_time"
 TIME_FALLBACK="2025-02-28 12:00"
 TIME_FILE="$MICROSD_MOUNTPOINT/time.txt"
@@ -91,3 +95,6 @@ if [ -f "$TIME_FILE" ]; then
 fi
 
 /bin/date -s "$TIME_VALUE" || /bin/date -s "$TIME_FALLBACK"
+
+#/usr/bin/python3 main.py >> /dev/kmsg 2>&1 &  # version that writes output to dmesg
+/usr/bin/python3 main.py &
