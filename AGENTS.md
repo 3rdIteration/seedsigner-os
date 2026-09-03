@@ -2,7 +2,7 @@
 
 ## Deterministic & Reproducible Builds (Non-Dev Configs)
 
-Non-dev builds (`pi0-smartcard`, `pi2-smartcard`, `pi4-smartcard`, etc.) are designed to be **deterministic and reproducible**. This means:
+Non-dev builds — the Pi profiles (`pi0-smartcard`, `pi2-smartcard`, `pi4-smartcard`), the La Frite profile, and the Luckfox Pico images — are designed to be **deterministic and reproducible**. Per-platform mechanisms and verification are documented in [docs/reproducibility.md](docs/reproducibility.md). This means:
 
 * Every build from the same commit must produce byte-identical output images.
 * All external assets (firmware, pre-built OS images, tool archives) are downloaded by URL and verified against a hardcoded SHA-256 checksum.
@@ -31,6 +31,46 @@ the kernel's layout. The fix lives in
 and it **fails the build loudly** if upstream OpenCV moves the line, rather than silently regressing.
 When adding a package that embeds build metadata, check for the same class of leak: host uname, hostname,
 build path, timestamp, `$USER`, CPU count, locale.
+
+### Luckfox Pico (Rockchip SDK)
+
+The non-dev Luckfox Pico images (`mini`/`pro-max`/`pico-pi`, SPI-NAND or eMMC) are reproducible too, but the
+Rockchip SDK leaks host state in ways Buildroot never does. Every pin lives in shared `opt/luckfox/*.sh` scripts
+that all three build paths (CI's `build-luckfox.yml`, local Docker's `os-build.sh`, legacy `build-local.sh`) run
+identically — change the script, never one caller. **Prerequisite: CI and local must use the same Docker image**
+(`opt/luckfox/Dockerfile`); reproducibility is only claimed for builds from the same repo commit *and* the same
+image, so a Dockerfile change invalidates prior hashes until re-verified with a double build.
+
+| Leak | Pin | Where |
+|---|---|---|
+| Host time in every tool that calls `date`/`time(NULL)` | `SOURCE_DATE_EPOCH=0` (default) + `KBUILD_BUILD_TIMESTAMP=@$EPOCH` exported for the whole build | `os-build.sh` env block |
+| ASLR: SDK image tools write uninitialised host memory into FIT `/memreserve/` of uboot.img/boot.img | every SDK stage runs under `setarch $(uname -m) -R` (ASLR off → leaked pointers constant; zeroing the entries would alter image semantics) | `sdk_build()` in os-build.sh |
+| sdkinfo "Build Time" = build date | sed on the SDK's project/build.sh pins it to `$EPOCH` | os-build.sh |
+| stressapptest embeds `user @ host on $(date)` at configure time | sibling sed (the SDK already seds this pre-generated `configure` for an armv7a fix) pins the timestamp; hostname is fixed by the earlier `--hostname seedsigner-build` | os-build.sh |
+| ubinize bakes a random `image_seq` into every UBI erase-counter header (+ its CRC) | `-Q $EPOCH` injected into mkfs_ubi.sh's echoed fakeroot call | patch-fs-determinism.sh §1 |
+| mksquashfs 4.3-git records source mtimes + superblock `mkfs_time`; multi-threaded xz and fragment packing are non-deterministic (uninitialised tail bytes reach the xz stream) | wrapper normalises all source mtimes to `$EPOCH` before packing, overwrites the superblock time after; `-processors 1 -no-fragments` forced in both mkfs_squashfs.sh and mkfs_ubi.sh's embedded call (time flags are probed first — a future squashfs ≥4.4 gets `-all-time/-mkfs-time`) | patch-fs-determinism.sh §2–§4, ss-fs-normalise.sh `mtimes`/`sqfs-time` |
+| mkfs.ubifs bakes a random UUID into the superblock node and atime/ctime/mtime from stat() into every inode node (ctime can't be touched) | `ss-fs-normalise.sh ubifs` walks each volume node-by-node (magic+len+type+CRC validated), zeroes the uuid, sets times to `$EPOCH`, recomputes mtd_crc32 per touched node; injected right after mkfs.ubifs in mkfs_ubi.sh | patch-fs-determinism.sh §5 |
+| **mkfs.ubifs numbers inodes in `readdir()` order** — host-filesystem-dependent (ext4 vs overlayfs vs tmpfs), so identical trees get different inode numbering → different keys, node layout, sqnums and LPT entries | deterministic rebuild of the SDK's mtd-utils 2.0.1 mkfs.ubifs with `sort-dirents.patch` (`add_directory()` collects + qsorts dirents by name); built to `$LUCKFOX_DIR/output/ss-tools/mkfs.ubifs` and forced on mkfs_ubi.sh via a `MKUBIFS_TOOL=` override (the PATH lookup would pick the SDK's prebuilt static copy) | opt/luckfox/mkfs-ubifs-determinism/, patch-fs-determinism.sh §6 |
+| **mkfs.ext4 `-d` populates in `readdir()` order** — same inode-numbering leak as mkfs.ubifs, plus a random UUID per build, wall-clock timestamps in every superblock instance and all inodes, and a randomised `s_hash_seed` (htree) | drop-in replacement builder: empty mke2fs with fixed `-U`, pin `s_hash_seed` BEFORE population, populate via debugfs from a `find \| sort` list (whitespace names FATAL; hard links recreated with debugfs `ln` — duplicating them would multiply their blocks and overflow the partition on dev images. This debugfs's `ln` cannot extend directories, so link-receiving dirs are pre-sized with throwaway write+rm pairs; it never bumps i_links_count, fixed in a post-pass; freed dummy slots keep stale mode bits and are zeroed to pristine-free state), then a read-only pass verifies every entry against the source manifest (debugfs -f swallows ENOSPC and still exits 0 — without this a space-starved build ships silently missing files), `resize2fs -M`, Python pins all SB + inode timestamps to `$EPOCH`; final `e2fsck -fn` canary fails the build on any structure/checksum breakage | opt/luckfox/mkfs-ext4-deterministic.sh, patch-fs-determinism.sh §7 |
+| LDR/RKFW clock stamps: prebuilt boot_merger/rkImageMaker stamp localtime into download.bin/update.img headers + trailer checksum (CRC-32 poly 0x04C10DB7 / MD5 hex) | `ss-fs-normalise.sh bootimg` pins releaseTime to `$EPOCH` and recomputes the trailer, magic-gated; normalise download.bin FIRST, re-run mk-update-pack.sh (update.img embeds a verbatim copy of download.bin), then pin update.img | os-build.sh / build-local.sh after `build.sh firmware` |
+| Provenance: git origin URL differs per clone (trailing slash, `.git`) and leaks into `/etc/seedsigner-os-release` | REPO canonicalised to exactly `https://github.com/<owner>/<repo>`; BRANCH/COMMIT/DATE expressions match what CI records | build.sh + build-local.sh |
+| Bundle tarballs: entry order, mtimes, uid/gid, gzip header timestamp | `ss_tar_deterministic()` — `tar --sort=name --mtime=@$EPOCH --owner=root:0 --group=root:0 --numeric-owner --format=gnu \| gzip -n`, output touched to `$EPOCH` | os-build.sh |
+| `pip install fonttools` unpinned: `pyftsubset`'s GPOS output shifts between releases (4.63.0 vs 4.64.0 = JP +532 / KR +538 / SC +550 bytes, glyf/cmap/GSUB byte-identical) — `head`'s checkSumAdjustment then cascades into rootfs.img, update.img and the SD images | `fonttools==4.64.0` pinned at both call sites; venv `pyftsubset` invoked by absolute path with its `fontTools.version` checked against the pin (a `PATH` fallback to a host copy is what made this invisible) | opt/luckfox/compile-translations.sh, opt/build.sh |
+| **Reused app checkout carried the previous build's output**: the `seedsigner-repos` volume outlives the build and reuse was gated on HEAD alone, so a repeat build re-slimmed already-slimmed fonts. Re-subsetting is a fixed point (a pruned GPOS cannot be re-expanded), freezing the first slimming version into every later local build; CI clones fresh and never hits it | `restore_pristine()` on every reuse path — `reset --hard` + `clean -fdx`, submodules first (the superproject clean skips dirs containing a `.git`) | opt/luckfox/prepare-app-checkout.sh |
+
+**Maintenance requirements (things that silently break reproducibility):**
+* **Bumping `SDK_COMMIT`**: re-verify that `sort-dirents.patch` still applies and every sed/grep target in
+  patch-fs-determinism.sh still matches — a *changed* target can silently no-op where a missing one fails loudly.
+  Then run two builds (or CI + local) and compare `sha256sums.txt`.
+* **Vendored headers** in `opt/luckfox/mkfs-ubifs-determinism/` (`lzo/*.h`, `uuid.h`) are SHA-256-pinned by
+  build-mkfs-ubifs.sh — never edit them; if the SDK's mtd-utils changes its includes, update the vendored copy
+  *and* its hash together.
+* **Dockerfile**: must keep `liblzo2-2` (runtime dep of the rebuilt mkfs.ubifs) and the explicit
+  `COPY mkfs-ubifs-determinism/ /build/mkfs-ubifs-determinism/` line; `assert_shared_build_files()` in os-build.sh
+  fails fast if any of these files is missing from the image.
+* **Verification**: Luckfox images are NAND layouts, not SD images — `tools/imgdiff.py` (MBR/FAT/squashfs stages)
+  does not apply. Compare the CI artifact `seedsigner_luckfox_images_sha256` against a local build's
+  `sha256sums.txt`; every artifact and the bundle must match byte-for-byte.
 
 ## Local Testing of Scripts
 

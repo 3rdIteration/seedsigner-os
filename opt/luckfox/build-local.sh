@@ -1332,10 +1332,38 @@ install_seedsigner_app() {
     mkdir -p "$rootfs_dir/opt"
     cp -a "$WORK_DIR/seedsigner/." "$rootfs_dir/opt/"
 
-    # Generate the SeedSigner OS identity + provenance marker (host build has both
-    # git checkouts available: this repo for OS data, the clone for app data).
-    SEEDSIGNER_OS_REPO="https://github.com/3rdIteration/seedsigner-os" \
-    SEEDSIGNER_OS_GIT_DIR="$SCRIPT_DIR/../.." \
+    # Generate the SeedSigner OS identity + provenance marker. The OS fields use
+    # the SAME expressions as build.sh and CI (build-luckfox.yml's "Prepare build
+    # metadata" step): REPO from the origin remote canonicalised to exactly
+    # https://github.com/owner/repo (no ".git", no trailing slash -- CI records
+    # github.repository bare, and any other form desyncs the image), BRANCH/COMMIT
+    # via rev-parse (a detached checkout records "HEAD", exactly as CI does), DATE
+    # as %cI -- the latest commit's committer date, not the build time. App git
+    # data comes from the cloned repo. Outside a git checkout with a github.com
+    # origin the OS fields stay unset and gen-os-release.sh records "unknown".
+    local os_repo_root os_remote_url="" os_repo_path
+    os_repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    if git -C "$os_repo_root" rev-parse --git-dir >/dev/null 2>&1; then
+        os_remote_url="$(git -C "$os_repo_root" remote get-url origin 2>/dev/null || true)"
+        case "$os_remote_url" in
+            https://github.com/*) os_repo_path="${os_remote_url#https://github.com/}" ;;
+            git@github.com:*)    os_repo_path="${os_remote_url#git@github.com:}" ;;
+            *)                   os_repo_path="" ;;
+        esac
+        if [ -n "$os_repo_path" ]; then
+            while [ "${os_repo_path%/}" != "$os_repo_path" ]; do os_repo_path="${os_repo_path%/}"; done
+            os_remote_url="https://github.com/${os_repo_path%.git}"
+        else
+            os_remote_url=""
+        fi
+        SEEDSIGNER_OS_BRANCH="${SEEDSIGNER_OS_BRANCH:-$(git -C "$os_repo_root" rev-parse --abbrev-ref HEAD)}"
+        SEEDSIGNER_OS_COMMIT="${SEEDSIGNER_OS_COMMIT:-$(git -C "$os_repo_root" rev-parse HEAD)}"
+        SEEDSIGNER_OS_DATE="${SEEDSIGNER_OS_DATE:-$(git -C "$os_repo_root" log -1 --format=%cI)}"
+    fi
+    SEEDSIGNER_OS_REPO="${SEEDSIGNER_OS_REPO:-$os_remote_url}" \
+    SEEDSIGNER_OS_BRANCH="${SEEDSIGNER_OS_BRANCH:-}" \
+    SEEDSIGNER_OS_COMMIT="${SEEDSIGNER_OS_COMMIT:-}" \
+    SEEDSIGNER_OS_DATE="${SEEDSIGNER_OS_DATE:-}" \
     SEEDSIGNER_APP_GIT_DIR="$WORK_DIR/seedsigner" \
       bash "$SCRIPT_DIR/../gen-os-release.sh" "$rootfs_dir/etc/seedsigner-os-release" \
       || print_warning "Could not generate seedsigner-os-release"
@@ -1547,6 +1575,31 @@ package_firmware() {
     fi
 
     ./build.sh firmware
+
+    # Pin the wall-clock releaseTime that boot_merger (download.bin) and
+    # rkImageMaker (update.img) stamp into their headers, and repair each file's
+    # trailer checksum -- see normalise_boot_images in os-build.sh. Both are
+    # prebuilt SDK binaries, so the output is normalized instead of patched.
+    # Order matters: update.img embeds a verbatim copy of download.bin, so
+    # normalise the LDR first and re-run the pack step before pinning RKFW.
+    local image_dir="$WORK_DIR/luckfox-pico/output/image"
+    if [ -f "$image_dir/download.bin" ] && [ -f "$image_dir/update.img" ]; then
+        bash "$SCRIPT_DIR/ss-fs-normalise.sh" bootimg \
+            "$image_dir/download.bin" "${SOURCE_DATE_EPOCH:-0}"
+
+        local chip="rv1106"
+        if [ -f "$WORK_DIR/luckfox-pico/.BoardConfig.mk" ]; then
+            local cfg_chip
+            cfg_chip="$(grep -E '^export RK_CHIP=' "$WORK_DIR/luckfox-pico/.BoardConfig.mk" | head -n 1 | cut -d= -f2)"
+            [ -n "$cfg_chip" ] && chip="$cfg_chip"
+        fi
+        bash "$WORK_DIR/luckfox-pico/tools/linux/Linux_Pack_Firmware/mk-update_pack.sh" \
+            -id "$chip" -i "$image_dir"
+
+        bash "$SCRIPT_DIR/ss-fs-normalise.sh" bootimg \
+            "$image_dir/update.img" "${SOURCE_DATE_EPOCH:-0}"
+    fi
+
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.
@@ -1617,7 +1670,7 @@ create_nand_bundle() {
     local required_files=(
         update.img download.bin env.img idblock.img
         uboot.img boot.img oem.img
-        rootfs.img sd_update.txt tftp_update.txt
+        rootfs.img userdata.img sd_update.txt tftp_update.txt
     )
     
     for file in "${required_files[@]}"; do
@@ -1627,6 +1680,18 @@ create_nand_bundle() {
             print_warning "Missing file: $file"
         fi
     done
+
+    # userdata.img is required, not optional: /userdata is the only non-rootfs
+    # writable store the app saves settings to, so a bundle without it flashes a
+    # board that boots, looks healthy, and silently discards every setting. Both
+    # loops above only warn on a missing file, so check explicitly.
+    if [ ! -f "$nand_bundle_dir/userdata.img" ]; then
+        print_error "userdata.img missing from the NAND bundle."
+        echo "   Every board's partition table declares a userdata partition, so the"
+        echo "   SDK should have emitted it. Check the partition layout step"
+        echo "   (apply-partition-layout.sh)."
+        exit 1
+    fi
     
     # Create README
     cat > "$nand_bundle_dir/README.txt" << 'EOF'
@@ -1679,7 +1744,7 @@ create_emmc_bundle() {
     # Copy available files to bundle
     local emmc_files=(
         update.img download.bin env.img idblock.img
-        uboot.img boot.img oem.img rootfs.img
+        uboot.img boot.img oem.img rootfs.img userdata.img
     )
     
     for file in "${emmc_files[@]}"; do
@@ -1689,6 +1754,18 @@ create_emmc_bundle() {
             print_info "Optional file not found, skipping: $file"
         fi
     done
+
+    # userdata.img is required, not optional: /userdata is the only non-rootfs
+    # writable store the app saves settings to, so a bundle without it flashes a
+    # board that boots, looks healthy, and silently discards every setting. Both
+    # loops above only warn on a missing file, so check explicitly.
+    if [ ! -f "$emmc_bundle_dir/userdata.img" ]; then
+        print_error "userdata.img missing from the eMMC bundle."
+        echo "   Every board's partition table declares a userdata partition, so the"
+        echo "   SDK should have emitted it. Check the partition layout step"
+        echo "   (apply-partition-layout.sh)."
+        exit 1
+    fi
     
     # Create README
     cat > "$emmc_bundle_dir/README.txt" << 'EOF'
@@ -1714,8 +1791,22 @@ EOF
     ls -lh "$bundle_name"
 }
 
+# WARNING: the SDK's own clean is destructive in a way that is not obvious.
+# boardtools_clean / `clean drv` / `clean tools which run on pc` delete the
+# PREBUILT board tools shipped in the SDK checkout (udev, mtd-utils, memtester,
+# stressapptest, rockchip_test, adbd, usbdevice, and the dosfstools binaries
+# S02fsck needs). Nothing rebuilds them, so a build after this clean ships an
+# image ~84 files lighter than the validated CI build. os-build.sh used to call
+# this before every profile, which is why its images did not boot.
+#
+# Prefer restoring the SDK with git (prepare-sdk-checkout.sh does exactly that:
+# reset --hard + clean -ffdx), which puts the prebuilts back. Only use this when
+# you specifically want the SDK's own clean semantics.
 clean_build() {
     print_header "Cleaning Build Artifacts"
+    print_warning "The SDK clean removes prebuilt board tools; a build straight"
+    print_warning "after this will be missing them. Use prepare-sdk-checkout.sh"
+    print_warning "to restore a pristine SDK instead."
     
     if [ -d "$WORK_DIR/luckfox-pico" ]; then
         print_info "Cleaning luckfox-pico build..."

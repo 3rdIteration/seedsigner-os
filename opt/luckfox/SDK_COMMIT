@@ -1,0 +1,17 @@
+# The luckfox-pico SDK revision every Luckfox build is pinned to.
+#
+# WHY THIS FILE EXISTS: CI and os-build.sh both cloned the SDK with
+# `git clone --depth=1 --single-branch` off the default branch -- an unpinned
+# moving target. Two builds of the SAME seedsigner-os commit, a week apart,
+# could therefore use different kernel sources, a different Buildroot version
+# and a different prebuilt toolchain, and there was nothing in the repo that
+# recorded which. That alone makes a byte-reproducible image impossible.
+#
+# This also pins Buildroot. Unlike the Pi/La Frite path, which carries Buildroot
+# as a git submodule, the Luckfox Buildroot version is chosen by the SDK tarball
+# and merely discovered at build time (resolve-buildroot-dir.sh) -- the SDK sha
+# is the only handle there is.
+#
+# Blank lines and #-comments are ignored; the first remaining line is the sha.
+# Override for SDK development with LUCKFOX_COMMIT=<sha> or LUCKFOX_BRANCH=<br>.
+0b5c1f30ca6333b7ec5af70d26511da9ef8d39af

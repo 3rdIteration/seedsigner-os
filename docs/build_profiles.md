@@ -109,6 +109,9 @@ Non-dev images are designed to be **byte-identical across builds** from the same
 - Detection of supply-chain tampering
 - Reliable A/B testing of build changes via diff
 
+The full per-platform determinism mechanisms (including the Luckfox Pico Rockchip SDK pins) and how to verify
+them are documented in [reproducibility.md](reproducibility.md).
+
 ### Rootfs Overlay Structure
 
 | Directory | Dev | Non-Dev | Contents |
