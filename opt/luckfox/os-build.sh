@@ -2027,6 +2027,15 @@ s/^endef\nendif/endef\nendif\nendif/
     # compileall: the read-only squashfs can never cache __pycache__ at runtime,
     # so every import would otherwise re-compile .py source off xz squashfs on
     # every boot (the Pi profiles precompile at build time for the same reason).
+    # Drop whitespace-named paths from site-packages. mkfs-ext4-deterministic.sh
+    # drives debugfs with space-delimited commands and rejects such names
+    # outright, which fails every ext4 target (SD_CARD/EMMC; SPI_NAND is UBIFS
+    # and unaffected). Runs on BOTH variants — optimize-nondev.sh would have been
+    # the natural home but is non-dev only, and CI builds dev. Shared with CI via
+    # prune-whitespace-names.sh.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/prune-whitespace-names.sh" "$ROOTFS_DIR" \
+        || print_error "whitespace-name prune reported an error"
+
     # Runs after hardening/optimization, which prune parts of the python tree.
     # Shared with CI via precompile-bytecode.sh.
     bash "$SEEDSIGNER_LUCKFOX_DIR/precompile-bytecode.sh" "$ROOTFS_DIR" "$LUCKFOX_SDK_DIR"
@@ -2286,6 +2295,7 @@ assert_shared_build_files() {
              pin-spidev-bufsiz.sh readonly-rootfs.sh \
              assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
+             prune-whitespace-names.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
              install-gnupg-home.sh install-build-time.sh \
               uboot-recovery-config.sh compile-translations.sh \
