@@ -76,6 +76,14 @@ scripts that all three build paths — CI (`build-luckfox.yml`), local Docker (`
 only claimed for builds from the same repo commit *and* the same image; a Dockerfile change invalidates prior
 hashes until re-verified with a double build.
 
+**Not a leak, deliberately:** `/etc/seedsigner-build-time` is a real date baked into the image — the default
+the boot clock is set from, because the RV1106 has no RTC. It comes from the **pinned app commit's** committer
+date (`git log -1 --format=%ct`, the same expression `opt/build.sh` uses for the Pi), never from the build's
+wall clock, so the same OS commit and the same `--seedsigner-ref` still produce the same byte. It must never
+be switched to `SOURCE_DATE_EPOCH`, which is `0`: that would ship a device whose clock reads 1970, stamping
+every generated GPG key with a bogus creation date. `opt/luckfox/install-build-time.sh` enforces a year floor
+of 2020 so that edit fails the build instead.
+
 ### The pins
 
 | # | Leak | Pin | Where |

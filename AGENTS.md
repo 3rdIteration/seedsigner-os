@@ -41,6 +41,11 @@ identically — change the script, never one caller. **Prerequisite: CI and loca
 (`opt/luckfox/Dockerfile`); reproducibility is only claimed for builds from the same repo commit *and* the same
 image, so a Dockerfile change invalidates prior hashes until re-verified with a double build.
 
+The one date deliberately *kept* in the image is `/etc/seedsigner-build-time`, the default the boot clock is
+set from (the RV1106 has no RTC). It is derived from the **pinned app commit's** committer date, never from
+`date`, so it stays reproducible — and it must never be switched to `SOURCE_DATE_EPOCH`, which is `0` and
+would ship a device whose clock reads 1970. See `opt/luckfox/install-build-time.sh`.
+
 | Leak | Pin | Where |
 |---|---|---|
 | Host time in every tool that calls `date`/`time(NULL)` | `SOURCE_DATE_EPOCH=0` (default) + `KBUILD_BUILD_TIMESTAMP=@$EPOCH` exported for the whole build | `os-build.sh` env block |
