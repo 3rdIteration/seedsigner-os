@@ -1556,6 +1556,15 @@ install_seedsigner_app() {
     # compileall: the read-only squashfs can never cache __pycache__ at runtime,
     # so every import would otherwise re-compile .py source off xz squashfs on
     # every boot (the Pi profiles precompile at build time for the same reason).
+    # Drop whitespace-named paths from site-packages. mkfs-ext4-deterministic.sh
+    # drives debugfs with space-delimited commands and rejects such names
+    # outright, which fails every ext4 target (SD_CARD/EMMC; SPI_NAND is UBIFS
+    # and unaffected). Runs on BOTH variants — optimize-nondev.sh would have been
+    # the natural home but is non-dev only, and CI builds dev. Shared with CI via
+    # prune-whitespace-names.sh.
+    bash "$SCRIPT_DIR/prune-whitespace-names.sh" "$rootfs_dir" \
+        || print_warning "whitespace-name prune reported an error"
+
     # Runs after hardening/optimization, which prune parts of the python tree.
     # Shared with CI via precompile-bytecode.sh.
     bash "$SCRIPT_DIR/precompile-bytecode.sh" "$rootfs_dir" "$WORK_DIR/luckfox-pico"
