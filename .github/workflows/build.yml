@@ -32,27 +32,64 @@ on:
         required: false
         type: boolean
         default: false
+      board:
+        description: 'Board to build (all = every board, as push/PR builds do)'
+        required: false
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - pi0
+          - pi02w
+          - pi2
+          - pi4
+          - lafrite
+      variant:
+        description: 'dev (serial console + dev marker) or non-dev (hardened release image)'
+        required: false
+        type: choice
+        default: 'dev'
+        options:
+          - dev
+          - non-dev
 
 jobs:
+  # A one-board rebuild is the common case when chasing a board-specific bug, and
+  # the release images are the non-dev ones -- so the matrix is built from the
+  # dispatch inputs rather than hardcoded. push/PR events pass no inputs and get
+  # the previous behaviour: every board, dev variant.
+  select-targets:
+    name: Select build targets
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Build the matrix
+        id: select
+        env:
+          BOARD: ${{ inputs.board || 'all' }}
+          VARIANT: ${{ inputs.variant || 'dev' }}
+        run: |
+          suffix=""
+          if [ "$VARIANT" = "dev" ]; then
+            suffix="-dev"
+          fi
+          matrix=$(jq -cn --arg board "$BOARD" --arg suffix "$suffix" '
+            ["pi0", "pi02w", "pi2", "pi4", "lafrite"]
+            | map(select($board == "all" or . == $board))
+            | {include: map({config: (. + "-smartcard" + $suffix), board_flag: ("--" + .)})}')
+          echo "Selected targets: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.config }}
+    needs: select-targets
     runs-on: ubuntu-latest
     permissions:
       contents: write
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          - config: pi0-smartcard-dev
-            board_flag: --pi0
-          - config: pi02w-smartcard-dev
-            board_flag: --pi02w
-          - config: pi2-smartcard-dev
-            board_flag: --pi2
-          - config: pi4-smartcard-dev
-            board_flag: --pi4
-          - config: lafrite-smartcard-dev
-            board_flag: --lafrite
+      matrix: ${{ fromJSON(needs.select-targets.outputs.matrix) }}
 
     steps:
       - name: Checkout repository
@@ -105,7 +142,7 @@ jobs:
           SS_ARGS: >-
             ${{ matrix.board_flag }}
             --smartcard
-            --dev
+            ${{ (inputs.variant || 'dev') == 'dev' && '--dev' || '' }}
             --app-repo=${{ inputs.app_repo || 'https://github.com/3rdIteration/seedsigner' }}
             --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images

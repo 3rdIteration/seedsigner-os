@@ -34,6 +34,10 @@ Options:
   --force        - Force rebuild of Docker image
   --jobs, -j N   - Set number of parallel build jobs
   --output DIR   - Set output directory (default: ./build-output)
+  --repos-dir DIR- Bind-mount the SDK/app checkouts from DIR instead of the
+                   named Docker volume 'seedsigner-repos' (used by CI)
+  --cache-dir DIR- Host directory for the Rust toolchain cache. Without it
+                   host-rust (and LLVM) is rebuilt from source every build
   --nand         - Build NAND-flashable system image artifacts
   --microsd      - Build MicroSD image artifacts
   --model TARGET - Target model: mini|max|pi|both|all (default: both)
@@ -144,6 +148,13 @@ build_docker_image() {
     print_success "Docker image built: $IMAGE_NAME"
 }
 
+# Host paths for the repo tree and the build cache, set by --repos-dir /
+# --cache-dir. Empty means the historical behaviour: repos live in the Docker
+# volume 'seedsigner-repos', and there is no cache. CI sets both so that
+# actions/cache can see them on the runner filesystem.
+REPOS_DIR_HOST=""
+CACHE_DIR_HOST=""
+
 run_build() {
     local mode="$1"
     local build_jobs="$2"
@@ -158,13 +169,37 @@ run_build() {
     mkdir -p "$output_dir"
     local abs_output_dir=$(realpath "$output_dir")
     
-    # Create or use existing Docker volume for repositories
-    local volume_name="seedsigner-repos"
-    if ! docker volume ls | grep -q "$volume_name"; then
-        print_success "Creating Docker volume for persistent repositories: $volume_name"
-        docker volume create "$volume_name"
+    # Where the SDK + app checkouts live. A named Docker volume by default,
+    # which is right for a developer machine: the 37 GB SDK survives between
+    # builds. CI passes --repos-dir instead, because a runner needs the tree on
+    # the filesystem where actions/cache and post-build inspection can reach it.
+    local repos_mount
+    if [[ -n "$REPOS_DIR_HOST" ]]; then
+        mkdir -p "$REPOS_DIR_HOST"
+        repos_mount="$(realpath "$REPOS_DIR_HOST")"
+        print_success "Repository directory (bind mount): $repos_mount"
     else
-        print_success "Using existing repository volume: $volume_name"
+        local volume_name="seedsigner-repos"
+        if ! docker volume ls | grep -q "$volume_name"; then
+            print_success "Creating Docker volume for persistent repositories: $volume_name"
+            docker volume create "$volume_name"
+        else
+            print_success "Using existing repository volume: $volume_name"
+        fi
+        repos_mount="$volume_name"
+    fi
+
+    # Host Rust toolchain cache. Without it the container rebuilds host-rust --
+    # and therefore LLVM -- from source on every build, which is the single
+    # longest step there is. See rust-toolchain-cache.sh.
+    local cache_arg=""
+    if [[ -n "$CACHE_DIR_HOST" ]]; then
+        mkdir -p "$CACHE_DIR_HOST"
+        local abs_cache_dir
+        abs_cache_dir="$(realpath "$CACHE_DIR_HOST")"
+        cache_arg="-v $abs_cache_dir:/build/cache"
+        env_args="$env_args -e RUST_TOOLCHAIN_CACHE=/build/cache/rust-toolchain.tar.zst"
+        print_success "Build cache directory: $abs_cache_dir"
     fi
     
     # Set up build environment variables
@@ -187,8 +222,42 @@ run_build() {
     # that writes their marker files was unreachable from a Docker build --
     # docker-compose.yml's comment claiming parity with
     # opt/luckfox/{os-build,build-local}.sh was simply untrue. The same applies to
-    # DISABLE_UART2_CONSOLE_DEBUG and the SEEDSIGNER_OS_* provenance fields: CI
-    # sets them, a Docker build had no way to.
+    # DISABLE_UART2_CONSOLE_DEBUG; the SEEDSIGNER_OS_* provenance fields are
+    # resolved below when the caller does not supply them.
+    #
+    # Resolve seedsigner-os provenance from this checkout when the caller did not
+    # supply it. CI forwards explicit values (build-luckfox.yml's "Prepare build
+    # metadata" step); a local Docker build derives them here with the SAME
+    # expressions, so identical settings produce byte-identical images in both
+    # environments: REPO from the origin remote canonicalised to exactly
+    # https://github.com/owner/repo (no ".git", no trailing slash -- CI records
+    # github.repository bare, and any other form desyncs the image), BRANCH and
+    # COMMIT via rev-parse (a detached checkout records "HEAD", exactly as CI
+    # does), and DATE as %cI -- the latest commit's committer date, not the build
+    # time. A wall-clock stamp would make two builds of the same checkout differ.
+    # Outside a git checkout with a github.com origin the fields stay unset and
+    # gen-os-release.sh records "unknown", as before.
+    local os_repo_root os_remote_url="" os_repo_path
+    os_repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    if git -C "$os_repo_root" rev-parse --git-dir >/dev/null 2>&1; then
+        os_remote_url="$(git -C "$os_repo_root" remote get-url origin 2>/dev/null || true)"
+        case "$os_remote_url" in
+            https://github.com/*) os_repo_path="${os_remote_url#https://github.com/}" ;;
+            git@github.com:*)    os_repo_path="${os_remote_url#git@github.com:}" ;;
+            *)                   os_repo_path="" ;;
+        esac
+        if [ -n "$os_repo_path" ]; then
+            while [ "${os_repo_path%/}" != "$os_repo_path" ]; do os_repo_path="${os_repo_path%/}"; done
+            os_remote_url="https://github.com/${os_repo_path%.git}"
+        else
+            os_remote_url=""
+        fi
+        SEEDSIGNER_OS_REPO="${SEEDSIGNER_OS_REPO:-$os_remote_url}"
+        SEEDSIGNER_OS_BRANCH="${SEEDSIGNER_OS_BRANCH:-$(git -C "$os_repo_root" rev-parse --abbrev-ref HEAD)}"
+        SEEDSIGNER_OS_COMMIT="${SEEDSIGNER_OS_COMMIT:-$(git -C "$os_repo_root" rev-parse HEAD)}"
+        SEEDSIGNER_OS_DATE="${SEEDSIGNER_OS_DATE:-$(git -C "$os_repo_root" log -1 --format=%cI)}"
+    fi
+
     local passthrough
     for passthrough in SEEDSIGNER_BUILD_VARIANT SEEDSIGNER_READONLY_ROOTFS \
                        SEEDSIGNER_ZRAM \
@@ -224,14 +293,35 @@ run_build() {
         gen_os_release_arg="-v $gen_os_release:/build/gen-os-release.sh:ro"
     fi
 
-    # Docker run arguments with persistent volume
+    # seccomp=unconfined is needed for ONE reason: os-build.sh runs the SDK
+    # build stages under `setarch -R` to disable address-space randomisation.
+    # The Rockchip image tools leak uninitialised host pointers into the FIT
+    # /memreserve/ entries of uboot.img and boot.img, so with ASLR on those
+    # images differ on every build. setarch uses the personality() syscall,
+    # which Docker's default seccomp profile denies:
+    #
+    #     setarch: failed to set personality to x86_64: Operation not permitted
+    #
+    # Without this the build still succeeds -- sdk_build falls back to running
+    # unwrapped and warns -- but those two images stay unreproducible.
+    #
+    # This is a build container: it already runs as root and compiles arbitrary
+    # upstream source, so relaxing seccomp for it does not meaningfully change
+    # the security posture. Nothing here is a long-lived service.
+    # A fixed hostname, because the container's default hostname is its ID and
+    # that leaks into built binaries. stressapptest bakes in
+    # "root @ <hostname> on <date>", so two builds embedded e4994963c544 and
+    # 3e84f603d2bb -- different on every single run.
     local docker_args="$PLATFORM_ARGS
+                       --security-opt seccomp=unconfined
+                       --hostname seedsigner-build
                        --name $CONTAINER_NAME
                        --rm
-                       -v $volume_name:/build/repos
+                       -v $repos_mount:/build/repos
                        -v $abs_output_dir:/build/output
                        -v $external_packages_dir:/build/external-packages:ro
                        $gen_os_release_arg
+                       $cache_arg
                        $env_args"
     
     case "$mode" in
@@ -242,7 +332,7 @@ run_build() {
             else
                 print_warning "Build will take 30-90 minutes"
             fi
-            print_success "Repository volume: $volume_name (persists between builds)"
+            print_success "Repository store: $repos_mount (persists between builds)"
             print_success "Output directory: $abs_output_dir (artifacts automatically available)"
             local container_mode=""
             if [[ "$build_nand" == "true" && "$build_microsd" == "true" ]]; then
@@ -270,12 +360,12 @@ run_build() {
             ;;
         "interactive")
             print_success "Starting interactive mode..."
-            print_success "Repository volume: $volume_name (persists between sessions)"
+            print_success "Repository store: $repos_mount (persists between sessions)"
             docker run -it $docker_args "$IMAGE_NAME" interactive
             ;;
         "shell")
             print_success "Starting direct shell..."
-            print_success "Repository volume: $volume_name (persists between sessions)"
+            print_success "Repository store: $repos_mount (persists between sessions)"
             docker run -it $docker_args "$IMAGE_NAME" shell
             ;;
         *)
@@ -404,6 +494,29 @@ main() {
                     shift 2
                 else
                     print_error "Missing argument for --output"
+                    exit 1
+                fi
+                ;;
+            # Bind-mount the repo tree from the host instead of using the named
+            # Docker volume. CI needs this: actions/cache cannot see inside a
+            # Docker volume, and neither can a post-build inspection step.
+            --repos-dir)
+                if [[ -n "$2" ]]; then
+                    REPOS_DIR_HOST="$2"
+                    shift 2
+                else
+                    print_error "Missing argument for --repos-dir"
+                    exit 1
+                fi
+                ;;
+            # Host directory for the Rust toolchain cache. Without it the
+            # container recompiles host-rust (and LLVM) from source every build.
+            --cache-dir)
+                if [[ -n "$2" ]]; then
+                    CACHE_DIR_HOST="$2"
+                    shift 2
+                else
+                    print_error "Missing argument for --cache-dir"
                     exit 1
                 fi
                 ;;

@@ -30,63 +30,27 @@ verify_git_head() {
   fi
 }
 
-echo *****Generating DIY-Tools Image*****
+echo *****Fetching DIY-Tools Image*****
 
-# Download DIY tools and package them into an image file for easy mounting
-# Create Image File
-mkdir ../tmp
+# The diy-tools squashfs is built reproducibly by the seedsigner-diy-tools repo
+# and published as a tagged GitHub Release. Download the prebuilt artifact and
+# verify it against the pinned hash in opt/rootfs-overlay/etc/diy-tools.sha256
+# (the same hash mdev.sh re-checks at runtime before mounting).
+DIY_ARCH="armhf"
+DIY_TAG="v1.0.0"
+DIY_HASH_FILE="$(cd "$(dirname "$0")/../../rootfs-overlay" && pwd)/etc/diy-tools.sha256"
+DIY_HASH="$(awk -F: -v a="${DIY_ARCH}" '$1==a{print $2}' "${DIY_HASH_FILE}")"
+if [ -z "${DIY_HASH}" ]; then
+  echo "ERROR: no pinned diy-tools hash for arch ${DIY_ARCH} in ${DIY_HASH_FILE}" >&2
+  exit 1
+fi
 
-cd ../tmp
+DIY_TMP="$(mktemp -d)"
+( cd "${DIY_TMP}" && download_and_verify "https://github.com/3rdIteration/seedsigner-diy-tools/releases/download/${DIY_TAG}/diy-tools-${DIY_ARCH}.squashfs" "${DIY_HASH}" "diy-tools.squashfs" )
+mv "${DIY_TMP}/diy-tools.squashfs" "${BINARIES_DIR}/diy-tools.squashfs"
+rm -rf "${DIY_TMP}"
+cd "$(dirname "$0")/../.."
 
-mkdir diy
-
-# Get Java
-download_and_verify "https://cdn.azul.com/zulu-embedded/bin/zulu8.74.0.17-ca-jdk8.0.392-linux_aarch32hf.tar.gz" "9d7c46b836094ea5b805eda88a79e19171d7256130a6968e2324da838b546217"
-tar -xvzf zulu8.74.0.17-ca-jdk8.0.392-linux_aarch32hf.tar.gz
-rm ./zulu8.74.0.17-ca-jdk8.0.392-linux_aarch32hf/src.zip
-rm -R ./zulu8.74.0.17-ca-jdk8.0.392-linux_aarch32hf/demo
-rm -R ./zulu8.74.0.17-ca-jdk8.0.392-linux_aarch32hf/sample
-mv ./zulu8.74.0.17-ca-jdk8.0.392-linux_aarch32hf ./diy/jdk
-
-# Get Ant
-download_and_verify "https://dlcdn.apache.org//ant/binaries/apache-ant-1.9.16-bin.tar.gz" "7db54556acf6d5654bf3e2882e3ff45220dea689160ac2e5964ac94635843df8"
-tar -xvzf apache-ant-1.9.16-bin.tar.gz
-mv ./apache-ant-1.9.16 ./diy/ant
-
-# Get Satochip Source
-git clone --depth 1 --recursive --branch 20250310 https://github.com/3rdIteration/Satochip-DIY.git
-verify_git_head "./Satochip-DIY" "b8f1334b07c2ad3552548bd8659fa2714c19d55e"
-rm -R -f ./Satochip-DIY/.git
-rm -R ./Satochip-DIY/applets/seedkeeper-thd89/sdks
-rm -R ./Satochip-DIY/applets/satodime-thd89/sdks
-rm -R ./Satochip-DIY/applets/satochip-thd89/sdks
-rm -R ./Satochip-DIY/applets/satochip/gp.exe
-rm -R ./Satochip-DIY/applets/satodime/gp.exe
-rm -R ./Satochip-DIY/applets/satochip-thd89/gp.exe
-rm -R ./Satochip-DIY/applets/satodime-thd89/gp.exe
-rm -R ./Satochip-DIY/gp.exe
-rm -R -f ./Satochip-DIY/sdks/jc211_kit
-rm -R -f ./Satochip-DIY/sdks/jc212_kit
-rm -R -f ./Satochip-DIY/sdks/jc221_kit
-rm -R -f ./Satochip-DIY/sdks/jc222_kit
-rm -R -f ./Satochip-DIY/sdks/jc303_kit
-rm -R -f ./Satochip-DIY/sdks/jc305u1_kit
-rm -R -f ./Satochip-DIY/sdks/jc305u2_kit
-rm -R -f ./Satochip-DIY/sdks/jc305u3_kit
-rm -R -f ./Satochip-DIY/sdks/jc305u4_kit
-rm -R -f ./Satochip-DIY/sdks/jc310b43_kit
-rm -R -f ./Satochip-DIY/sdks/jc310r20210706_kit
-mv ./Satochip-DIY ./diy/Satochip-DIY
-
-genimage \
-	--rootpath ./diy   \
-	--config "../pi2-smartcard/board/genimage-diy-tools.cfg"
-
-cd ../
-
-sha256sum ./tmp/images/diy-tools.squashfs
-
-mv ./tmp/images/diy-tools.squashfs ${BINARIES_DIR}
 
 download_and_verify "https://github.com/SeedSigner/seedsigner/releases/download/0.8.6/seedsigner_os.0.8.6.pi0.img" "da32ce21f185404ccefd58e76e55ae7f1ac9fe2df2100bc7bbab3e03c5d71b6d"
 mv seedsigner_os.0.8.6.pi0.img ${BINARIES_DIR}
