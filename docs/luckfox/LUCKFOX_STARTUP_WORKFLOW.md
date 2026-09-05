@@ -25,6 +25,12 @@ Observed unreliable behavior:
 2. Then start SeedSigner.
 3. SeedSigner may fail during startup (display init).
 
+**Compressed swap (zram) runs before any of this.** `/etc/init.d/S03zram` brings up a zram swap device sized
+from total RAM (50% capacity, capped at 25% of RAM actually consumed) at S03 — ahead of `S10mdev`, pcscd, the
+camera stack and the app at S99. It gives the sequence above more room to work in; it does **not** replace it,
+and the ordering rules here still hold. Swap here never touches flash: pages stay compressed in RAM. See
+[README.md](README.md#compressed-swap-in-ram-zram).
+
 ## Current runtime components
 
 ### Entry point
