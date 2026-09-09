@@ -25,6 +25,17 @@ RUN apt-get update && \
         device-tree-compiler libncurses5-dev \
         pkg-config bc python-is-python3 passwd openssl \
         openssh-server openssh-client vim file cpio rsync \
+        # rust-toolchain-cache.sh packs the host Rust toolchain with
+        # `tar --zstd`, which shells out to the zstd binary. The CI runner
+        # image happens to ship it; this base image does not, so without it
+        # the cache silently fails to write and every build recompiles LLVM.
+        zstd \
+        # mkfs-ubifs-determinism/build-mkfs-ubifs.sh links the rebuilt
+        # mkfs.ubifs against this at build time and it loads it at runtime;
+        # the SDK's prebuilt static binary never needed it, so nothing else
+        # pulls it in. (The lzo/uuid HEADERS are vendored with SHA-256 pins;
+        # only the runtime .so comes from here.)
+        liblzo2-2 \
         ca-certificates \
         && \
     rm -rf /var/lib/apt/lists/*
@@ -40,6 +51,19 @@ COPY configs/ /build/configs/
 COPY files/ /build/files/
 COPY scripts/ /build/scripts/
 COPY blkenvflash /build/
+# The SDK revision pin, read by prepare-sdk-checkout.sh from its own directory.
+# NOT covered by the `COPY *.sh` below -- it is data, not a script -- so it needs
+# its own line. Leaving it out makes every build fail at the clone step with
+# "no SDK revision pinned"; assert_shared_build_files() in os-build.sh now
+# catches it up front instead.
+COPY SDK_COMMIT /build/
+
+# The deterministic mkfs.ubifs toolchain: build-mkfs-ubifs.sh rebuilds the
+# SDK's prebuilt mkfs.ubifs from source with a patch that sorts directory
+# entries (inode numbering must not depend on host readdir() order), using
+# vendored lzo/uuid headers pinned by SHA-256. A subdirectory, so it needs its
+# own COPY -- the `COPY *.sh` glob below only reaches top-level scripts.
+COPY mkfs-ubifs-determinism/ /build/mkfs-ubifs-determinism/
 
 
 # Make scripts executable

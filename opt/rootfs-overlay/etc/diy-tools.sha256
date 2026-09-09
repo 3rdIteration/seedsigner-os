@@ -1,0 +1,12 @@
+# Pinned SHA-256 of the prebuilt diy-tools squashfs artifacts published by the
+# seedsigner-diy-tools repo (https://github.com/3rdIteration/seedsigner-diy-tools).
+#
+# These hashes are reproduced by the reproducible build in that repo, so they are
+# stable per release tag. mdev.sh re-checks the microSD's diy-tools.squashfs
+# against this file before mounting (fail-closed), and each smartcard profile's
+# post-image script verifies the downloaded artifact against the same value.
+#
+# Bump these when cutting a new seedsigner-diy-tools release (and update the
+# DIY_TAG in the post-image scripts to match).
+armhf:22e289c2caa58ed4d460735b03155a57537fa7e29b354ca4fc72a508fe3bdff8
+aarch64:9228bf5e60f8a94f537f26414c7a0401f75a87ef85ca0460e887356d9cdb0f2b

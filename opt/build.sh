@@ -139,6 +139,9 @@ tail_endless() {
 
 compile_translations_and_fonts() {
 
+  # See the pinned pip install below for why this is not simply "latest".
+  local fonttools_version="4.64.0"
+
   # create virtual env to compile translation files and slim down font files
   virtualenv .translation-venv
   source .translation-venv/bin/activate
@@ -147,8 +150,13 @@ compile_translations_and_fonts() {
   ss_translations_repo="./src/seedsigner/resources/seedsigner-translations"
 
   # install depedencies for babel and fonttools(pyftsubset)
+  #
+  # fonttools is PINNED: pyftsubset's GPOS output is not stable across releases
+  # (4.63.0 vs 4.64.0 differ by 532-550 bytes per CJK font with byte-identical
+  # glyf/cmap/GSUB), so an unpinned install makes the rootfs hash depend on when
+  # the build ran. Keep in lockstep with opt/luckfox/compile-translations.sh.
   retry_network "pip install babel" pip install babel || exit
-  retry_network "pip install fonttools" pip install fonttools || exit
+  retry_network "pip install fonttools" pip install "fonttools==${fonttools_version}" || exit
   retry_network "pip install -e ." pip install -e . || exit
 
   # remove any existing binary mo files if they exist

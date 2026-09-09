@@ -246,6 +246,10 @@ downstream noise. Rule of thumb: **the innermost file whose *content* (not offse
 cause**; everything else is a shift. Cross-check a suspected kernel-level cause against the kernel's own
 string table and its embedded `IKCONFIG` `.config` — if both are identical, the kernel is not the cause.
 
+**Luckfox Pico images are NAND layouts, not SD images** — imgdiff.py does not apply to them; compare the CI
+sha256 artifact against a local build's `sha256sums.txt` instead. The full per-platform determinism mechanisms
+and verification procedures are in [reproducibility.md](reproducibility.md).
+
 ## Workflow Summary
 
 1. **Make your edits** to the relevant files

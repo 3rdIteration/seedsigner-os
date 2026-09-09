@@ -109,6 +109,26 @@ clone_fresh() {
     echo "✅ seedsigner cloned at '$REF' ($(checkout_desc))"
 }
 
+# Reuse the CLONE, never the previous build's mutations.
+#
+# The build writes into this checkout: compile-translations.sh compiles .mo
+# files and slims the CJK fonts inside the translations submodule. Matching
+# HEAD only proves the right *commit* is checked out -- it says nothing about
+# the working tree, so a repeat build of the same ref used to re-slim fonts
+# that the last build had already slimmed. pyftsubset re-subsetting an
+# already-subset font is a fixed point (it cannot re-expand a pruned GPOS), so
+# whatever version first slimmed them stayed frozen into every later local
+# build and never matched CI, which clones fresh on every job.
+#
+# Submodules first: `git clean -fdx` in the superproject deliberately skips
+# directories that contain a .git, so it would leave the submodule's slimmed
+# fonts exactly where they are.
+restore_pristine() {
+    git -C "$DIR" submodule foreach --recursive 'git reset --hard --quiet && git clean -fdxq' >/dev/null
+    git -C "$DIR" reset --hard --quiet
+    git -C "$DIR" clean -fdxq
+}
+
 WANT="$(remote_sha)"
 
 if [ ! -d "$DIR" ]; then
@@ -132,7 +152,8 @@ HAVE="$(git -C "$DIR" rev-parse HEAD 2>/dev/null || echo none)"
 
 if [ -n "$WANT" ]; then
     if [ "$HAVE" = "$WANT" ]; then
-        echo "✅ seedsigner already at ref '$REF' ($(checkout_desc)) — reused"
+        restore_pristine
+        echo "✅ seedsigner already at ref '$REF' ($(checkout_desc)) — reused (tree restored)"
         exit 0
     fi
     echo "↻ seedsigner checkout is $(checkout_desc), but ref '$REF' is ${WANT:0:7}"
@@ -144,7 +165,8 @@ fi
 # The remote could not resolve <REF>: a raw commit, a typo, or no network.
 case "$HAVE" in
     "$REF"*)
-        echo "✅ seedsigner already at commit $REF ($(checkout_desc)) — reused"
+        restore_pristine
+        echo "✅ seedsigner already at commit $REF ($(checkout_desc)) — reused (tree restored)"
         exit 0
         ;;
 esac
@@ -152,6 +174,7 @@ esac
 if ! remote_reachable; then
     # Offline: never delete a checkout that cannot be replaced.
     if checkout_name_matches; then
+        restore_pristine
         echo "⚠️  cannot reach $REPO_URL — reusing $(checkout_desc), which matches '$REF' by name" >&2
         echo "⚠️  it may be behind the remote; this build is NOT pinned to what '$REF' means today" >&2
         exit 0

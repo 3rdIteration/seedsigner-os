@@ -32,27 +32,64 @@ on:
         required: false
         type: boolean
         default: false
+      board:
+        description: 'Board to build (all = every board, as push/PR builds do)'
+        required: false
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - pi0
+          - pi02w
+          - pi2
+          - pi4
+          - lafrite
+      variant:
+        description: 'dev (serial console + dev marker) or non-dev (hardened release image)'
+        required: false
+        type: choice
+        default: 'dev'
+        options:
+          - dev
+          - non-dev
 
 jobs:
+  # A one-board rebuild is the common case when chasing a board-specific bug, and
+  # the release images are the non-dev ones -- so the matrix is built from the
+  # dispatch inputs rather than hardcoded. push/PR events pass no inputs and get
+  # the previous behaviour: every board, dev variant.
+  select-targets:
+    name: Select build targets
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Build the matrix
+        id: select
+        env:
+          BOARD: ${{ inputs.board || 'all' }}
+          VARIANT: ${{ inputs.variant || 'dev' }}
+        run: |
+          suffix=""
+          if [ "$VARIANT" = "dev" ]; then
+            suffix="-dev"
+          fi
+          matrix=$(jq -cn --arg board "$BOARD" --arg suffix "$suffix" '
+            ["pi0", "pi02w", "pi2", "pi4", "lafrite"]
+            | map(select($board == "all" or . == $board))
+            | {include: map({config: (. + "-smartcard" + $suffix), board_flag: ("--" + .)})}')
+          echo "Selected targets: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.config }}
+    needs: select-targets
     runs-on: ubuntu-latest
     permissions:
       contents: write
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          - config: pi0-smartcard-dev
-            board_flag: --pi0
-          - config: pi02w-smartcard-dev
-            board_flag: --pi02w
-          - config: pi2-smartcard-dev
-            board_flag: --pi2
-          - config: pi4-smartcard-dev
-            board_flag: --pi4
-          - config: lafrite-smartcard-dev
-            board_flag: --lafrite
+      matrix: ${{ fromJSON(needs.select-targets.outputs.matrix) }}
 
     steps:
       - name: Checkout repository
@@ -93,22 +130,26 @@ jobs:
           mkdir -p buildroot_dl
           mkdir -p .buildroot-ccache
 
-      # What gets downloaded is a function of the buildroot pin (which fixes
-      # every package version), the defconfigs, our external packages, and the
-      # post-image scripts (they fetch the JDK/Ant tarballs into the same dir).
-      # Rotating the key on all four keeps the cache from going permanently
-      # stale: without the post-image scripts in here, bumping the JDK version
-      # would leave the new tarball re-downloaded on every run forever, because
-      # an exact key hit skips the save. (The defconfig glob also sweeps in
-      # luckfox's, which this workflow does not build -- costs at worst one
-      # extra cache miss, and is not worth a hand-maintained list.)
+      # What gets downloaded is a function of the buildroot pin (which fixes every
+      # package version), the defconfigs, our external packages, the post-image
+      # scripts (they fetch the diy-tools squashfs and the seedsigner_os release
+      # images into the same dir), and diy-tools.sha256 (which pins the squashfs
+      # and can change on its own, when a release is re-cut under the same tag).
+      # Rotating the key on all of them keeps the cache from going permanently
+      # stale: leave one out and bumping what it pins would leave the new
+      # artifact re-downloaded on every run forever, because an exact key hit
+      # skips the save. (The defconfig glob also sweeps in luckfox's, which this
+      # workflow does not build -- costs at worst one extra cache miss, and is
+      # not worth a hand-maintained list.)
       - name: Compute buildroot cache key input
         id: dlkey
         run: echo "br=$(git rev-parse HEAD:opt/buildroot)" >> "$GITHUB_OUTPUT"
 
       # Deliberately not keyed on matrix.config: the five boards' download sets
-      # overlap almost entirely, so one shared entry (~1-1.5GB) serves them all
-      # and stays well inside the repo's 10GB cache budget. Every leg restores
+      # overlap almost entirely (the per-arch diy-tools squashfs is about the
+      # only thing La Frite does not share with the Pis), so one shared entry
+      # serves them all -- see the cache report at the end of the job for what it
+      # actually weighs against the repo's 10GB budget. Every leg restores
       # it, the first to finish saves it, the rest no-op. A stale or partial
       # cache is harmless -- buildroot hash-checks each tarball and re-downloads
       # whatever is missing, so the worst case is the uncached behaviour.
@@ -117,7 +158,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: buildroot_dl
-          key: buildroot-dl-${{ steps.dlkey.outputs.br }}-${{ hashFiles('opt/*/configs/*_defconfig', 'opt/external-packages/**', 'opt/*/board/post-image-seedsigner.sh') }}
+          key: buildroot-dl-${{ steps.dlkey.outputs.br }}-${{ hashFiles('opt/*/configs/*_defconfig', 'opt/external-packages/**', 'opt/*/board/post-image-seedsigner.sh', 'opt/rootfs-overlay/etc/diy-tools.sha256') }}
           restore-keys: buildroot-dl-
 
       # Buildroot's real ccache (BR2_CCACHE=y points at /root/.buildroot-ccache,
@@ -158,7 +199,7 @@ jobs:
           SS_ARGS: >-
             ${{ matrix.board_flag }}
             --smartcard
-            --dev
+            ${{ (inputs.variant || 'dev') == 'dev' && '--dev' || '' }}
             --app-repo=${{ inputs.app_repo || 'https://github.com/3rdIteration/seedsigner' }}
             --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images

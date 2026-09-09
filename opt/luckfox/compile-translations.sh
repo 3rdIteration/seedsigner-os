@@ -34,6 +34,9 @@ fi
 
 TRANSLATIONS_REL="src/seedsigner/resources/seedsigner-translations"
 
+# See the pip install below for why this is pinned rather than latest.
+FONTTOOLS_VERSION="4.64.0"
+
 if [ ! -d "$SS_DIR/$TRANSLATIONS_REL/l10n" ]; then
   echo "compile-translations: no catalog at $SS_DIR/$TRANSLATIONS_REL/l10n — skipping i18n compile (English-only)"
   exit 0
@@ -82,7 +85,18 @@ if ! python3 -m pip install --quiet $pip_target; then
   exit 0
 fi
 # fonttools (pyftsubset) is only needed for the optional font-slimming step.
-python3 -m pip install --quiet fonttools >/dev/null 2>&1 || true
+#
+# PINNED, and it has to be. pyftsubset's GPOS output is not stable across
+# fonttools releases: 4.63.0 and 4.64.0 subset the CJK NotoSans fonts to
+# byte-identical glyf/cmap/GSUB/hmtx but differently sized GPOS tables (JP
+# +532, KR +538, SC +550 bytes), which changes `head`'s checkSumAdjustment and
+# so every downstream hash -- rootfs.img, update.img and the SD images. An
+# unpinned `pip install fonttools` therefore makes reproducibility a function
+# of *when* the build ran relative to a PyPI release. Keep this in lockstep
+# with opt/build.sh's compile_translations_and_fonts().
+if ! python3 -m pip install --quiet "fonttools==$FONTTOOLS_VERSION" >/dev/null 2>&1; then
+  echo "compile-translations: could not install fonttools==$FONTTOOLS_VERSION — fonts will NOT be slimmed" >&2
+fi
 
 # Drop any stale .mo then compile (applies the fork overlay merge).
 rm -f "$TRANSLATIONS_REL"/l10n/*/LC_MESSAGES/*.mo 2>/dev/null || true
@@ -94,7 +108,19 @@ fi
 
 # --- Optional: slim bundled fonts to only the glyphs the translations use ------
 extract_tool="$TRANSLATIONS_REL/tools/extract_characters_from_babel_mo.py"
-if [ -d "$TRANSLATIONS_REL/fonts" ] && [ -f "$extract_tool" ] && command -v pyftsubset >/dev/null 2>&1; then
+# Address the venv copy directly: a bare `pyftsubset` would fall back to a
+# host-installed one (~/.local/bin) at whatever version that happens to be,
+# which is the exact non-reproducibility this pin exists to stop.
+pyftsubset_bin="$VENV/bin/pyftsubset"
+pyftsubset_ver=""
+# pyftsubset has no --version (and exits 0 on an unknown option), so ask the
+# venv interpreter for the installed fontTools version instead.
+[ -x "$pyftsubset_bin" ] && pyftsubset_ver=$("$VENV/bin/python3" -c 'import fontTools; print(fontTools.version)' 2>/dev/null | tr -d "[:space:]")
+if [ -n "$pyftsubset_ver" ] && [ "$pyftsubset_ver" != "$FONTTOOLS_VERSION" ]; then
+  echo "compile-translations: pyftsubset is $pyftsubset_ver, expected $FONTTOOLS_VERSION — refusing to slim fonts (output would not match CI)" >&2
+  pyftsubset_ver=""
+fi
+if [ -d "$TRANSLATIONS_REL/fonts" ] && [ -f "$extract_tool" ] && [ -n "$pyftsubset_ver" ]; then
   all_chars=""
   for f in "$TRANSLATIONS_REL"/l10n/*/LC_MESSAGES/messages.mo; do
     [ -f "$f" ] || continue
@@ -109,7 +135,7 @@ if [ -d "$TRANSLATIONS_REL/fonts" ] && [ -f "$extract_tool" ] && command -v pyft
     [ -f "$src" ] || continue
     orig="$TRANSLATIONS_REL/fonts/${font}-Regular-Original.ttf"
     mv "$src" "$orig" || continue
-    if ! pyftsubset "$orig" --text="$all_chars" --output-file="$src"; then
+    if ! "$pyftsubset_bin" "$orig" --text="$all_chars" --output-file="$src"; then
       echo "compile-translations: font subset failed for $font — restoring full font" >&2
       mv "$orig" "$src" 2>/dev/null || true
     fi

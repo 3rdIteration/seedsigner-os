@@ -109,6 +109,9 @@ Non-dev images are designed to be **byte-identical across builds** from the same
 - Detection of supply-chain tampering
 - Reliable A/B testing of build changes via diff
 
+The full per-platform determinism mechanisms (including the Luckfox Pico Rockchip SDK pins) and how to verify
+them are documented in [reproducibility.md](reproducibility.md).
+
 ### Rootfs Overlay Structure
 
 | Directory | Dev | Non-Dev | Contents |
@@ -132,7 +135,7 @@ Smartcard profiles add NFC reading and JavaCard smartcard provisioning capabilit
 | **Pinentry** | `pinentry-ncurses` (TTY-based) | `pinentry-tty` only |
 | **Headless mode** | Yes — no display output needed | Uses SeedSigner LCD UI |
 
-The smartcard stack enables the device to act as a hardware wallet via NFC tap or USB CCID, compatible with standard PC/SC readers and GnuPG. The DIY tools squashfs contains everything needed to personally fabricate and program a Satochip JavaCard at home.
+The smartcard stack enables the device to act as a hardware wallet via NFC tap or USB CCID, compatible with standard PC/SC readers and GnuPG. The DIY tools squashfs contains everything needed to personally fabricate and program a Satochip JavaCard at home. See [DIY Tools: Verification & Mount Log](diy_tools.md) for how the squashfs is hash-verified and auto-mounted at runtime, and how to read `/tmp/diy-mount.log`.
 
 ## Reproducibility
 

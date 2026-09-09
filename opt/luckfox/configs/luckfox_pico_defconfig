@@ -171,6 +171,12 @@ BR2_GNU_MIRROR="http://ftpmirror.gnu.org"
 BR2_LUAROCKS_MIRROR="http://rocks.moonscript.org"
 BR2_CPAN_MIRROR="https://cpan.metacpan.org"
 BR2_JLEVEL=0
+# Reproducible builds. Strips timestamps, build paths and $(nproc)-dependent
+# ordering out of Buildroot package output. Every Pi/La Frite defconfig has set
+# this from the start (e.g. opt/pi0-smartcard/configs/pi0-smartcard_defconfig:7);
+# the Luckfox defconfig never did, which is why nothing downstream of Buildroot
+# could be byte-identical no matter what else was pinned.
+BR2_REPRODUCIBLE=y
 BR2_STRIP_strip=y
 BR2_STRIP_EXCLUDE_FILES=""
 BR2_STRIP_EXCLUDE_DIRS=""
