@@ -1434,6 +1434,16 @@ validate_nand_oriented_output() {
             print_error "Invalid NAND output: missing 'mtd' commands in $(basename "$script")"
             exit 1
         fi
+
+        # patch-sd-update-scripts.sh must have run: staging at the SDK's default
+        # ${ramdisk_addr_r} overruns U-Boot's own stack/heap on a 64 MiB Mini and
+        # hangs the microSD auto-flash on rootfs.img. Cheap catch if the patch
+        # step is ever dropped from a call site.
+        if grep -q '\${ramdisk_addr_r}' "$script"; then
+            print_error "Invalid NAND output: $(basename "$script") still stages at \${ramdisk_addr_r}"
+            echo "   patch-sd-update-scripts.sh did not run before packaging."
+            exit 1
+        fi
     done
 
     print_success "Validated NAND-oriented update scripts"
@@ -1865,6 +1875,15 @@ s/^endef\nendif/endef\nendif\nendif/
           || print_error "Could not generate seedsigner-os-release"
     fi
 
+    # Bake the default the boot clock is set from. The RV1106 has no RTC and
+    # these images have no NTP, so without this the device comes up at whatever
+    # the SoC left behind — which broke GPG key generation outright. Derived
+    # from the pinned app commit, so it stays reproducible. Shared with CI via
+    # install-build-time.sh; fails the build rather than shipping a bad clock.
+    if [[ -f "$SEEDSIGNER_LUCKFOX_DIR/install-build-time.sh" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/install-build-time.sh" "$ROOTFS_DIR" "$SEEDSIGNER_CODE_DIR"
+    fi
+
     # Persistent boot log is OFF by default: a production device writes nothing
     # to flash, and the log captures app output that would otherwise sit in
     # /userdata (which survives a reflash) long after the failure. Bake the
@@ -2107,6 +2126,13 @@ s/^endef\nendif/endef\nendif\nendif/
     print_step "Packaging Firmware"
     sdk_build firmware
     normalise_boot_images
+    # The SDK emits sd_update.txt/tftp_update.txt staging every partition at
+    # ${ramdisk_addr_r} = 0x00E00000, which leaves ~31 MiB below U-Boot's own
+    # relocated stack/heap on a 64 MiB Mini. Our 38.6 MiB rootfs.img does not fit
+    # there: mw.b overwrote the running loader and the microSD auto-flash hung
+    # mid-write with no console output. Restage low and hard-fail if any image
+    # ever outgrows the window again. Shared with build-local.sh.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-sd-update-scripts.sh" "$LUCKFOX_SDK_DIR"
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.
@@ -2348,7 +2374,7 @@ assert_shared_build_files() {
              strip-kernel-network.sh assert-kernel-network.sh \
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
-             install-gnupg-home.sh \
+             install-gnupg-home.sh install-build-time.sh \
               uboot-recovery-config.sh compile-translations.sh \
               SDK_COMMIT \
               mkfs-ubifs-determinism/build-mkfs-ubifs.sh \

@@ -1428,6 +1428,15 @@ install_seedsigner_app() {
       bash "$SCRIPT_DIR/../gen-os-release.sh" "$rootfs_dir/etc/seedsigner-os-release" \
       || print_warning "Could not generate seedsigner-os-release"
 
+    # Bake the default the boot clock is set from. The RV1106 has no RTC and
+    # these images have no NTP, so without this the device comes up at whatever
+    # the SoC left behind — which broke GPG key generation outright. Derived
+    # from the pinned app commit, so it stays reproducible. Shared with CI via
+    # install-build-time.sh; fails the build rather than shipping a bad clock.
+    if [ -f "$SCRIPT_DIR/install-build-time.sh" ]; then
+        bash "$SCRIPT_DIR/install-build-time.sh" "$rootfs_dir" "$WORK_DIR/seedsigner"
+    fi
+
     # Persistent boot log is OFF by default: a production device writes nothing
     # to flash, and the log captures app output that would otherwise sit in
     # /userdata (which survives a reflash) long after the failure. Bake the
@@ -1663,6 +1672,16 @@ package_firmware() {
         bash "$SCRIPT_DIR/ss-fs-normalise.sh" bootimg \
             "$image_dir/update.img" "${SOURCE_DATE_EPOCH:-0}"
     fi
+
+    # The SDK emits sd_update.txt/tftp_update.txt staging every partition at
+    # ${ramdisk_addr_r} = 0x00E00000, which leaves ~31 MiB below U-Boot's own
+    # relocated stack/heap on a 64 MiB Mini. Our 38.6 MiB rootfs.img does not fit
+    # there: mw.b overwrote the running loader and the microSD auto-flash hung
+    # mid-write with no console output. Restage low and hard-fail if any image
+    # ever outgrows the window again. Shared with os-build.sh.
+    # update.img is packed from the partition images and does not contain these
+    # text scripts, so this runs after the pack step without changing any hash.
+    bash "$SCRIPT_DIR/patch-sd-update-scripts.sh" "$WORK_DIR/luckfox-pico"
 
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module

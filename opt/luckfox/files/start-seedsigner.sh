@@ -37,6 +37,26 @@ BOOT_WATCHDOG_PID=""
 GNUPG_HOME="/tmp/.gnupg"
 GNUPG_SKEL="/usr/share/seedsigner/gnupg"   # staged by opt/luckfox/install-gnupg-home.sh
 
+# System clock. The RV1106 has no battery-backed RTC, these images carry no NTP
+# and no network, and until this existed nothing set the clock at all -- so the
+# device came up at whatever the SoC left behind, in practice a date well in the
+# future. That broke GPG key generation outright: the app validates a new key's
+# expiry against datetime.now(timezone.utc) and rejects any expiry that is not
+# after it, so with the clock past the default (2029-12-31 for RSA-2048,
+# 2035-12-31 otherwise) every attempt failed at the prompt with "Invalid
+# expiration date", before it could `gpg --batch --import` anything. It matters
+# past that prompt too: a key's creation time feeds its fingerprint, so a key
+# generated under a wrong clock is permanently wrong.
+#
+# The Pi and La Frite images have always done this -- see the "Set the date to
+# release so that GPG can work" block in opt/rootfs-overlay/start.sh. Same
+# precedence here, same time.txt filename and format, same fallback constant.
+BUILD_TIME_FILE="/etc/seedsigner-build-time"   # baked by opt/luckfox/install-build-time.sh
+CLOCK_OVERRIDE_FILE="/mnt/microsd/time.txt"    # user escape hatch, same as the Pi
+CLOCK_FALLBACK="2025-02-28 12:00"              # matches opt/rootfs-overlay/start.sh
+CLOCK_VALUE=""
+CLOCK_SOURCE=""
+
 # Persistent copy of the startup log. /tmp is a tmpfs, so on a non-dev image —
 # no serial console, no adb, no network — a boot failure destroys the only
 # record of why on the next reboot, leaving a device that looks bricked and
@@ -182,6 +202,58 @@ show_screen_message() {
             log_message "$msg_line"
         done
     fi
+    return 0
+}
+
+# Set the system clock. Strictly best-effort: always returns 0, because a clock
+# is not worth failing a boot over. Reports through $CLOCK_VALUE/$CLOCK_SOURCE
+# rather than logging, so it can run BEFORE init_persistent_log and give the
+# boot log sane timestamps; the caller logs the outcome.
+#
+# Two things that look like improvements and are not:
+#
+#   1. The set is UNCONDITIONAL. Do not add a "only if the clock looks wrong" or
+#      "only ever move it forward" guard. The fault this exists to fix is a clock
+#      in the FUTURE, which a forward-only guard would never repair.
+#   2. Never source the value from SOURCE_DATE_EPOCH. It is 0 (see
+#      opt/luckfox/os-build.sh), and a 1970 clock is the invisible version of
+#      this bug: it passes the app's expiry check while stamping every generated
+#      GPG key with a 1970 creation date. install-build-time.sh has a year floor
+#      guarding the same edit at build time.
+#
+# `date -s "YYYY-MM-DD HH:MM"` is the busybox-parseable form -- the same one the
+# Pi has used for years on the same applet. busybox cannot parse ISO-8601 with a
+# T and a UTC offset, which is why this reads a dedicated file rather than the
+# %cI dates already in /etc/seedsigner-os-release.
+init_system_clock() {
+    CLOCK_VALUE="$CLOCK_FALLBACK"
+    CLOCK_SOURCE="fallback"
+
+    if [ -f "$BUILD_TIME_FILE" ]; then
+        # tr -d '\r\n' is load-bearing on the override below (FAT card written on
+        # Windows carries CRLF); applied here too so both paths behave alike.
+        v=$(tr -d '\r\n' < "$BUILD_TIME_FILE" 2>/dev/null)
+        if [ -n "$v" ]; then
+            CLOCK_VALUE="$v"
+            CLOCK_SOURCE="build time"
+        fi
+    fi
+
+    if [ -f "$CLOCK_OVERRIDE_FILE" ]; then
+        v=$(tr -d '\r\n' < "$CLOCK_OVERRIDE_FILE" 2>/dev/null)
+        if [ -n "$v" ]; then
+            CLOCK_VALUE="$v"
+            CLOCK_SOURCE="microSD override"
+        fi
+    fi
+
+    date -s "$CLOCK_VALUE" >/dev/null 2>&1 && return 0
+
+    # A garbage time.txt must degrade to a sane clock, not leave the bad one in
+    # place. Mirrors the Pi's `date -s "$TIME_VALUE" || date -s "$TIME_FALLBACK"`.
+    CLOCK_SOURCE="fallback (rejected '$CLOCK_VALUE')"
+    CLOCK_VALUE="$CLOCK_FALLBACK"
+    date -s "$CLOCK_FALLBACK" >/dev/null 2>&1 || CLOCK_SOURCE="UNSET (date -s failed)"
     return 0
 }
 
@@ -481,6 +553,11 @@ bootstrap_camera_graph() {
 # Set up signal handlers
 trap cleanup SIGTERM SIGINT
 
+# Set the clock first of all, so every timestamp below -- the persistent log's
+# boot header included -- is a real date rather than whatever the SoC came up
+# with. Logged once the log exists; see the call after init_gnupg_home.
+init_system_clock
+
 # Start the persistent log before anything else can fail, so an early failure is
 # still recorded somewhere that survives the reboot.
 init_persistent_log
@@ -496,6 +573,7 @@ hostname seedsigner-os 2>/dev/null || true
 # the persistent boot log while that log is still being written.
 init_gnupg_home
 log_message "GNUPGHOME=$GNUPG_HOME (tmpfs — GPG keys are wiped at reboot)"
+log_message "system clock: $CLOCK_VALUE UTC (source: $CLOCK_SOURCE)"
 
 # Boot-failover (non-dev). U-Boot carries a memory-backed boot counter
 # (CONFIG_SYS_BOOTCOUNT_ADDR = GRF OS_REG scratch register 0xFF020218, enabled in the
@@ -594,6 +672,21 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
     # and a retry that silently loses GNUPGHOME would fail GPG in a way that
     # looks nothing like the original crash.
     init_gnupg_home
+
+    # Give the microSD time override a second chance. /mnt/microsd mounts late
+    # and conditionally here: S10mdev only registers the hotplug handler (it
+    # runs no coldplug pass) and the mount itself lives in fat-fsck-hotplug, so
+    # a card present at power-on may not be mounted yet when the early
+    # init_system_clock ran. By now the boot has spent tens of seconds in the
+    # splash and camera bootstrap, so it usually is.
+    #
+    # Guarded on the file existing rather than run unconditionally: re-applying
+    # rewinds the clock by the boot elapsed time, which is fine when it buys a
+    # working escape hatch and pointless on a normal boot.
+    if [ -f "$CLOCK_OVERRIDE_FILE" ]; then
+        init_system_clock
+        log_message "system clock: $CLOCK_VALUE UTC (source: $CLOCK_SOURCE)"
+    fi
 
     # Configure GPIO button pins (IOMUX, pull-up, input, IE) for detected variant
     if [ -x /usr/bin/configure-gpio.sh ]; then

@@ -39,6 +39,7 @@ and the ordering rules here still hold. Swap here never touches flash: pages sta
 
 ### Main orchestrator
 - `buildroot/files/start-seedsigner.sh`
+  - Sets the system clock (no RTC on RV1106) from `/etc/seedsigner-build-time`, `/mnt/microsd/time.txt` or a fallback
   - Kills stale `rkipc`
   - Optionally bootstraps camera graph via temporary `rkipc`
   - Runs retry loop for SeedSigner startup
