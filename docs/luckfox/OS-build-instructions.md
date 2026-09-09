@@ -361,7 +361,33 @@ echo "SD card image created: $IMAGE_NAME"
 
 ### Create NAND Flash Bundle (Optional)
 
-For SPI NAND boot configurations:
+For SPI NAND boot configurations.
+
+First, repoint the SDK's U-Boot flashing scripts at a staging address the rootfs
+actually fits below. `build.sh` and `build-local.sh` do this for you; a manual
+build must run it explicitly, before packaging:
+
+```bash
+# from the luckfox-pico directory, after ./build.sh firmware
+bash ../seedsigner-os/opt/luckfox/patch-sd-update-scripts.sh .
+```
+
+> **Why:** the SDK generates `sd_update.txt` / `tftp_update.txt` so that every
+> step stages the whole partition image in DRAM at `${ramdisk_addr_r}`
+> (`0x00E00000`) before `mtd write`. On a Pico Mini (RV1103, 64 MiB DRAM) U-Boot
+> relocates itself to the top of RAM and its stack/heap/fdt start at about
+> `0x02DF0000`, so only ~31 MiB is usable above `0x00E00000`. SeedSigner's
+> `rootfs.img` is ~38.6 MiB, so `mw.b` runs straight over the loader that is
+> executing the script: the microSD auto-flash hangs on the rootfs step with no
+> console output at all. Restaging at `0x00100000` widens the window to ~44 MiB.
+> The script also hard-fails the build if any image outgrows that.
+>
+> This only affects the **microSD auto-flash** path. Flashing `update.img` over
+> USB (SocToolKit / `rkdeveloptool`, MASKROM mode) streams to flash and never
+> stages a partition in DRAM, so it is unaffected and remains the recommended
+> route.
+
+Then package:
 
 ```bash
 cd output/image

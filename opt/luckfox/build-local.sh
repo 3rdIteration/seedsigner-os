@@ -1609,6 +1609,16 @@ package_firmware() {
             "$image_dir/update.img" "${SOURCE_DATE_EPOCH:-0}"
     fi
 
+    # The SDK emits sd_update.txt/tftp_update.txt staging every partition at
+    # ${ramdisk_addr_r} = 0x00E00000, which leaves ~31 MiB below U-Boot's own
+    # relocated stack/heap on a 64 MiB Mini. Our 38.6 MiB rootfs.img does not fit
+    # there: mw.b overwrote the running loader and the microSD auto-flash hung
+    # mid-write with no console output. Restage low and hard-fail if any image
+    # ever outgrows the window again. Shared with os-build.sh.
+    # update.img is packed from the partition images and does not contain these
+    # text scripts, so this runs after the pack step without changing any hash.
+    bash "$SCRIPT_DIR/patch-sd-update-scripts.sh" "$WORK_DIR/luckfox-pico"
+
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.

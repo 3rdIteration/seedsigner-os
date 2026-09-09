@@ -571,6 +571,12 @@ jobs:
           echo "2. Insert MicroSD into device and power on" >> $GITHUB_STEP_SUMMARY
           echo "3. U-Boot will automatically flash SPI-NAND from \`sd_update.txt\`" >> $GITHUB_STEP_SUMMARY
           echo "4. **Note:** This OVERWRITES existing SPI-NAND content" >> $GITHUB_STEP_SUMMARY
+          echo "5. Remove the card once flashing finishes, then power-cycle" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`sd_update.txt\` stages each partition in DRAM at \`0x00100000\` rather than the" >> $GITHUB_STEP_SUMMARY
+          echo "SDK default \`\${ramdisk_addr_r}\`: on a 64 MiB Mini the default leaves too little" >> $GITHUB_STEP_SUMMARY
+          echo "room below U-Boot's own stack for \`rootfs.img\`, and the flash hangs mid-write." >> $GITHUB_STEP_SUMMARY
+          echo "See \`opt/luckfox/patch-sd-update-scripts.sh\`. Methods 1 and 2 are unaffected." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Important:** NAND images are NOT the same as SD Card images!" >> $GITHUB_STEP_SUMMARY
           echo "- NAND bundles flash to onboard SPI-NAND storage" >> $GITHUB_STEP_SUMMARY
