@@ -1,0 +1,269 @@
+#!/bin/sh
+#
+# S03zram - compressed swap in RAM (zram)
+#
+# The kernel half is enable-zram.sh (CONFIG_ZRAM/CONFIG_ZSMALLOC built in); this
+# is the runtime half that sizes /dev/zram0 and swaps it on. Neither is any use
+# without the other.
+#
+# WHY (short version — enable-zram.sh carries the long one): the Mini has 64 MB
+# of RAM and, until this script, no swap at all, so the only answer to memory
+# pressure was reclaiming page cache and then the OOM killer. The app is CPython;
+# its heap compresses roughly 3:1, so a page swapped here costs about a third of
+# a page of real RAM and stays in memory — a "swap in" is a decompression, not a
+# flash read. Nothing is ever written to storage: see the writeback note below.
+#
+# WHERE IT SITS IN THE BOOT: S03 is after S01overlay (which makes /etc writable
+# on a read-only root) and S02fsck, and before everything that actually consumes
+# memory — S10mdev, S60pcscd, the vendor's RkLunch.sh camera/ISP stack, and the
+# app at S99. Swap that arrives after the pressure it was meant to absorb is
+# swap that does nothing, which is the whole reason this is not an S9x script.
+#
+# It does NOT depend on mdev having run (S10) for its device node: with zram
+# built in, /dev/zram0 is normally provided by devtmpfs before init starts, and
+# if it is missing this script creates it from the major:minor the kernel
+# publishes in /sys/block/zram0/dev.
+#
+# FAILURE POLICY: every failure path here logs and returns 0. Swap is headroom,
+# not a dependency — a board that boots without it is slower to run out of
+# memory than one that does not boot at all. This is the opposite of S01overlay,
+# where a failure is fatal and says so, and the difference is deliberate.
+#
+# NOT A PLACE TO ADD A BACKING DEVICE. /sys/block/zram0/backing_dev would send
+# incompressible or idle pages to flash, and those pages hold seed material.
+# CONFIG_ZRAM_WRITEBACK is off in the kernel precisely so this cannot be done by
+# accident at runtime; do not "improve" swap capacity by turning it back on.
+
+# Fraction of total RAM to present as swap capacity (uncompressed bytes).
+# 50% of a ~50 MB MemTotal on the Mini is ~25 MB of swap for ~8 MB of real RAM
+# at a 3:1 ratio — headroom worth having for a cost the board can absorb.
+#
+# The size is not free even when nothing is swapped: zram vmallocs one
+# zram_table_entry per page of disksize up front, 8 bytes each on 32-bit ARM
+# (handle + flags, with CONFIG_ZRAM_MEMORY_TRACKING off). At 25 MB that is ~50 kB
+# — negligible, but it is why this is a fraction of RAM rather than the 2x-RAM
+# figure desktop guides use.
+ZRAM_DISKSIZE_PCT=50
+
+# Hard cap on the REAL memory zram may consume for compressed data, as a
+# fraction of total RAM. This is the safety net that makes the line above a safe
+# default rather than a gamble: if what gets swapped turns out to be
+# incompressible (already-compressed image buffers, key material, anything
+# random-looking), zram would otherwise approach 1:1 and spend as much RAM as it
+# frees. At the cap, further writes to the device fail, the page simply stays
+# where it is, and reclaim moves on. That is degraded — reclaim spends CPU
+# compressing pages it then cannot store — but the memory itself is never worse
+# off than with no zram at all, which is the property worth guaranteeing.
+#
+# 25% against a 50% disksize means the disksize is what binds whenever the data
+# compresses better than 2:1 (the normal case), and the cap is what binds when
+# it does not (the pathological one).
+ZRAM_MEM_LIMIT_PCT=25
+
+# Swap-backed-by-RAM changes the economics reclaim assumes: there is no seek, no
+# flash write, no wear — just CPU. 100 is the value zram deployments settle on
+# for that reason, and here the alternative it is weighed against is the OOM
+# killer taking the app out mid-signing. The cost is more CPU spent compressing
+# on a single-core part, which is the right trade on a device that spends most
+# of its time waiting for a human.
+ZRAM_SWAPPINESS=100
+
+# Preference order for the compressor. lzo-rle is this kernel's own default and
+# the best speed/ratio balance on ARMv7; lzo and lz4 are fallbacks in case a
+# kernel bump changes what is registered. zstd is deliberately not listed: much
+# slower to compress on this CPU, for a ratio this workload does not need.
+# If none of these is available the kernel default is left alone.
+ZRAM_ALGOS="lzo-rle lzo lz4"
+
+ZRAM_DEV=/dev/zram0
+ZRAM_SYS=/sys/block/zram0
+
+log_zram() {
+    echo "[zram] $1"
+    # The kernel log is the only channel that survives on a hardened image with
+    # no console, and it is what the persistent boot log captures.
+    [ -w /dev/kmsg ] && echo "[zram] $1" > /dev/kmsg 2>/dev/null
+    return 0
+}
+
+# MemTotal in kB, or empty if /proc/meminfo is not readable.
+mem_total_kb() {
+    awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2>/dev/null
+}
+
+swap_is_active() {
+    # /proc/swaps lists the device in its first column.
+    grep -q "^${ZRAM_DEV}[[:space:]]" /proc/swaps 2>/dev/null
+}
+
+# Make sure the device node exists. devtmpfs normally provides it; mdev has not
+# run yet at S03, so derive it from sysfs rather than depending on either.
+ensure_dev_node() {
+    [ -e "$ZRAM_DEV" ] && return 0
+
+    devline=$(cat "$ZRAM_SYS/dev" 2>/dev/null)
+    case "$devline" in
+        *:*)
+            major=${devline%%:*}
+            minor=${devline##*:}
+            if mknod "$ZRAM_DEV" b "$major" "$minor" 2>/dev/null; then
+                log_zram "created $ZRAM_DEV (b $major:$minor)"
+                return 0
+            fi
+            log_zram "could not create $ZRAM_DEV (b $major:$minor)"
+            return 1
+            ;;
+        *)
+            log_zram "no major:minor in $ZRAM_SYS/dev - cannot create $ZRAM_DEV"
+            return 1
+            ;;
+    esac
+}
+
+# Pick the first preferred algorithm the kernel actually registered. The sysfs
+# file lists every available algorithm with the selected one in [brackets].
+select_algorithm() {
+    available=$(cat "$ZRAM_SYS/comp_algorithm" 2>/dev/null) || return 0
+    [ -n "$available" ] || return 0
+
+    for algo in $ZRAM_ALGOS; do
+        # Match the bare name or the [selected] form, as a whole word.
+        case " $available " in
+            *" $algo "*|*"[$algo]"*)
+                # Must be written BEFORE disksize: the driver refuses to change
+                # the algorithm on an initialized device (-EBUSY).
+                if echo "$algo" > "$ZRAM_SYS/comp_algorithm" 2>/dev/null; then
+                    log_zram "compressor: $algo"
+                else
+                    log_zram "could not select compressor $algo - keeping the kernel default"
+                fi
+                return 0
+                ;;
+        esac
+    done
+
+    log_zram "none of '$ZRAM_ALGOS' is available - keeping the kernel default"
+    return 0
+}
+
+start() {
+    if swap_is_active; then
+        log_zram "$ZRAM_DEV is already swapped on - nothing to do"
+        return 0
+    fi
+
+    if [ ! -d "$ZRAM_SYS" ]; then
+        # Either the kernel was built without zram or it is modular and not yet
+        # loaded. Not fatal, but worth saying plainly: this image is running
+        # without the memory headroom it was supposed to have.
+        log_zram "no zram device in this kernel - running WITHOUT compressed swap"
+        return 0
+    fi
+
+    total_kb=$(mem_total_kb)
+    case "$total_kb" in
+        ''|*[!0-9]*)
+            log_zram "could not read MemTotal from /proc/meminfo - skipping"
+            return 0
+            ;;
+    esac
+
+    disksize_kb=$((total_kb * ZRAM_DISKSIZE_PCT / 100))
+    limit_kb=$((total_kb * ZRAM_MEM_LIMIT_PCT / 100))
+
+    # A device too small to be worth the metadata. Also catches a nonsense
+    # MemTotal rather than acting on it.
+    if [ "$disksize_kb" -lt 4096 ]; then
+        log_zram "computed swap size ${disksize_kb} kB is too small - skipping"
+        return 0
+    fi
+
+    # A device left initialized by an earlier run (a restart, not a boot) cannot
+    # be resized or re-algorithmed. Reset it first; if that fails, carry on and
+    # use it as it stands rather than giving up on swap entirely.
+    cur_disksize=$(cat "$ZRAM_SYS/disksize" 2>/dev/null || echo 0)
+    if [ "$cur_disksize" != "0" ]; then
+        if echo 1 > "$ZRAM_SYS/reset" 2>/dev/null; then
+            log_zram "reset a previously initialized zram device"
+        else
+            log_zram "zram is already initialized and cannot be reset - reusing it as-is"
+        fi
+    fi
+
+    select_algorithm
+
+    # Written before disksize purely for ordering clarity; the driver accepts it
+    # at any time. It is write-only in sysfs, so there is nothing to read back.
+    if echo "${limit_kb}K" > "$ZRAM_SYS/mem_limit" 2>/dev/null; then
+        log_zram "memory cap: $((limit_kb / 1024)) MiB of real RAM (${ZRAM_MEM_LIMIT_PCT}% of $((total_kb / 1024)) MiB)"
+    else
+        # Without the cap, incompressible data could make zram consume as much
+        # RAM as it frees. Still better than no swap, but say so.
+        log_zram "WARNING: could not set mem_limit - zram is uncapped"
+    fi
+
+    if ! echo "${disksize_kb}K" > "$ZRAM_SYS/disksize" 2>/dev/null; then
+        log_zram "could not set disksize to ${disksize_kb} kB - no swap this boot"
+        return 0
+    fi
+
+    if ! ensure_dev_node; then
+        return 0
+    fi
+
+    if ! mkswap "$ZRAM_DEV" >/dev/null 2>&1; then
+        log_zram "mkswap failed on $ZRAM_DEV - no swap this boot"
+        return 0
+    fi
+
+    # No -p/priority: busybox is built here without FEATURE_SWAPON_PRI, and with
+    # a single swap device there is nothing to prioritize against anyway.
+    if ! swapon "$ZRAM_DEV" >/dev/null 2>&1; then
+        log_zram "swapon failed on $ZRAM_DEV - no swap this boot"
+        return 0
+    fi
+
+    echo "$ZRAM_SWAPPINESS" > /proc/sys/vm/swappiness 2>/dev/null \
+        && log_zram "vm.swappiness=$ZRAM_SWAPPINESS"
+
+    # Swap readahead is a win for a spinning disk and pure overhead for RAM:
+    # every page read ahead is a page decompressed that nothing asked for.
+    echo 0 > /proc/sys/vm/page-cluster 2>/dev/null \
+        && log_zram "vm.page-cluster=0 (no readahead - the backing store is RAM)"
+
+    log_zram "compressed swap active: $((disksize_kb / 1024)) MiB on $ZRAM_DEV (${ZRAM_DISKSIZE_PCT}% of $((total_kb / 1024)) MiB RAM)"
+    return 0
+}
+
+stop() {
+    if swap_is_active; then
+        # Best effort: swapoff has to page everything back into RAM, which can
+        # fail if there is no longer room for it. Nothing here can fix that, and
+        # the memory goes away with the power in a moment regardless.
+        if swapoff "$ZRAM_DEV" >/dev/null 2>&1; then
+            log_zram "swap off"
+        else
+            log_zram "swapoff failed - leaving $ZRAM_DEV in place"
+        fi
+    fi
+    return 0
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0

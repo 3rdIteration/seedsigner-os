@@ -81,6 +81,14 @@ on:
           - 'on'
           - 'off'
         default: 'auto'
+      zram:
+        description: 'Compressed swap in RAM (zram): a swap device backed by compressed pages in memory, sized at boot from total RAM (50% capacity, capped at 25% of RAM actually consumed). Nothing is ever written to flash. Mainly for the 64 MB Mini, where the only previous answer to memory pressure was the OOM killer. off is a bisect lever, not a supported configuration.'
+        required: false
+        type: choice
+        options:
+          - 'on'
+          - 'off'
+        default: 'on'
       boot_log:
         description: 'Persistent boot log (/userdata/seedsigner-boot.log): on = the build bakes /etc/seedsigner-boot-log and start-seedsigner.sh records every boot (rotated, 128 KiB cap, deleted on a successful boot); off = the log is never initialized and the device writes nothing to flash (default). Off by default so production images stay write-free; enable only for an instrumented/debug build.'
         required: false
@@ -169,6 +177,10 @@ on:
         required: false
         type: string
         default: 'auto'
+      zram:
+        required: false
+        type: string
+        default: 'on'
       boot_log:
         required: false
         type: string
@@ -371,6 +383,7 @@ jobs:
           --usb-mode        "${{ inputs.usb_mode || 'auto' }}" \
           --debug-network   "${{ inputs.debug_network || 'auto' }}" \
           --readonly-rootfs "${{ inputs.readonly_rootfs || 'auto' }}" \
+          --zram            "${{ inputs.zram || 'on' }}" \
           --boot-log        "${{ inputs.boot_log || 'off' }}" \
           --harden-adb      "${{ inputs.harden_adb || 'on' }}" \
           --testing-build   "${{ inputs.testing_build || 'off' }}" \

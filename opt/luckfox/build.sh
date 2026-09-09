@@ -51,6 +51,9 @@ name, so a local build can reproduce what CI ships):
                           (default: non-dev)
   --readonly-rootfs V   - auto|on|off. Read-only squashfs root with tmpfs
                           overlays; auto = on for non-dev (default: auto)
+  --zram V              - on|off. Compressed swap in RAM (zram), sized from
+                          total RAM at boot. On for every board; the 64 MB Mini
+                          is what it is for (default: on)
   --boot-log V          - on|off. Bake /etc/seedsigner-boot-log so
                           start-seedsigner.sh records every boot to /userdata
                           (default: off — the device writes nothing to flash)
@@ -257,6 +260,7 @@ run_build() {
 
     local passthrough
     for passthrough in SEEDSIGNER_BUILD_VARIANT SEEDSIGNER_READONLY_ROOTFS \
+                       SEEDSIGNER_ZRAM \
                        SEEDSIGNER_USB_MODE SEEDSIGNER_DEBUG_NETWORK \
                        SEEDSIGNER_HARDEN_ADB SEEDSIGNER_REPO_URL \
                        SEEDSIGNER_REF SEEDSIGNER_BRANCH \
@@ -560,6 +564,13 @@ main() {
                     export SEEDSIGNER_READONLY_ROOTFS="$2"; shift 2
                 else
                     print_error "Invalid or missing argument for --readonly-rootfs (use: auto|on|off)"; exit 1
+                fi
+                ;;
+            --zram)
+                if [[ -n "$2" && "$2" =~ ^(on|off)$ ]]; then
+                    export SEEDSIGNER_ZRAM="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --zram (use: on|off)"; exit 1
                 fi
                 ;;
             --boot-log)
