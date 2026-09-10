@@ -705,8 +705,8 @@ apply_hwrng_crypto_kernel_patch() {
     fi
 
     # Enable hardware random number generator
-    sed -i -E '/^CONFIG_HW_RANDOM(=|_)/d;/^# CONFIG_HW_RANDOM is not set$/d' "$kernel_cfg_file"
-    sed -i -E '/^CONFIG_HW_RANDOM_ROCKCHIP(=|_)/d;/^# CONFIG_HW_RANDOM_ROCKCHIP is not set$/d' "$kernel_cfg_file"
+    sed -i -E '/^CONFIG_HW_RANDOM=/d;/^# CONFIG_HW_RANDOM is not set$/d' "$kernel_cfg_file"
+    sed -i -E '/^CONFIG_HW_RANDOM_ROCKCHIP=/d;/^# CONFIG_HW_RANDOM_ROCKCHIP is not set$/d' "$kernel_cfg_file"
     {
         echo 'CONFIG_HW_RANDOM=y'
         echo 'CONFIG_HW_RANDOM_ROCKCHIP=y'
@@ -739,25 +739,50 @@ apply_hwrng_crypto_kernel_patch() {
     print_success "HWRNG and hardware crypto enabled in kernel defconfig: $kernel_cfg_file"
 }
 
-apply_crypto_dts_patch() {
+# Force a DTS node's status to "okay", appending an override when the board DTS
+# does not already reference the node. Returns non-zero if the result cannot be
+# verified afterwards.
+enable_dts_node() {
+    local node="$1"
+    local dts_file="$2"
+
+    if grep -Eq "&${node}[[:space:]]*[{]" "$dts_file"; then
+        sed -i "/&${node}[[:space:]]*{/,/};/ s/status[[:space:]]*=[[:space:]]*\"[^\"]*\"/status = \"okay\"/" "$dts_file"
+    else
+        printf '\n&%s {\n\tstatus = "okay";\n};\n' "$node" >> "$dts_file"
+    fi
+
+    awk -v node="$node" '
+        $0 ~ "&" node "[[:space:]]*[{]" { found = 1 }
+        found && /status[[:space:]]*=[[:space:]]*"okay"/ { ok = 1 }
+        /\};/ { if (found) exit }
+        END { exit !ok }
+    ' "$dts_file"
+}
+
+# crypto: hardware AES/SHA/RSA offload (crypto-v3).
+# rng:    TRNG v1. On RV1103/RV1106 this is a SEPARATE IP block (rng@ff448000,
+#         its own HCLK_TRNG_NS clock), not the RNG that lived inside the crypto
+#         block on crypto v1/v2 hardware -- so enabling &crypto does NOT give us
+#         /dev/hwrng. rv1106.dtsi ships &rng disabled, and it is only "okay"
+#         today because upstream rv1106-evb.dtsi happens to enable it. Pin it
+#         here so an SDK bump cannot silently drop the hardware entropy source.
+apply_crypto_rng_dts_patch() {
     local hardware="$1"
 
-    print_header "Enabling Crypto DTS Node"
+    print_header "Enabling Crypto and RNG DTS Nodes"
 
     local dts_file
     dts_file="$(resolve_dts_path_for_hardware "$hardware")"
 
-    if grep -Eq '&crypto[[:space:]]*\{' "$dts_file"; then
-        sed -i '/&crypto[[:space:]]*{/,/};/ s/status[[:space:]]*=[[:space:]]*"[^"]*"/status = "okay"/' "$dts_file"
-    else
-        printf '\n&crypto {\n\tstatus = "okay";\n};\n' >> "$dts_file"
-    fi
-
-    if ! awk '/&crypto[[:space:]]*\{/{found=1} found && /status[[:space:]]*=[[:space:]]*"okay"/{ok=1} /\};/{if(found)exit} END{exit !ok}' "$dts_file"; then
-        print_error "Crypto DTS node enable verification failed in: $dts_file"
-        exit 1
-    fi
-    print_success "Crypto DTS node enabled in: $dts_file"
+    local node
+    for node in crypto rng; do
+        if ! enable_dts_node "$node" "$dts_file"; then
+            print_error "${node} DTS node enable verification failed in: $dts_file"
+            exit 1
+        fi
+        print_success "${node} DTS node enabled in: $dts_file"
+    done
 }
 
 apply_kernel_network_strip() {
@@ -1973,7 +1998,7 @@ main() {
     apply_uart2_console_dts_patch "$hardware"
     apply_uart2_fiq_kernel_patch "$hardware" "$boot_medium"
     apply_hwrng_crypto_kernel_patch "$hardware" "$boot_medium"
-    apply_crypto_dts_patch "$hardware"
+    apply_crypto_rng_dts_patch "$hardware"
     apply_kernel_network_strip "$hardware" "$boot_medium"
     apply_readonly_rootfs "$hardware" "$boot_medium"
     apply_spidev_bufsiz "$hardware"
