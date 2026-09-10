@@ -77,9 +77,11 @@ need_file() { [ -f "$1" ] || die "$2 not found: $1"; }
 
 # --- pick the loader/idblock in an image dir --------------------------------
 # The loader is download.bin / MiniLoaderAll.bin / *loader*.bin; idblock is
-# idblock*.img. Match fit-sign.sh's own glob(see rkbin/tools/fit-sign.sh).
-find_loader()  { ls "$1"/download.bin "$1"/MiniLoaderAll.bin "$1"/*loader*.bin 2>/dev/null | head -1; }
-find_idblock() { ls "$1"/idblock*.img 2>/dev/null | head -1; }
+# idblock*.img. Match fit-sign.sh's own glob (see rkbin/tools/fit-sign.sh).
+# Iterate candidates with [ -f ] rather than ls, so a missing candidate does not
+# return non-zero and trip `set -e`/`pipefail`.
+find_loader()  { local f; for f in "$1"/download.bin "$1"/MiniLoaderAll.bin "$1"/*loader*.bin; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 0; }
+find_idblock() { local f; for f in "$1"/idblock*.img; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 0; }
 
 cmd_gen_key() {
   need_dir "$KEYS" "keys dir (create it first: mkdir -p)"
@@ -176,7 +178,7 @@ otp_hash() {
 cmd_otp_hash() {
   need_dir "$IMAGES" "images dir"
   local T; T="$(resolve_tools)"; load_key "$T"
-  local loader; loader="$(ls "$IMAGES"/download.signed.bin "$IMAGES"/download.bin 2>/dev/null | head -1)"
+  local loader=""; for f in "$IMAGES"/download.signed.bin "$IMAGES"/download.bin; do [ -f "$f" ] && { loader="$f"; break; }; done
   [ -n "$loader" ] || die "no loader in $IMAGES"
   otp_hash "$T" "$loader"
 }

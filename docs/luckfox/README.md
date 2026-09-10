@@ -443,6 +443,8 @@ Notes:
 
 ## Other reference docs in this folder
 
+- [secure-boot.md](secure-boot.md) — secure boot / OTP feasibility report (research only; nothing is enabled).
+- [../hwrng.md](../hwrng.md) — how hardware entropy reaches the app on this and the other boards.
 - [OS-build-instructions.md](OS-build-instructions.md) — detailed manual SDK build steps (original standalone layout).
 - [LUCKFOX_STARTUP_WORKFLOW.md](LUCKFOX_STARTUP_WORKFLOW.md) — on-device startup / camera sequencing.
 - [BUILD_REFERENCE.md](BUILD_REFERENCE.md), [TOOLCHAIN_ANALYSIS.md](TOOLCHAIN_ANALYSIS.md),
