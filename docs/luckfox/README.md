@@ -177,6 +177,7 @@ There are three ways to build: `.github/workflows/build-luckfox.yml` (CI),
 | `readonly-rootfs.sh` / `assert-readonly-rootfs.sh` | squashfs root + overlay, and its verification |
 | `install-gnupg-home.sh` | stages the GnuPG agent/scdaemon config seeded into `GNUPGHOME` |
 | `install-build-time.sh` | bakes `/etc/seedsigner-build-time` from the pinned app commit; the boot clock's default |
+| `prune-whitespace-names.sh` | drops whitespace-named paths from site-packages; debugfs cannot address them, so they break every ext4 target |
 | `strip-kernel-network.sh` / `assert-kernel-network.sh` | network/WiFi/coredump strip, and its verification |
 | `configure-usb-mode.sh`, `harden-nondev.sh`, `optimize-nondev.sh`, `patch-s50usbdevice.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`, `uboot-recovery-config.sh`, `compile-translations.sh` | as named |
 
