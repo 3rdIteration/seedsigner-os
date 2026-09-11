@@ -49,7 +49,7 @@ opt/luckfox/build-local.sh --hardware mini --boot nand
 
 1. Clone the Rockchip **Luckfox Pico SDK** (`3rdIteration/luckfox-pico`) — brings U-Boot, the kernel, and its
    own Buildroot.
-2. Apply SDK patches (partition tables, UART2 console, HWRNG/crypto, Rust-on-uClibc) — mostly in-line
+2. Apply SDK patches (partition tables, UART2 console, HWRNG, Rust-on-uClibc) — mostly in-line
    `sed`/append fragments against the SDK's board configs, DTS and kernel defconfig.
 3. Inject SeedSigner packages: copy `opt/external-packages/*` into the SDK Buildroot's `package/` and append a
    `menu "SeedSigner"` block that `source`s each custom package's `Config.in`. **Two-place rule:** a custom

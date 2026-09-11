@@ -659,7 +659,7 @@ apply_uart2_fiq_kernel_patch() {
     print_success "Kernel FIQ debugger disabled and serial drivers enabled in: $kernel_cfg_file"
 }
 
-apply_hwrng_crypto_kernel_patch() {
+apply_hwrng_kernel_patch() {
     local hardware="$1"
     local boot_medium="$2"
 
@@ -671,7 +671,7 @@ apply_hwrng_crypto_kernel_patch() {
         max)  sdk_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
         pi)   sdk_hardware="RV1106_Luckfox_Pico_Pi" ;;
         *)
-            print_error "Unknown hardware type for HWRNG/crypto kernel patch: $hardware"
+            print_error "Unknown hardware type for HWRNG kernel patch: $hardware"
             exit 1
             ;;
     esac
@@ -680,7 +680,7 @@ apply_hwrng_crypto_kernel_patch() {
         nand) sdk_boot_medium="SPI_NAND" ;;
         emmc) sdk_boot_medium="EMMC" ;;
         *)
-            print_error "Unknown boot medium for HWRNG/crypto kernel patch: $boot_medium"
+            print_error "Unknown boot medium for HWRNG kernel patch: $boot_medium"
             exit 1
             ;;
     esac
@@ -690,7 +690,7 @@ apply_hwrng_crypto_kernel_patch() {
         board_config="$(readlink -f .BoardConfig.mk)"
     fi
     if [ ! -f "$board_config" ]; then
-        print_error "Board config file not found for HWRNG/crypto kernel patch: $board_config"
+        print_error "Board config file not found for HWRNG kernel patch: $board_config"
         exit 1
     fi
 
@@ -700,7 +700,7 @@ apply_hwrng_crypto_kernel_patch() {
 
     local kernel_cfg_file="sysdrv/source/kernel/arch/arm/configs/${kernel_defconfig}"
     if [ ! -f "$kernel_cfg_file" ]; then
-        print_error "Kernel defconfig not found for HWRNG/crypto patch: $kernel_cfg_file"
+        print_error "Kernel defconfig not found for HWRNG patch: $kernel_cfg_file"
         exit 1
     fi
 
@@ -712,13 +712,6 @@ apply_hwrng_crypto_kernel_patch() {
         echo 'CONFIG_HW_RANDOM_ROCKCHIP=y'
     } >> "$kernel_cfg_file"
 
-    # Enable Rockchip hardware crypto (crypto v3 for RV1106/RV1103)
-    sed -i -E '/^CONFIG_CRYPTO_DEV_ROCKCHIP(=|_)/d;/^# CONFIG_CRYPTO_DEV_ROCKCHIP is not set$/d' "$kernel_cfg_file"
-    sed -i -E '/^CONFIG_CRYPTO_DEV_ROCKCHIP_DEV(=|_)/d;/^# CONFIG_CRYPTO_DEV_ROCKCHIP_DEV is not set$/d' "$kernel_cfg_file"
-    {
-        echo 'CONFIG_CRYPTO_DEV_ROCKCHIP=y'
-        echo 'CONFIG_CRYPTO_DEV_ROCKCHIP_DEV=y'
-    } >> "$kernel_cfg_file"
 
     if ! grep -Eq '^CONFIG_HW_RANDOM=y$' "$kernel_cfg_file"; then
         print_error "Kernel HWRNG enable verification failed: CONFIG_HW_RANDOM in $kernel_cfg_file"
@@ -728,15 +721,7 @@ apply_hwrng_crypto_kernel_patch() {
         print_error "Kernel HWRNG enable verification failed: CONFIG_HW_RANDOM_ROCKCHIP in $kernel_cfg_file"
         exit 1
     fi
-    if ! grep -Eq '^CONFIG_CRYPTO_DEV_ROCKCHIP=y$' "$kernel_cfg_file"; then
-        print_error "Kernel crypto enable verification failed: CONFIG_CRYPTO_DEV_ROCKCHIP in $kernel_cfg_file"
-        exit 1
-    fi
-    if ! grep -Eq '^CONFIG_CRYPTO_DEV_ROCKCHIP_DEV=y$' "$kernel_cfg_file"; then
-        print_error "Kernel crypto enable verification failed: CONFIG_CRYPTO_DEV_ROCKCHIP_DEV in $kernel_cfg_file"
-        exit 1
-    fi
-    print_success "HWRNG and hardware crypto enabled in kernel defconfig: $kernel_cfg_file"
+    print_success "HWRNG enabled in kernel defconfig: $kernel_cfg_file"
 }
 
 # Force a DTS node's status to "okay", appending an override when the board DTS
@@ -760,29 +745,30 @@ enable_dts_node() {
     ' "$dts_file"
 }
 
-# crypto: hardware AES/SHA/RSA offload (crypto-v3).
-# rng:    TRNG v1. On RV1103/RV1106 this is a SEPARATE IP block (rng@ff448000,
-#         its own HCLK_TRNG_NS clock), not the RNG that lived inside the crypto
-#         block on crypto v1/v2 hardware -- so enabling &crypto does NOT give us
-#         /dev/hwrng. rv1106.dtsi ships &rng disabled, and it is only "okay"
-#         today because upstream rv1106-evb.dtsi happens to enable it. Pin it
-#         here so an SDK bump cannot silently drop the hardware entropy source.
-apply_crypto_rng_dts_patch() {
+# rng: TRNG v1. On RV1103/RV1106 this is a SEPARATE IP block (rng@ff448000, its
+#      own HCLK_TRNG_NS clock), not the RNG that lived inside the crypto block on
+#      crypto v1/v2 hardware. rv1106.dtsi ships &rng disabled and it is only
+#      "okay" today because upstream rv1106-evb.dtsi happens to enable it, so pin
+#      it here -- an SDK bump must not silently drop the hardware entropy source.
+#
+# The hardware crypto engine (&crypto / CONFIG_CRYPTO_DEV_ROCKCHIP) is NOT
+# enabled: SeedSigner uses software crypto, and on RV1106 that driver needs the
+# CRYPTO_DEV_ROCKCHIP_V3 sub-option to build at all -- confirmed absent on a
+# flashed image (empty /proc/crypto, unbound crypto node). Pinning only &rng is
+# deliberate; do not re-add &crypto without also building the driver.
+apply_rng_dts_patch() {
     local hardware="$1"
 
-    print_header "Enabling Crypto and RNG DTS Nodes"
+    print_header "Enabling RNG DTS Node"
 
     local dts_file
     dts_file="$(resolve_dts_path_for_hardware "$hardware")"
 
-    local node
-    for node in crypto rng; do
-        if ! enable_dts_node "$node" "$dts_file"; then
-            print_error "${node} DTS node enable verification failed in: $dts_file"
-            exit 1
-        fi
-        print_success "${node} DTS node enabled in: $dts_file"
-    done
+    if ! enable_dts_node rng "$dts_file"; then
+        print_error "rng DTS node enable verification failed in: $dts_file"
+        exit 1
+    fi
+    print_success "rng DTS node enabled in: $dts_file"
 }
 
 apply_kernel_network_strip() {
@@ -1997,8 +1983,8 @@ main() {
     apply_uart2_console_config "$hardware" "$boot_medium"
     apply_uart2_console_dts_patch "$hardware"
     apply_uart2_fiq_kernel_patch "$hardware" "$boot_medium"
-    apply_hwrng_crypto_kernel_patch "$hardware" "$boot_medium"
-    apply_crypto_rng_dts_patch "$hardware"
+    apply_hwrng_kernel_patch "$hardware" "$boot_medium"
+    apply_rng_dts_patch "$hardware"
     apply_kernel_network_strip "$hardware" "$boot_medium"
     apply_readonly_rootfs "$hardware" "$boot_medium"
     apply_spidev_bufsiz "$hardware"

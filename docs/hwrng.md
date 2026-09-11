@@ -106,19 +106,16 @@ regression the `rng-tools` addition prevents.
 kthread and `rngd`. This is the entropy guarantee this branch was about, and it holds on real
 hardware.
 
-> **The hardware *crypto* offload is a different story — it is NOT present, despite the build
-> reporting "hardware crypto enabled".** On the booted board `cat /proc/crypto | grep rk` returns
-> nothing, `/sys/bus/platform/drivers/` has no crypto driver, and `ff440000.crypto` is unbound.
-> Cause: `apply_hwrng_crypto_kernel_patch` sets `CONFIG_CRYPTO_DEV_ROCKCHIP=y` (the umbrella) but
-> not `CONFIG_CRYPTO_DEV_ROCKCHIP_V3=y`, which is the sub-option that actually compiles the RV1106
-> (crypto-v3) algorithm code — so no driver is built. The build's assertion only greps the
-> *defconfig text* for the umbrella symbol, so it passes and prints success while the driver is
-> absent from the running kernel. This is harmless for SeedSigner (the app uses software crypto and
-> never touches the hardware engine — step 5 is informational), but the enable is currently a no-op:
-> pinning `&crypto` in the DTS turns on a node that nothing binds to. Only the `&rng` pin matters.
-> To genuinely enable it would need `CONFIG_CRYPTO_DEV_ROCKCHIP_V3=y` plus an assertion that checks
-> the built `.config` (or `/proc/crypto`), not the defconfig — but there is no functional reason to,
-> so the accurate statement is simply: **hardware crypto acceleration is not enabled; the TRNG is.**
+> **The hardware *crypto* engine is deliberately NOT enabled** (step 5 above returns nothing — it is
+> informational). SeedSigner uses software crypto and never touches the engine. An earlier build
+> forced the umbrella `CONFIG_CRYPTO_DEV_ROCKCHIP=y` and pinned `&crypto`, but that never produced a
+> working driver: on RV1106 the algorithm code is gated behind `CONFIG_CRYPTO_DEV_ROCKCHIP_V3`, so
+> nothing compiled — confirmed on a flashed board (`/proc/crypto` has no `rk` entries,
+> `/sys/bus/platform/drivers/` has no crypto driver, `ff440000.crypto` is unbound). The build's
+> assertion only grepped the *defconfig text*, so it printed "enabled" regardless. That dead enable
+> and the `&crypto` DTS pin have been **removed** — the build now enables only the TRNG (`&rng` +
+> `CONFIG_HW_RANDOM_ROCKCHIP`), which is what actually works. Re-adding hardware crypto would need
+> `CONFIG_CRYPTO_DEV_ROCKCHIP_V3=y` and a post-build check against the real `.config`/`/proc/crypto`.
 
 ## Known limitation: the app's RNG health monitor
 
