@@ -61,15 +61,26 @@ while [ $# -gt 0 ]; do
 done
 
 # --- locate the rkbin tools -------------------------------------------------
+# Always returns a dir that actually contains an executable rk_sign_tool, or
+# dies with a clear message. When --tools is given we also accept an rkbin ROOT
+# (we try <dir> and <dir>/tools), so both --tools .../rkbin and
+# --tools .../rkbin/tools work.
 resolve_tools() {
-  [ -n "$TOOLS" ] && { echo "$TOOLS"; return; }
-  if [ -n "${LUCKFOX_SDK_DIR:-}" ] && [ -x "$LUCKFOX_SDK_DIR/sysdrv/source/uboot/rkbin/tools/rk_sign_tool" ]; then
-    echo "$LUCKFOX_SDK_DIR/sysdrv/source/uboot/rkbin/tools"; return
+  local cands=()
+  if [ -n "$TOOLS" ]; then
+    cands=( "$TOOLS" "$TOOLS/tools" )
+  else
+    [ -n "${LUCKFOX_SDK_DIR:-}" ] && cands+=( "$LUCKFOX_SDK_DIR/sysdrv/source/uboot/rkbin/tools" )
+    cands+=( ./rkbin/tools ../rkbin/tools "$HOME/rkbin/tools" "$HOME/tmp/rkbin/tools" )
   fi
-  for c in ./rkbin/tools ../rkbin/tools "$HOME/rkbin/tools"; do
+  local c
+  for c in "${cands[@]}"; do
     [ -x "$c/rk_sign_tool" ] && { echo "$c"; return; }
   done
-  die "cannot find rk_sign_tool. Pass --tools <rkbin/tools dir> (from https://github.com/3rdIteration/rkbin)."
+  if [ -n "$TOOLS" ]; then
+    die "no executable rk_sign_tool under --tools '$TOOLS' (looked in '$TOOLS' and '$TOOLS/tools'). Clone https://github.com/3rdIteration/rkbin and point --tools at its tools/ dir."
+  fi
+  die "cannot find rk_sign_tool. Pass --tools <rkbin/tools dir> (clone https://github.com/3rdIteration/rkbin)."
 }
 
 need_dir()  { [ -d "$1" ] || die "$2 not found: $1"; }
@@ -84,18 +95,26 @@ find_loader()  { local f; for f in "$1"/download.bin "$1"/MiniLoaderAll.bin "$1"
 find_idblock() { local f; for f in "$1"/idblock*.img; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 0; }
 
 cmd_gen_key() {
-  need_dir "$KEYS" "keys dir (create it first: mkdir -p)"
+  [ -n "$KEYS" ] || die "--keys <dir> is required"
   local T; T="$(resolve_tools)"
+  mkdir -p "$KEYS" || die "could not create keys dir: $KEYS"
   if [ -f "$KEYS/private_key.pem" ]; then
     warn "key already exists at $KEYS/private_key.pem — refusing to overwrite."
     warn "delete it yourself if you really mean to regenerate (this orphans every device signed with it)."
     exit 1
   fi
-  log "generating RSA-$BITS keypair in $KEYS (chip $CHIP)"
-  ( cd "$KEYS" && "$T/rk_sign_tool" kk --bits "$BITS" --out . >/dev/null 2>&1 )
-  need_file "$KEYS/private_key.pem" "generated private key"
-  need_file "$KEYS/public_key.pem"  "generated public key"
-  log "done. BACK UP $KEYS OFFLINE NOW — losing it makes every fused device un-updatable."
+  log "generating RSA-$BITS keypair in $KEYS (chip $CHIP) using $T/rk_sign_tool"
+  local out
+  if ! out="$( cd "$KEYS" && "$T/rk_sign_tool" kk --bits "$BITS" --out . 2>&1 )"; then
+    printf '%s\n' "$out" | sed 's/^/  [rk_sign_tool] /' >&2
+    die "rk_sign_tool kk failed (see output above)"
+  fi
+  if [ ! -f "$KEYS/private_key.pem" ] || [ ! -f "$KEYS/public_key.pem" ]; then
+    printf '%s\n' "$out" | sed 's/^/  [rk_sign_tool] /' >&2
+    die "rk_sign_tool reported no error but did not write private_key.pem/public_key.pem into $KEYS"
+  fi
+  log "done: $KEYS/private_key.pem + public_key.pem"
+  log "BACK UP $KEYS OFFLINE NOW — losing it makes every fused device un-updatable."
 }
 
 load_key() {
