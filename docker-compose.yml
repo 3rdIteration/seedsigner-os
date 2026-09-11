@@ -6,6 +6,13 @@ services:
     volumes:
       - ./opt:/opt
       - ./images:/images
+      # Buildroot's source download dir. Every Pi/La Frite defconfig sets
+      # BR2_DL_DIR="$(TOPDIR)/../../buildroot_dl", and TOPDIR is /opt/buildroot,
+      # so buildroot writes to /buildroot_dl. Without this mount the whole
+      # source set is re-downloaded on every build and thrown away with the
+      # container -- which is how a bad minute at an upstream mirror turns into
+      # a failed build (see the libzlib/sources.buildroot.net outage).
+      - ./buildroot_dl:/buildroot_dl
       - ./.ccache:/root/.cache/ccache
       - ./.buildroot-ccache:/root/.buildroot-ccache
     environment:
