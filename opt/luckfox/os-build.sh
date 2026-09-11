@@ -1477,6 +1477,68 @@ ensure_buildroot_tree() {
     print_success "Using buildroot directory: $BUILDROOT_DIR"
 }
 
+# Opt-in secure-boot support (SEEDSIGNER_FIT_SIGNATURE=1), OFF by default so a
+# normal build is byte-for-byte unchanged. Two halves:
+#   apply_fit_signature_config  - turn ON FIT signature ENFORCEMENT in the U-Boot
+#       defconfig BEFORE the U-Boot build, so SPL/U-Boot require a valid signature.
+#   export_fit_sign_tree        - AFTER the build, copy everything fit-sign.sh
+#       needs (the packed images from output/image + a fit_signcfg/ holding the
+#       built u-boot .config as sign.readonly_config) into $OUTPUT_DIR, which is
+#       bind-mounted to the host. Signing then happens on the host with
+#       secure-boot/sign-secure-boot.sh --build-tree <that dir>. The Docker build
+#       itself never signs and never burns.
+# See docs/luckfox/secure-boot-bench-procedure.md.
+apply_fit_signature_config() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local cfgdir="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot/configs"
+    print_step "Enabling FIT signature enforcement in U-Boot defconfig (SEEDSIGNER_FIT_SIGNATURE=1)"
+    local f found=0 sym
+    for f in "$cfgdir"/luckfox_rv1106_uboot*defconfig; do
+        [ -f "$f" ] || continue
+        found=1
+        for sym in CONFIG_FIT_SIGNATURE CONFIG_SPL_FIT_SIGNATURE; do
+            sed -i -E "/^# ${sym} is not set\$/d; /^${sym}=/d" "$f"
+            echo "${sym}=y" >> "$f"
+        done
+        print_success "FIT signature enabled in $(basename "$f")"
+    done
+    if [ "$found" != 1 ]; then
+        print_error "SEEDSIGNER_FIT_SIGNATURE=1 but no luckfox_rv1106_uboot*defconfig under $cfgdir"
+        exit 1
+    fi
+}
+
+export_fit_sign_tree() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local board_profile="$1"
+    local src_img="$LUCKFOX_SDK_DIR/output/image"
+    local uboot_cfg="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot/.config"
+    local dst="$OUTPUT_DIR/fit-sign-tree-${board_profile}"
+    print_step "Exporting fit-sign tree for ${board_profile} -> $dst"
+    [ -d "$src_img" ] || { print_error "output/image missing at $src_img"; exit 1; }
+    rm -rf "$dst"; mkdir -p "$dst/fit_signcfg"
+    cp -a "$src_img/." "$dst/"
+    # fit-sign.sh reads <src-dir>/fit_signcfg/sign.readonly_config (it greps
+    # CONFIG_* from it). Prefer the SDK's own fit_signcfg if the build produced
+    # one; otherwise synthesize it from the built u-boot .config, which carries
+    # the same CONFIG_FIT_SIGNATURE / SPL_FIT_HW_CRYPTO / CHIP_NAME symbols.
+    local sdk_signcfg
+    sdk_signcfg="$(find "$LUCKFOX_SDK_DIR" -type f -name sign.readonly_config 2>/dev/null | head -n1)"
+    if [ -n "$sdk_signcfg" ]; then
+        cp -a "$(dirname "$sdk_signcfg")/." "$dst/fit_signcfg/"
+        print_success "copied SDK fit_signcfg from $(dirname "$sdk_signcfg")"
+    elif [ -f "$uboot_cfg" ]; then
+        cp "$uboot_cfg" "$dst/fit_signcfg/sign.readonly_config"
+        print_success "synthesized fit_signcfg/sign.readonly_config from built u-boot .config"
+    else
+        print_error "cannot find fit_signcfg or u-boot .config ($uboot_cfg) to build the sign tree"
+        exit 1
+    fi
+    print_success "fit-sign tree ready. On the host, sign it with:"
+    print_success "  opt/luckfox/secure-boot/sign-secure-boot.sh sign --keys <dir> \\"
+    print_success "     --images <out> --build-tree build-output/fit-sign-tree-${board_profile} --tools <rkbin/tools>"
+}
+
 build_profile_artifacts() {
     local board_profile="$1"
     local boot_medium="$2"
@@ -1541,6 +1603,7 @@ build_profile_artifacts() {
     apply_spidev_bufsiz "$board_profile"
     apply_hwrng_kernel_patch "$board_profile" "$boot_medium"
     apply_rng_dts_patch "$board_profile"
+    apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
 
     # USB role (the adb switch) — shared with CI via configure-usb-mode.sh.
     print_step "Configuring USB mode (SEEDSIGNER_USB_MODE=$SEEDSIGNER_USB_MODE, variant=$SEEDSIGNER_BUILD_VARIANT)"
@@ -2071,6 +2134,7 @@ s/^endef\nendif/endef\nendif\nendif/
     print_step "Packaging Firmware"
     sdk_build firmware
     normalise_boot_images
+    export_fit_sign_tree "$board_profile"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
     # The SDK emits sd_update.txt/tftp_update.txt staging every partition at
     # ${ramdisk_addr_r} = 0x00E00000, which leaves ~31 MiB below U-Boot's own
     # relocated stack/heap on a 64 MiB Mini. Our 38.6 MiB rootfs.img does not fit
