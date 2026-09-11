@@ -230,7 +230,31 @@ cmd_otp_hash() {
   otp_hash "$T" "$loader"
 }
 
+# SHA-256 of the committed PUBLIC dev key's RSA modulus (secure-boot/dev-keys/).
+# A burn armed with this key fuses the board to a key everyone has: recoverable
+# (still updatable) but with zero secure-boot protection.
+PUBLIC_DEV_KEY_MODULUS_SHA256="c8b597b50bbb94c7c700011c2aefc43eb97d3b391da28bc130936d8d9f530f17"
+
+warn_if_public_dev_key() {
+  command -v openssl >/dev/null 2>&1 || return 0
+  local kf=""
+  for f in "$KEYS/dev.key" "$KEYS/private_key.pem"; do [ -f "$f" ] && { kf="$f"; break; }; done
+  [ -n "$kf" ] || return 0
+  local mod; mod="$(openssl rsa -in "$kf" -noout -modulus 2>/dev/null | sha256sum | awk '{print $1}')"
+  if [ "$mod" = "$PUBLIC_DEV_KEY_MODULUS_SHA256" ]; then
+    warn "########################################################################"
+    warn "## THIS IS THE COMMITTED PUBLIC DEV KEY — NOT A SECRET.                ##"
+    warn "## Burning it gives the board NO protection (anyone can sign for it).  ##"
+    warn "## The fuse is still one-time: this board can NEVER later move to a    ##"
+    warn "## real secret key. Only do this on a sacrificial board, as a test of  ##"
+    warn "## the burn mechanism itself. For real secure boot, re-sign with your  ##"
+    warn "## own key first (Stage 2) and burn THAT.                              ##"
+    warn "########################################################################"
+  fi
+}
+
 confirm_burn() {
+  warn_if_public_dev_key
   warn "================= IRREVERSIBLE ================="
   warn "--burn arms the OTP key-hash write. A board booted with the resulting loader"
   warn "burns a one-time fuse and will thereafter ONLY boot signed firmware. There is"

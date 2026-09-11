@@ -115,17 +115,23 @@ Two ways to run the build:
 
 **A. The `seedsigner-os` Docker build (what the bench uses).** Opt in with
 `SEEDSIGNER_FIT_SIGNATURE=1`; the build enables `CONFIG_(SPL_)FIT_SIGNATURE`,
-then lays down a **throwaway** RSA key so the build completes, and exports a
-`fit-sign-tree-<profile>/` under `build-output/` for host re-signing:
+lays down the committed **PUBLIC dev key**
+([`secure-boot/dev-keys/`](../../opt/luckfox/secure-boot/dev-keys/)) so the build
+completes, and exports a `fit-sign-tree-<profile>/` under `build-output/` for
+host re-signing:
 
 ```sh
 SEEDSIGNER_FIT_SIGNATURE=1 ./build.sh --luckfox build --nand --model mini --variant dev
 ```
 
-The throwaway key's pubkey is only a placeholder — Stage 2 replaces it with your
-real key. (A host path can't be handed to the container, so on the Docker path
-the real key is always applied post-build in Stage 2. `SEEDSIGNER_FIT_BITS`
-overrides the throwaway size.)
+The dev key's pubkey is only a placeholder — Stage 2 replaces it with your real
+secret key. (A host path can't be handed to the container, so on the Docker path
+the real key is always applied post-build in Stage 2.) The key is **fixed and
+public** on purpose: it keeps the signed build reproducible, and if you skip
+Stage 2 and burn anyway the board fuses to a key everyone has — **recoverable
+(still updatable) rather than a permanent brick**, though it grants no protection
+and the board can then never move to a real key. See
+[`secure-boot/dev-keys/README.md`](../../opt/luckfox/secure-boot/dev-keys/README.md).
 
 **B. A standalone SDK checkout** (native, no Docker) — here you can build with
 the real key directly, so the loader embeds the real pubkey and Stage 2 is only

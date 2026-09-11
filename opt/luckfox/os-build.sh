@@ -1515,21 +1515,28 @@ apply_fit_signature_config() {
 }
 
 # Lay down the dev.{key,pubkey,crt} the in-SDK signing needs. Three sources, in
-# order: an existing triple in the tree (kept SDK checkout) is reused; a real key
-# supplied via SEEDSIGNER_FIT_KEY_DIR is copied in and its pubkey ends up embedded
-# in the loader (no host resign needed); otherwise a THROWAWAY key is generated so
-# the build can finish — its pubkey is a placeholder to be replaced on the host by
-# `fit-sign.sh --key-dir <real>` over the exported fit-sign tree.
+# order: an existing triple already in the tree (kept SDK checkout) is reused; a
+# real key supplied via SEEDSIGNER_FIT_KEY_DIR is copied in and its pubkey ends up
+# embedded in the loader (no host resign needed); otherwise the committed PUBLIC
+# dev key (secure-boot/dev-keys/) is used as a placeholder — its pubkey is meant
+# to be replaced on the host by `fit-sign.sh --key-dir <real>` over the exported
+# fit-sign tree.
+#
+# Why the fixed public key rather than a fresh random one: it keeps the signed
+# build reproducible, and it makes the "skipped the re-sign, then burned the OTP"
+# mistake RECOVERABLE — the board fuses to a key everyone has, so it can still be
+# signed/updated, instead of being bricked by a discarded random key. It grants
+# no security (the key is public); real protection needs the Stage 2 re-sign with
+# a secret key. See secure-boot/dev-keys/README.md.
 provision_fit_build_keys() {
-    local keydir="$1"
-    local mk="$SEEDSIGNER_LUCKFOX_DIR/secure-boot/make-dev-keys.sh"
+    local keydir="$1" k
     mkdir -p "$keydir"
     if [ -f "$keydir/dev.key" ] && [ -f "$keydir/dev.pubkey" ] && [ -f "$keydir/dev.crt" ]; then
         print_success "reusing existing FIT signing key already in $keydir"
         return 0
     fi
     if [ -n "${SEEDSIGNER_FIT_KEY_DIR:-}" ]; then
-        local s="$SEEDSIGNER_FIT_KEY_DIR" k
+        local s="$SEEDSIGNER_FIT_KEY_DIR"
         for k in dev.key dev.pubkey dev.crt; do
             [ -f "$s/$k" ] || { print_error "SEEDSIGNER_FIT_KEY_DIR=$s is missing $k (need dev.key + dev.pubkey + dev.crt; generate with secure-boot/make-dev-keys.sh)"; exit 1; }
         done
@@ -1537,12 +1544,16 @@ provision_fit_build_keys() {
         print_success "using supplied FIT signing key from SEEDSIGNER_FIT_KEY_DIR (its pubkey is embedded in the loader; no host resign needed)"
         return 0
     fi
-    local bits="${SEEDSIGNER_FIT_BITS:-2048}"
-    print_step "Generating a THROWAWAY ${bits}-bit FIT build key in $keydir"
-    print_success "  its pubkey is only a placeholder — re-sign the exported fit-sign tree with your"
-    print_success "  real key on the host (fit-sign.sh --key-dir <real>) before flashing anything you burn"
-    bash "$mk" --out "$keydir" --bits "$bits" \
-        || { print_error "failed to generate throwaway FIT build key (is openssl installed?)"; exit 1; }
+    local devkeys="$SEEDSIGNER_LUCKFOX_DIR/secure-boot/dev-keys"
+    for k in dev.key dev.pubkey dev.crt; do
+        [ -f "$devkeys/$k" ] || { print_error "committed public dev key missing: $devkeys/$k (stale Docker image? rebuild with --force)"; exit 1; }
+    done
+    cp "$devkeys/dev.key" "$devkeys/dev.pubkey" "$devkeys/dev.crt" "$keydir/"
+    print_step "Using the committed PUBLIC dev key as the FIT build placeholder"
+    print_success "  this key is NOT secret and grants NO protection — re-sign the exported fit-sign"
+    print_success "  tree with your real secret key (fit-sign.sh --key-dir <real>) before you burn."
+    print_success "  (A burn done with this placeholder is recoverable but unsecurable; see"
+    print_success "   secure-boot/dev-keys/README.md.)"
 }
 
 export_fit_sign_tree() {
@@ -2418,6 +2429,9 @@ assert_shared_build_files() {
              install-gnupg-home.sh install-build-time.sh \
               uboot-recovery-config.sh compile-translations.sh \
               secure-boot/make-dev-keys.sh \
+              secure-boot/dev-keys/dev.key \
+              secure-boot/dev-keys/dev.pubkey \
+              secure-boot/dev-keys/dev.crt \
               SDK_COMMIT \
               mkfs-ubifs-determinism/build-mkfs-ubifs.sh \
               mkfs-ubifs-determinism/sort-dirents.patch \
