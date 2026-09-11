@@ -976,10 +976,11 @@ Checked against a built image:
 
 1. ~~What is the correct `rk_sign_tool` chip identifier?~~ **Answered:** `1106`. Plain `1103` is
    rejected by v1.49; the Mini signs as `1106` because it builds with the RV1106 U-Boot defconfig.
-2. ~~Does RV1106 use the `sign_flag=0x20` flow?~~ **Superseded:** the mechanism is
-   `fit-sign.sh --burn-key-hash`, which sets `burn-key-hash 0x1` in the SPL DTB. Still to confirm on
-   hardware whether it emits the `otp write key success!!!` / `SecureBootEn = 1` markers.
-3. Does enabling `CONFIG_FIT_SIGNATURE` / `CONFIG_SPL_FIT_SIGNATURE` in the Luckfox U-Boot defconfig
+2. ~~Does RV1106 use the `sign_flag=0x20` flow?~~ **Answered NO (hardware-confirmed, 2026-09).**
+   Flashing a loader signed with `ss --flag 0x20` on an RV1103 Mini produced no OTP write
+   (`Verified-boot` stayed `0`, no `otp write key success`, board unfused). RV1106 burns the key
+   hash only via the FIT `--burn-key-hash` mechanism (`fit-sign.sh`), which needs a U-Boot build
+   tree. The legacy loader `sign_flag` path does nothing on this SoC.3. Does enabling `CONFIG_FIT_SIGNATURE` / `CONFIG_SPL_FIT_SIGNATURE` in the Luckfox U-Boot defconfig
    work without further patching?
 4. Is the OTP public-key-hash region on RV1106 write-locked independently, and does burning it
    affect the OTP regions the `cpuinfo` driver reads?

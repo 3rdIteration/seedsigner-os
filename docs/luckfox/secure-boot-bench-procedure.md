@@ -178,9 +178,14 @@ SecureBootEn = 1, SecureBootLock = 1
 ## Verified-boot: 1              <- was 0
 ```
 
-> The prebuilt-folder path instead uses `rk_sign_tool ss --flag 0x20`, where
-> `0x20` is documented for RK3308/PX30, **not RV1106**. Prefer the build +
-> `--burn-key-hash` path; treat the flag path as unverified.
+> **Bench result (2026-09, RV1103 Mini):** the prebuilt-folder path's
+> `rk_sign_tool ss --flag 0x20` is a **confirmed no-op on RV1106** — flashing a
+> `--burn`-signed loader produced no `otp write key success`, `Verified-boot`
+> stayed `0`, and the board was left unfused and fully recoverable. `0x20` is the
+> RK3308/PX30 mechanism. **On RV1106 the burn only happens through the FIT
+> `--burn-key-hash` path, which requires a real U-Boot build tree** (Stage 1–2 /
+> `--build-tree`). The `sign-secure-boot.sh` prebuilt `--burn` path now refuses
+> for this reason.
 
 ## Stage 5 — confirm enforcement
 

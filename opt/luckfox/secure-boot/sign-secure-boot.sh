@@ -146,10 +146,13 @@ cmd_sign() {
   log "prebuilt-folder path: signing loader + idblock only (uboot.img/boot.img cannot be signed here)"
 
   if [ "$BURN" = 1 ]; then
-    confirm_burn
-    warn "loader-path burn uses 'ss --flag 0x20'. 0x20 is documented for RK3308/PX30, NOT RV1106."
-    warn "prefer the --build-tree path (fit-sign.sh --burn-key-hash). Proceeding only because you asked."
-    "$T/rk_sign_tool" ss --flag 0x20 >/dev/null
+    warn "--burn on the prebuilt-folder path does NOT work on RV1106."
+    warn "It set 'ss --flag 0x20' (the RK3308/PX30 mechanism); bench-tested on a"
+    warn "flashed RV1103 Mini, no OTP write occurred: no 'otp write key success',"
+    warn "Verified-boot stayed 0, board unfused. RV1106 burns the key hash via the"
+    warn "FIT mechanism instead (fit-sign.sh --burn-key-hash), which needs a real"
+    warn "U-Boot build tree. Re-run with --build-tree <sdk-image-dir> --burn."
+    die "prebuilt-folder --burn is a no-op on RV1106; use the --build-tree path"
   fi
 
   cp -f "$loader" "$IMAGES/download.signed.bin"
