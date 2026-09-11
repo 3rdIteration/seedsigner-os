@@ -1490,7 +1490,8 @@ ensure_buildroot_tree() {
 # See docs/luckfox/secure-boot-bench-procedure.md.
 apply_fit_signature_config() {
     [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
-    local cfgdir="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot/configs"
+    local ubootdir="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot"
+    local cfgdir="$ubootdir/configs"
     print_step "Enabling FIT signature enforcement in U-Boot defconfig (SEEDSIGNER_FIT_SIGNATURE=1)"
     local f found=0 sym
     for f in "$cfgdir"/luckfox_rv1106_uboot*defconfig; do
@@ -1506,6 +1507,42 @@ apply_fit_signature_config() {
         print_error "SEEDSIGNER_FIT_SIGNATURE=1 but no luckfox_rv1106_uboot*defconfig under $cfgdir"
         exit 1
     fi
+    # With CONFIG_FIT_SIGNATURE=y the SDK signs the FIT *during* the build:
+    # scripts/fit-core.sh runs check_rsa_keys and `mkimage -k keys/`, which abort
+    # with "ERROR: No keys/dev.key" unless the dev.{key,pubkey,crt} triple is
+    # present in the u-boot tree. Provide one so the build completes.
+    provision_fit_build_keys "$ubootdir/keys"
+}
+
+# Lay down the dev.{key,pubkey,crt} the in-SDK signing needs. Three sources, in
+# order: an existing triple in the tree (kept SDK checkout) is reused; a real key
+# supplied via SEEDSIGNER_FIT_KEY_DIR is copied in and its pubkey ends up embedded
+# in the loader (no host resign needed); otherwise a THROWAWAY key is generated so
+# the build can finish — its pubkey is a placeholder to be replaced on the host by
+# `fit-sign.sh --key-dir <real>` over the exported fit-sign tree.
+provision_fit_build_keys() {
+    local keydir="$1"
+    local mk="$SEEDSIGNER_LUCKFOX_DIR/secure-boot/make-dev-keys.sh"
+    mkdir -p "$keydir"
+    if [ -f "$keydir/dev.key" ] && [ -f "$keydir/dev.pubkey" ] && [ -f "$keydir/dev.crt" ]; then
+        print_success "reusing existing FIT signing key already in $keydir"
+        return 0
+    fi
+    if [ -n "${SEEDSIGNER_FIT_KEY_DIR:-}" ]; then
+        local s="$SEEDSIGNER_FIT_KEY_DIR" k
+        for k in dev.key dev.pubkey dev.crt; do
+            [ -f "$s/$k" ] || { print_error "SEEDSIGNER_FIT_KEY_DIR=$s is missing $k (need dev.key + dev.pubkey + dev.crt; generate with secure-boot/make-dev-keys.sh)"; exit 1; }
+        done
+        cp "$s/dev.key" "$s/dev.pubkey" "$s/dev.crt" "$keydir/"
+        print_success "using supplied FIT signing key from SEEDSIGNER_FIT_KEY_DIR (its pubkey is embedded in the loader; no host resign needed)"
+        return 0
+    fi
+    local bits="${SEEDSIGNER_FIT_BITS:-2048}"
+    print_step "Generating a THROWAWAY ${bits}-bit FIT build key in $keydir"
+    print_success "  its pubkey is only a placeholder — re-sign the exported fit-sign tree with your"
+    print_success "  real key on the host (fit-sign.sh --key-dir <real>) before flashing anything you burn"
+    bash "$mk" --out "$keydir" --bits "$bits" \
+        || { print_error "failed to generate throwaway FIT build key (is openssl installed?)"; exit 1; }
 }
 
 export_fit_sign_tree() {
@@ -2380,6 +2417,7 @@ assert_shared_build_files() {
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
              install-gnupg-home.sh install-build-time.sh \
               uboot-recovery-config.sh compile-translations.sh \
+              secure-boot/make-dev-keys.sh \
               SDK_COMMIT \
               mkfs-ubifs-determinism/build-mkfs-ubifs.sh \
               mkfs-ubifs-determinism/sort-dirents.patch \

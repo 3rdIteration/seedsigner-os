@@ -17,10 +17,20 @@
 # Luckfox_Pico_Mini_Flash image; the command transcripts are in the bench doc.
 #
 # Usage:
-#   sign-secure-boot.sh gen-key   --keys <dir> [--bits 2048|4096]
+#   sign-secure-boot.sh gen-key   --keys <dir> [--bits 2048|4096] [--from <pem>]
 #   sign-secure-boot.sh sign      --keys <dir> --images <dir> [--build-tree <dir>] [--burn]
 #   sign-secure-boot.sh verify    --keys <dir> --images <dir>
 #   sign-secure-boot.sh otp-hash  --keys <dir> --images <dir>
+#
+#   gen-key writes ONE keys dir that both signing paths accept:
+#     * dev.key / dev.pubkey / dev.crt  — the triple Rockchip's mkimage FIT
+#       signing needs (the --build-tree path, via fit-sign.sh, and the in-SDK
+#       build). Produced by the shared make-dev-keys.sh.
+#     * private_key.pem / public_key.pem — copies rk_sign_tool reads for the
+#       prebuilt loader+idblock path.
+#   --from <pem> derives the key from an existing RSA private key PEM instead of
+#   generating one — e.g. a BIP85-derived key exported from a SeedSigner
+#   (key.export_key('PEM')), so the signing key is reproducible from the seed.
 #
 #   --tools <dir>   rkbin tools dir (has rk_sign_tool + fit-sign.sh).
 #                   Default: the SDK copy if $LUCKFOX_SDK_DIR is set, else a
@@ -46,7 +56,7 @@ warn() { printf '  [sign] !! %s\n' "$*" >&2; }
 die()  { printf '  [sign] ERROR: %s\n' "$*" >&2; exit 1; }
 
 CMD="${1:-}"; shift || true
-KEYS=""; IMAGES=""; TOOLS=""; CHIP="1106"; BITS="2048"; BUILD_TREE=""; BURN=0
+KEYS=""; IMAGES=""; TOOLS=""; CHIP="1106"; BITS="2048"; BUILD_TREE=""; BURN=0; FROM=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --keys)       KEYS="$2"; shift 2;;
@@ -54,11 +64,14 @@ while [ $# -gt 0 ]; do
     --tools)      TOOLS="$2"; shift 2;;
     --chip)       CHIP="$2"; shift 2;;
     --bits)       BITS="$2"; shift 2;;
+    --from)       FROM="$2"; shift 2;;
     --build-tree) BUILD_TREE="$2"; shift 2;;
     --burn)       BURN=1; shift;;
     *) die "unknown argument: $1";;
   esac
 done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- locate the rkbin tools -------------------------------------------------
 # Always returns a dir that actually contains an executable rk_sign_tool, or
@@ -96,24 +109,30 @@ find_idblock() { local f; for f in "$1"/idblock*.img; do [ -f "$f" ] && { echo "
 
 cmd_gen_key() {
   [ -n "$KEYS" ] || die "--keys <dir> is required"
-  local T; T="$(resolve_tools)"
+  local mk="$SCRIPT_DIR/make-dev-keys.sh"
+  [ -f "$mk" ] || die "shared key helper not found: $mk"
   mkdir -p "$KEYS" || die "could not create keys dir: $KEYS"
-  if [ -f "$KEYS/private_key.pem" ]; then
-    warn "key already exists at $KEYS/private_key.pem — refusing to overwrite."
+  if [ -f "$KEYS/dev.key" ] || [ -f "$KEYS/private_key.pem" ]; then
+    warn "key already exists in $KEYS — refusing to overwrite."
     warn "delete it yourself if you really mean to regenerate (this orphans every device signed with it)."
     exit 1
   fi
-  log "generating RSA-$BITS keypair in $KEYS (chip $CHIP) using $T/rk_sign_tool"
-  local out
-  if ! out="$( cd "$KEYS" && "$T/rk_sign_tool" kk --bits "$BITS" --out . 2>&1 )"; then
-    printf '%s\n' "$out" | sed 's/^/  [rk_sign_tool] /' >&2
-    die "rk_sign_tool kk failed (see output above)"
+  # make-dev-keys.sh produces the dev.{key,pubkey,crt} triple both the mkimage
+  # FIT path (fit-sign.sh / in-SDK build) and rk_sign_tool understand. --from
+  # wraps an existing RSA PEM (e.g. a BIP85-derived key); otherwise generate one.
+  if [ -n "$FROM" ]; then
+    [ -f "$FROM" ] || die "--from key not found: $FROM"
+    log "deriving signing key in $KEYS from $FROM"
+    bash "$mk" --out "$KEYS" --from "$FROM" || die "make-dev-keys.sh --from failed"
+  else
+    log "generating RSA-$BITS signing key in $KEYS"
+    bash "$mk" --out "$KEYS" --bits "$BITS" || die "make-dev-keys.sh failed"
   fi
-  if [ ! -f "$KEYS/private_key.pem" ] || [ ! -f "$KEYS/public_key.pem" ]; then
-    printf '%s\n' "$out" | sed 's/^/  [rk_sign_tool] /' >&2
-    die "rk_sign_tool reported no error but did not write private_key.pem/public_key.pem into $KEYS"
-  fi
-  log "done: $KEYS/private_key.pem + public_key.pem"
+  # rk_sign_tool (prebuilt loader+idblock path) reads private_key.pem/public_key.pem;
+  # they are the same key material as dev.key/dev.pubkey.
+  cp -f "$KEYS/dev.key"    "$KEYS/private_key.pem"
+  cp -f "$KEYS/dev.pubkey" "$KEYS/public_key.pem"
+  log "done: $KEYS/{dev.key,dev.pubkey,dev.crt} (+ private_key.pem/public_key.pem)"
   log "BACK UP $KEYS OFFLINE NOW — losing it makes every fused device un-updatable."
 }
 
@@ -127,10 +146,15 @@ load_key() {
 cmd_sign() {
   need_dir "$IMAGES" "images dir"
   local T; T="$(resolve_tools)"
-  load_key "$T"
 
   if [ -n "$BUILD_TREE" ]; then
     need_dir "$BUILD_TREE" "build tree"
+    # fit-sign.sh does its own rk_sign_tool cc/lk from the dev.* triple, so the
+    # build-tree path needs dev.{key,pubkey,crt}, NOT private_key.pem.
+    local k
+    for k in dev.key dev.pubkey dev.crt; do
+      need_file "$KEYS/$k" "signing key '$k' (run gen-key, or secure-boot/make-dev-keys.sh)"
+    done
     log "full-chain signing via fit-sign.sh (loader + idblock + uboot + boot)"
     local burnflag=""
     if [ "$BURN" = 1 ]; then confirm_burn; burnflag="--burn-key-hash"; fi
@@ -140,6 +164,7 @@ cmd_sign() {
   fi
 
   # Prebuilt-folder path: loader + idblock only.
+  load_key "$T"
   local loader idb; loader="$(find_loader "$IMAGES")"; idb="$(find_idblock "$IMAGES")"
   [ -n "$loader" ] || die "no loader (download.bin / *loader*.bin) in $IMAGES"
   [ -n "$idb" ]    || die "no idblock*.img in $IMAGES"

@@ -65,9 +65,16 @@ COPY SDK_COMMIT /build/
 # own COPY -- the `COPY *.sh` glob below only reaches top-level scripts.
 COPY mkfs-ubifs-determinism/ /build/mkfs-ubifs-determinism/
 
+# Secure-boot helpers. Only make-dev-keys.sh is used during the build (and only
+# when SEEDSIGNER_FIT_SIGNATURE=1, to lay down the dev.{key,pubkey,crt} the SDK's
+# in-build FIT signing requires); the rest are bench tools that never run in a
+# normal build. A subdirectory, so it needs its own COPY -- the `COPY *.sh` glob
+# below only reaches top-level scripts.
+COPY secure-boot/ /build/secure-boot/
+
 
 # Make scripts executable
-RUN chmod +x /build/*.sh /build/blkenvflash 2>/dev/null || true
+RUN chmod +x /build/*.sh /build/secure-boot/*.sh /build/blkenvflash 2>/dev/null || true
 
 # Set up git configuration (required for cloning repositories inside container)
 RUN git config --global user.email "build@seedsigner.luckfox" && \

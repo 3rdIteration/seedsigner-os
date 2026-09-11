@@ -31,28 +31,42 @@ tool's `setting.ini` support list; the Mini's U-Boot identifies as RV1106.
 
 ### Key options
 
+`gen-key` writes **one** keys dir that every signing path here accepts:
+`dev.key` / `dev.pubkey` / `dev.crt` (the triple Rockchip's `mkimage` FIT signing
+needs — both the in-SDK build and `fit-sign.sh`), plus `private_key.pem` /
+`public_key.pem` copies that `rk_sign_tool` reads for the prebuilt loader+idblock
+path. The triple itself comes from the shared
+[`make-dev-keys.sh`](../../opt/luckfox/secure-boot/make-dev-keys.sh); `gen-key`
+wraps it and adds the `.pem` copies.
+
 **A. Generated key (simplest).**
 
 ```sh
-mkdir -p ~/keys
-bash "$SB/sign-secure-boot.sh" gen-key --keys ~/keys --bits 2048 --tools "$TOOLS"
+bash "$SB/sign-secure-boot.sh" gen-key --keys ~/keys --bits 2048
 ```
+
+(No `--tools` needed for `gen-key` any more — it only uses `openssl`.)
 
 **B. BIP85-derived key from a SeedSigner (reproducible backup).** Validated: the
 fork's `bip85_rsa_from_root()` returns a PyCryptodome `RSA` object
 (`gpg_views.py`, app `828365`, `MIN_RSA_KEY_BITS = 2048`), and a PyCryptodome
-`export_key('PEM')` is accepted by `rk_sign_tool` (test: `loading key ok /
-signing ok / verifying ok`). No GPG round-trip is needed — export the RSA object
-straight to PEM:
+`export_key('PEM')` is accepted downstream (test: `loading key ok / signing ok /
+verifying ok`). Export the RSA object to a PEM on the SeedSigner:
 
 ```python
 # inside the SeedSigner env, from the BIP85-derived key object
-open("private_key.pem","wb").write(key.export_key("PEM"))
-open("public_key.pem","wb").write(key.publickey().export_key("PEM"))
+open("bip85_signing.pem","wb").write(key.export_key("PEM"))
 ```
 
-Drop those two files in `~/keys` and skip `gen-key`. The signing key is then
-reproducible from the BIP39 seed + derivation path — the whole backup advantage.
+then wrap that PEM into the full `dev.*` triple (this also normalises it and
+builds the `dev.crt` mkimage needs):
+
+```sh
+bash "$SB/sign-secure-boot.sh" gen-key --keys ~/keys --from bip85_signing.pem
+```
+
+The signing key is then reproducible from the BIP39 seed + derivation path — the
+whole backup advantage.
 
 > **Use a dedicated seed (or at least a dedicated index) for firmware signing.**
 > This key carries the custody weight described in `secure-boot.md` §7: whoever
@@ -87,36 +101,76 @@ Record that hash. After fusing there is no way to read it back to compare.
 
 ## Stage 1 — build U-Boot with signature enforcement
 
-The `seedsigner-os` Docker build wipes and re-clones the SDK each run and never
-signs, so enforcement is added to a **standalone SDK checkout** instead:
+**The SDK signs the FIT *during* the build.** This is the key thing to
+understand: `CONFIG_FIT_SIGNATURE=y` and in-build signing are coupled in this
+SDK. `sysdrv/source/uboot/u-boot/scripts/fit-core.sh` runs `check_rsa_keys` and
+`mkimage -k keys/` while packing `uboot.img`, so the u-boot build **aborts with
+`ERROR: No keys/dev.key` unless `keys/dev.{key,pubkey,crt}` exist in the u-boot
+tree.** There is no "compile enforcement in, sign later" — enforcement needs a
+key present at build time. `mkimage` also embeds that key's public half into the
+SPL DTB (the loader), so whatever key builds the image is the one the loader
+trusts, until it is replaced in Stage 2.
+
+Two ways to run the build:
+
+**A. The `seedsigner-os` Docker build (what the bench uses).** Opt in with
+`SEEDSIGNER_FIT_SIGNATURE=1`; the build enables `CONFIG_(SPL_)FIT_SIGNATURE`,
+then lays down a **throwaway** RSA key so the build completes, and exports a
+`fit-sign-tree-<profile>/` under `build-output/` for host re-signing:
 
 ```sh
-# lay down the pinned SDK (the seedsigner-os build's own helper does this):
+SEEDSIGNER_FIT_SIGNATURE=1 ./build.sh --luckfox build --nand --model mini --variant dev
+```
+
+The throwaway key's pubkey is only a placeholder — Stage 2 replaces it with your
+real key. (A host path can't be handed to the container, so on the Docker path
+the real key is always applied post-build in Stage 2. `SEEDSIGNER_FIT_BITS`
+overrides the throwaway size.)
+
+**B. A standalone SDK checkout** (native, no Docker) — here you can build with
+the real key directly, so the loader embeds the real pubkey and Stage 2 is only
+needed to arm the burn:
+
+```sh
 bash <seedsigner-os>/opt/luckfox/prepare-sdk-checkout.sh ~/sdk-parent \
      https://github.com/3rdIteration/luckfox-pico.git
 SDK=~/sdk-parent/luckfox-pico
 
-bash "$SB/enable-fit-signature.sh" "$SDK"     # sets CONFIG_(SPL_)FIT_SIGNATURE=y
-cd "$SDK" && ./build.sh lunch                 # pick RV1103_Luckfox_Pico_Mini
-./build.sh                                    # or ./build.sh uboot for just the loader chain
+bash "$SB/enable-fit-signature.sh" "$SDK"       # sets CONFIG_(SPL_)FIT_SIGNATURE=y
+cp ~/keys/dev.key ~/keys/dev.pubkey ~/keys/dev.crt \
+   "$SDK/sysdrv/source/uboot/u-boot/keys/"       # the real key the build signs with
+cd "$SDK" && ./build.sh lunch                    # pick RV1103_Luckfox_Pico_Mini
+./build.sh                                       # or ./build.sh uboot for just the loader chain
 ```
 
-The exact defconfig it edits:
+The exact defconfig `enable-fit-signature.sh` edits:
 `$SDK/sysdrv/source/uboot/u-boot/configs/luckfox_rv1106_uboot_defconfig`.
 
 > An enforcing build whose images are **not** signed will not boot. That's why
-> Stage 2 (sign) always follows Stage 1, and why enforcement is never in the
-> auto-applied build patches.
+> Stage 2 (sign) always follows Stage 1 on the Docker path, and why enforcement
+> is never in the auto-applied build patches (it is opt-in only).
 
-## Stage 2 — sign the whole chain
+## Stage 2 — sign the whole chain with the real key
 
-With a build tree, `fit-sign.sh` signs loader + idblock + `uboot.img` +
-`boot.img` in one pass (the prebuilt flash folder can only do loader + idblock):
+With a build tree, `fit-sign.sh` re-signs loader + idblock + `uboot.img` +
+`boot.img` in one pass and **replaces the pubkey embedded in the SPL DTB** with
+your real key's — so the throwaway build key never reaches a device (the prebuilt
+flash folder can only do loader + idblock):
 
 ```sh
+# Docker path (A): the tree the build exported
+bash "$SB/sign-secure-boot.sh" sign --keys ~/keys \
+     --images ~/out --build-tree build-output/fit-sign-tree-mini --tools "$TOOLS"
+
+# Standalone-SDK path (B): the SDK's own output dir
 bash "$SB/sign-secure-boot.sh" sign --keys ~/keys \
      --images ~/out --build-tree "$SDK/output/image" --tools "$TOOLS"
 ```
+
+The `--build-tree` path uses `~/keys/dev.{key,pubkey,crt}` (via `fit-sign.sh`),
+which `gen-key` produced above. On path B, if you already built with the real key
+you can skip straight to the burn (Stage 4) — Stage 2 is then only needed to set
+`--burn-key-hash`.
 
 Verify offline before flashing (`vl`/`vb`/`vi` — all validated to work):
 
