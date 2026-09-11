@@ -42,9 +42,10 @@ Enabling `&crypto` therefore does **not** give you `/dev/hwrng`; the two are ind
 
 `rv1106.dtsi` ships `&rng` with `status = "disabled"`, and it is only enabled because upstream
 `rv1106-evb.dtsi` — pulled in by every Luckfox board `.dts` — turns it on. Because that is an
-uncontrolled upstream dependency, `opt/luckfox/os-build.sh` now pins **both** `&crypto` and `&rng`
-to `okay` itself (`enable_dts_node`) and fails the build if either cannot be verified, rather than
-inheriting the setting by luck. An SDK bump can no longer silently remove the entropy source.
+uncontrolled upstream dependency, `opt/luckfox/os-build.sh` pins `&rng` to `okay` itself
+(`apply_rng_dts_patch` → `enable_dts_node`) and fails the build if it cannot be verified, rather than
+inheriting the setting by luck. An SDK bump can no longer silently remove the entropy source. (The
+`&crypto` node is intentionally left alone — see the hardware-crypto note below.)
 
 `rockchip-rng.c` sets `quality = 999`, so `khwrngd` runs and credits roughly 7.8 bits per byte.
 `rng-tools` is also installed, giving a second, independently tested path.
