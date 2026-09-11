@@ -92,18 +92,33 @@ ps | grep '[h]wrng'
 # 4. Is rngd running?  This is the load-bearing one on Pi.
 pgrep rngd
 
-# 5. Rockchip hardware crypto algorithms (Luckfox only)
+# 5. Rockchip hardware crypto algorithms (Luckfox) — currently returns NOTHING; see note below
 cat /proc/crypto | grep rk
 ```
 
 If step 4 fails on a Pi image, the hardware RNG is contributing nothing — that is the exact
 regression the `rng-tools` addition prevents.
 
-**Bench-confirmed on a Luckfox Pico Mini (RV1103, stock Buildroot image, 2026-09):**
-`rng_current` reads `rockchip`, and the in-kernel `[hwrng]` filler thread **is running** (`ps`
-shows it), so the TRNG is credited into the pool exactly as described above. Note the *stock*
-Luckfox image has **no** `rngd` — that daemon is added by the SeedSigner build's `rng-tools`
-selection, so on the shipped image both paths (kthread + `rngd`) are active.
+**Bench-confirmed on a SeedSigner Luckfox Pico Mini NAND build (RV1103, dev, 2026-09):**
+`rng_current` reads `rockchip`, the in-kernel `[hwrng]` filler thread **is running** (pid 41),
+`/dev/hwrng` returns fresh bytes each read, the boot log shows `random: crng init done`, "Seeding
+256 bits and crediting" and `Starting rngd` — so the TRNG path is fully working, both via the
+kthread and `rngd`. This is the entropy guarantee this branch was about, and it holds on real
+hardware.
+
+> **The hardware *crypto* offload is a different story — it is NOT present, despite the build
+> reporting "hardware crypto enabled".** On the booted board `cat /proc/crypto | grep rk` returns
+> nothing, `/sys/bus/platform/drivers/` has no crypto driver, and `ff440000.crypto` is unbound.
+> Cause: `apply_hwrng_crypto_kernel_patch` sets `CONFIG_CRYPTO_DEV_ROCKCHIP=y` (the umbrella) but
+> not `CONFIG_CRYPTO_DEV_ROCKCHIP_V3=y`, which is the sub-option that actually compiles the RV1106
+> (crypto-v3) algorithm code — so no driver is built. The build's assertion only greps the
+> *defconfig text* for the umbrella symbol, so it passes and prints success while the driver is
+> absent from the running kernel. This is harmless for SeedSigner (the app uses software crypto and
+> never touches the hardware engine — step 5 is informational), but the enable is currently a no-op:
+> pinning `&crypto` in the DTS turns on a node that nothing binds to. Only the `&rng` pin matters.
+> To genuinely enable it would need `CONFIG_CRYPTO_DEV_ROCKCHIP_V3=y` plus an assertion that checks
+> the built `.config` (or `/proc/crypto`), not the defconfig — but there is no functional reason to,
+> so the accurate statement is simply: **hardware crypto acceleration is not enabled; the TRNG is.**
 
 ## Known limitation: the app's RNG health monitor
 

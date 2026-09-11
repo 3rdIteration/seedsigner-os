@@ -675,9 +675,17 @@ Do **not** hash the whole 103MB squashfs at boot — that is seconds of added bo
 power-on. Sign the **dm-verity root hash** instead: a small verification at boot, then lazy
 per-block verification on access.
 
-That would also be the first genuine consumer of `CONFIG_CRYPTO_DEV_ROCKCHIP{,_DEV}=y`, which
-[`opt/luckfox/os-build.sh`](../../opt/luckfox/os-build.sh) enables today but which no userspace
-component currently uses.
+dm-verity would use the kernel's software SHA — **not** the Rockchip crypto engine, because that
+driver is not actually built (see the note below). If hardware acceleration were ever wanted for
+this, it would first have to be made to build.
+
+> **Correction (bench-confirmed):** `opt/luckfox/os-build.sh` sets `CONFIG_CRYPTO_DEV_ROCKCHIP=y`
+> and asserts it, but the hardware crypto driver is **absent from the running kernel** — `/proc/crypto`
+> has no `rk` algorithms and `ff440000.crypto` is unbound. The umbrella symbol needs
+> `CONFIG_CRYPTO_DEV_ROCKCHIP_V3=y` (the RV1106 sub-option) to compile any code, and the build's
+> assertion only greps the defconfig text, so it reports success regardless. Harmless — SeedSigner
+> uses software crypto — but it means the hardware engine is not available, and pinning `&crypto` in
+> the DTS is currently a no-op (nothing binds it). The `&rng` pin, by contrast, is real and working.
 
 ### 6.6 The kernel command line is attacker-controlled
 
