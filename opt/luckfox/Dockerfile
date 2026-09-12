@@ -24,6 +24,12 @@ RUN apt-get update && \
         fakeroot cmake unzip gperf autoconf \
         device-tree-compiler libncurses5-dev \
         pkg-config bc python-is-python3 passwd openssl \
+        # ccache: Buildroot's BR2_CCACHE=y invokes it to cache package
+        # compilation across builds (persisted in a Docker volume at
+        # $HOME/.buildroot-ccache). Determinism-safe -- same input, same object
+        # -- unlike SEEDSIGNER_KEEP_SDK_CHECKOUT, so clean reproducible builds
+        # can still be fast on a warm cache.
+        ccache \
         openssh-server openssh-client vim file cpio rsync \
         # rust-toolchain-cache.sh packs the host Rust toolchain with
         # `tar --zstd`, which shells out to the zstd binary. The CI runner

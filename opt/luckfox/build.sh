@@ -186,6 +186,29 @@ run_build() {
         repos_mount="$volume_name"
     fi
 
+    # Persistent Buildroot ccache. Mounted at Buildroot's default cache dir
+    # ($HOME/.buildroot-ccache in the container) so BR2_CCACHE=y (set in the
+    # buildroot defconfig) reuses compiled objects across builds -- the biggest
+    # win on a clean checkout, which otherwise recompiles every package. ccache
+    # is determinism-safe (same preprocessed source + flags -> identical object),
+    # so this does NOT compromise reproducibility the way KEEP_SDK_CHECKOUT does.
+    # A named volume by default; overridable with a host dir via --ccache-dir.
+    local ccache_mount
+    if [[ -n "$CCACHE_DIR_HOST" ]]; then
+        mkdir -p "$CCACHE_DIR_HOST"
+        ccache_mount="$(realpath "$CCACHE_DIR_HOST")"
+        print_success "ccache directory (bind mount): $ccache_mount"
+    else
+        local ccache_volume="seedsigner-ccache"
+        if ! docker volume ls | grep -q "$ccache_volume"; then
+            print_success "Creating Docker volume for persistent ccache: $ccache_volume"
+            docker volume create "$ccache_volume"
+        else
+            print_success "Using existing ccache volume: $ccache_volume"
+        fi
+        ccache_mount="$ccache_volume"
+    fi
+
     # Host Rust toolchain cache. Without it the container rebuilds host-rust --
     # and therefore LLVM -- from source on every build, which is the single
     # longest step there is. See rust-toolchain-cache.sh.
@@ -318,6 +341,7 @@ run_build() {
                        -v $repos_mount:/build/repos
                        -v $abs_output_dir:/build/output
                        -v $external_packages_dir:/build/external-packages:ro
+                       -v $ccache_mount:/root/.buildroot-ccache
                        $gen_os_release_arg
                        $cache_arg
                        $env_args"

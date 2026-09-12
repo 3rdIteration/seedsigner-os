@@ -1,4 +1,10 @@
 BR2_HAVE_DOT_CONFIG=y
+# Cache package compilation across builds. BR2_CCACHE_DIR defaults to
+# $(HOME)/.buildroot-ccache, which build.sh mounts as the persistent
+# seedsigner-ccache volume. Determinism-safe: ccache returns the same object for
+# the same preprocessed source + flags, so a warm-cache build is byte-identical
+# to a cold one. Makes clean (reproducible) rebuilds fast without KEEP_SDK_CHECKOUT.
+BR2_CCACHE=y
 BR2_HOST_GCC_AT_LEAST_4_9=y
 BR2_HOST_GCC_AT_LEAST_5=y
 BR2_HOST_GCC_AT_LEAST_6=y
