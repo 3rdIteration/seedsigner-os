@@ -308,7 +308,6 @@ run_build() {
                        SEEDSIGNER_BOOT_LOG SEEDSIGNER_TESTING_BUILD \
                        SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS \
                        SEEDSIGNER_FIT_SIGNATURE SEEDSIGNER_FIT_BURN_KEY_HASH \
-                       SEEDSIGNER_FIT_BITS \
                        SEEDSIGNER_KEEP_SDK_CHECKOUT \
                        DISABLE_UART2_CONSOLE_DEBUG \
                        SEEDSIGNER_OS_REPO SEEDSIGNER_OS_BRANCH \
