@@ -1586,6 +1586,41 @@ provision_fit_build_keys() {
     print_success "   secure-boot/dev-keys/README.md.)"
 }
 
+# When the boot.img FIT is signed, u-boot must NOT rewrite the kernel DTB's
+# /chosen bootargs at runtime (that would break the signature), so the kernel
+# uses whatever root= is BAKED into the DTB. The SDK's shared ipc.dtsi hardcodes
+# the SD default (root=/dev/mmcblk1p7); on a signed NAND build the SDK's usual
+# runtime injection of root=ubi0:rootfs / ubi.mtd / rootfstype / rk_dma_heap_cma
+# is dropped, so the board hangs at "Waiting for root device /dev/mmcblk1p7" and
+# comes up with the 32M default CMA. Bake the NAND rootfs cmdline (the exact args
+# the SDK computes in parse_partition_file/__GET_BOOTARGS_FROM_BOARD_CFG) into
+# /chosen before the kernel build. Gated on signed + NAND, so unsigned and SD
+# builds are untouched (u-boot still overrides their /chosen at runtime). This
+# also fixes the attacker-controlled-cmdline gap for signed builds: root is now
+# pinned inside the signed image, not read from the unsigned env partition.
+apply_signed_nand_bootargs() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local profile="$1" medium="$2"
+    [ "$medium" = "nand" ] || return 0
+    local dtsi
+    case "$profile" in
+        mini) dtsi="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/arch/arm/boot/dts/rv1103-luckfox-pico-ipc.dtsi" ;;
+        *) print_info "apply_signed_nand_bootargs: only the mini NAND mapping is implemented; skipping '$profile'"; return 0 ;;
+    esac
+    [ -f "$dtsi" ] || { print_error "signed-NAND bootargs: DTS not found: $dtsi"; exit 1; }
+    print_step "Baking NAND rootfs cmdline into signed boot.img DTB (${profile})"
+    if grep -q 'root=ubi0:rootfs' "$dtsi"; then
+        print_success "NAND root already baked in $(basename "$dtsi")"
+        return 0
+    fi
+    grep -q 'root=/dev/mmcblk1p7' "$dtsi" \
+        || { print_error "signed-NAND bootargs: expected 'root=/dev/mmcblk1p7' in $(basename "$dtsi") — SDK layout changed"; exit 1; }
+    # rootfs is mtd6 in our 7-partition NAND layout (env,idblock,uboot,boot,oem,userdata,rootfs).
+    sed -i "s|root=/dev/mmcblk1p7|root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=${MINI_CMA_SIZE}|" "$dtsi"
+    grep -q 'root=ubi0:rootfs' "$dtsi" || { print_error "signed-NAND bootargs: rewrite failed in $dtsi"; exit 1; }
+    print_success "baked: root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=${MINI_CMA_SIZE}"
+}
+
 # Sign the FINAL boot.img in-container (opt-in). The u-boot build signs uboot.img
 # (fit-core.sh, because we enabled CONFIG_FIT_SIGNATURE), but NOTHING in this SDK
 # signs boot.img -- mk-fitimage.sh packs it with the "dev" signature *template*
@@ -1714,6 +1749,7 @@ build_profile_artifacts() {
     apply_hwrng_kernel_patch "$board_profile" "$boot_medium"
     apply_rng_dts_patch "$board_profile"
     apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
+    apply_signed_nand_bootargs "$board_profile" "$boot_medium"   # signed NAND: bake root=ubi0 into the DTB (no-op otherwise)
 
     # USB role (the adb switch) — shared with CI via configure-usb-mode.sh.
     print_step "Configuring USB mode (SEEDSIGNER_USB_MODE=$SEEDSIGNER_USB_MODE, variant=$SEEDSIGNER_BUILD_VARIANT)"
