@@ -1512,6 +1512,36 @@ apply_fit_signature_config() {
     # with "ERROR: No keys/dev.key" unless the dev.{key,pubkey,crt} triple is
     # present in the u-boot tree. Provide one so the build completes.
     provision_fit_build_keys "$ubootdir/keys"
+    arm_fit_burn_key_hash "$ubootdir"   # opt-in: SEEDSIGNER_FIT_BURN_KEY_HASH=1 (IRREVERSIBLE fuse)
+}
+
+# IRREVERSIBLE. Arm the OTP key-hash burn. The build's u-boot make.sh never
+# passes --burn-key-hash to the FIT signing, so a normal signed build produces a
+# loader that verifies signatures but NEVER writes OTP (safe to flash forever).
+# When SEEDSIGNER_FIT_BURN_KEY_HASH=1, patch make.sh so pack_fit_image adds
+# --burn-key-hash to the fit.sh call: fit-core.sh then sets `burn-key-hash 0x1`
+# in the SPL DTB (with its own readback check) and re-packs the loader. On first
+# boot that loader writes the FIT pubkey hash to OTP and turns on secure boot --
+# permanently. The pubkey burned is whatever signed this build (the committed
+# PUBLIC dev key unless SEEDSIGNER_FIT_KEY_DIR gave a real one). Off by default;
+# never set in CI or a normal build.
+arm_fit_burn_key_hash() {
+    [ "${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" = "1" ] || return 0
+    local ubootdir="$1"
+    local mk="$ubootdir/make.sh"
+    print_step "ARMING OTP BURN — SEEDSIGNER_FIT_BURN_KEY_HASH=1 (IRREVERSIBLE)"
+    print_success "  the built loader will write the FIT pubkey hash to OTP on first boot and"
+    print_success "  turn on secure boot PERMANENTLY. Flash it only on a board you mean to fuse."
+    [ -f "$mk" ] || { print_error "u-boot make.sh not found at $mk"; exit 1; }
+    # Append --burn-key-hash to the uboot.img FIT signing call inside
+    # pack_fit_image (the `${SCRIPT_FIT} ${ARG_LIST_FIT} --chip ${RKCHIP_LABEL}`
+    # line). Idempotent, and narrow enough not to touch the SCRIPT_DECOMP line.
+    if ! grep -q 'SCRIPT_FIT}.*--chip.*RKCHIP_LABEL}.*--burn-key-hash' "$mk"; then
+        sed -i '/SCRIPT_FIT} .* --chip .*RKCHIP_LABEL}$/ s/$/ --burn-key-hash/' "$mk"
+    fi
+    grep -q 'SCRIPT_FIT}.*--chip.*RKCHIP_LABEL}.*--burn-key-hash' "$mk" \
+        || { print_error "failed to arm --burn-key-hash in $mk (pack_fit_image line not found)"; exit 1; }
+    print_success "armed: pack_fit_image now signs with --burn-key-hash"
 }
 
 # Lay down the dev.{key,pubkey,crt} the in-SDK signing needs. Three sources, in
