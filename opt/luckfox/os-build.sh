@@ -1621,6 +1621,51 @@ apply_signed_nand_bootargs() {
     print_success "baked: root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=${MINI_CMA_SIZE}"
 }
 
+# Enable the SPI display (spidev0.0) STATICALLY in the kernel DTB, instead of via
+# luckfox-config's runtime device-tree overlay. That overlay is fragile: it needs
+# a __symbols__ label map in the live DTB (absent here) to resolve &spi0, and
+# `luckfox-config` core-dumps `dtc` with "get_node_by_label: label empty",
+# leaving &spi0 disabled -> no /dev/spidev0.0 -> black screen. On a signed FIT the
+# overlay is doubly moot (u-boot can't rewrite the signed DTB). Baking it in makes
+# the display work regardless.
+#
+# The mini DTS ships `&spi0 { status = "disabled"; }`. We flip it to okay and,
+# critically, set pinctrl WITHOUT MISO: `luckfox.cfg` uses SPI0_M0_MISO_ENABLE=0
+# because the display's RESET line is RK_PC3 -- the very pin spi0m0_miso would
+# claim. We also disable fbtft@0 (st7789v), which shares CS0 with spidev@0;
+# SeedSigner drives the panel itself over /dev/spidev0.0, so the in-kernel fb must
+# be off or the chip-select clashes. Appended as a late &spi0 override so it wins
+# over the earlier `disabled`.
+apply_spi_display_dts() {
+    local profile="$1"
+    local dts
+    case "$profile" in
+        mini) dts="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/arch/arm/boot/dts/rv1103g-luckfox-pico-mini.dts" ;;
+        *) print_info "apply_spi_display_dts: only the mini display mapping is implemented; skipping '$profile'"; return 0 ;;
+    esac
+    [ -f "$dts" ] || { print_error "SPI display DTS not found: $dts"; exit 1; }
+    print_step "Enabling SPI display (spidev0.0) statically in the DTB (${profile})"
+    if grep -q 'SEEDSIGNER_SPI_DISPLAY' "$dts"; then
+        print_success "SPI display already enabled in $(basename "$dts")"
+        return 0
+    fi
+    cat >> "$dts" <<'EOF'
+
+/* SEEDSIGNER_SPI_DISPLAY -- enable /dev/spidev0.0 statically (see os-build.sh
+ * apply_spi_display_dts). pinctrl has NO miso: RK_PC3 must stay a GPIO for the
+ * panel reset. fbtft@0 shares CS0 with spidev@0 and must be off. */
+&spi0 {
+	status = "okay";
+	pinctrl-0 = <&spi0m0_clk &spi0m0_mosi &spi0m0_cs0>;
+	fbtft@0 {
+		status = "disabled";
+	};
+};
+EOF
+    grep -q 'SEEDSIGNER_SPI_DISPLAY' "$dts" || { print_error "SPI display enable failed in $dts"; exit 1; }
+    print_success "spidev0.0 enabled (SPI0_M0, no MISO, fbtft off) in $(basename "$dts")"
+}
+
 # Sign the FINAL boot.img in-container (opt-in). The u-boot build signs uboot.img
 # (fit-core.sh, because we enabled CONFIG_FIT_SIGNATURE), but NOTHING in this SDK
 # signs boot.img -- mk-fitimage.sh packs it with the "dev" signature *template*
@@ -1746,6 +1791,7 @@ build_profile_artifacts() {
     apply_kernel_network_strip "$board_profile" "$boot_medium"
     apply_readonly_rootfs "$board_profile" "$boot_medium"
     apply_spidev_bufsiz "$board_profile"
+    apply_spi_display_dts "$board_profile"
     apply_hwrng_kernel_patch "$board_profile" "$boot_medium"
     apply_rng_dts_patch "$board_profile"
     apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
