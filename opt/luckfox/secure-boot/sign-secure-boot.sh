@@ -232,10 +232,13 @@ cmd_otp_hash() {
   otp_hash "$T" "$loader"
 }
 
-# SHA-256 of the committed PUBLIC dev key's RSA modulus (secure-boot/dev-keys/).
-# A burn armed with this key fuses the board to a key everyone has: recoverable
-# (still updatable) but with zero secure-boot protection.
+# SHA-256 of a committed PUBLIC dev key's RSA modulus (as `openssl rsa -modulus |
+# sha256sum`). Both the 2048 key (secure-boot/dev-keys/) and the secondary 4096
+# key (secure-boot/dev-keys-4096/) are public. A burn armed with either fuses the
+# board to a key everyone has: recoverable (still updatable) but with zero
+# secure-boot protection.
 PUBLIC_DEV_KEY_MODULUS_SHA256="c8b597b50bbb94c7c700011c2aefc43eb97d3b391da28bc130936d8d9f530f17"
+PUBLIC_DEV_KEY_MODULUS_SHA256_4096="ccc545ca30c69ab4691a948b22d13a156ace6f5c629f33e99c0a260777c0a7a7"
 
 warn_if_public_dev_key() {
   command -v openssl >/dev/null 2>&1 || return 0
@@ -243,7 +246,7 @@ warn_if_public_dev_key() {
   for f in "$KEYS/dev.key" "$KEYS/private_key.pem"; do [ -f "$f" ] && { kf="$f"; break; }; done
   [ -n "$kf" ] || return 0
   local mod; mod="$(openssl rsa -in "$kf" -noout -modulus 2>/dev/null | sha256sum | awk '{print $1}')"
-  if [ "$mod" = "$PUBLIC_DEV_KEY_MODULUS_SHA256" ]; then
+  if [ "$mod" = "$PUBLIC_DEV_KEY_MODULUS_SHA256" ] || [ "$mod" = "$PUBLIC_DEV_KEY_MODULUS_SHA256_4096" ]; then
     warn "########################################################################"
     warn "## THIS IS THE COMMITTED PUBLIC DEV KEY — NOT A SECRET.                ##"
     warn "## Burning it gives the board NO protection (anyone can sign for it).  ##"

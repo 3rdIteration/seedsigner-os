@@ -1493,26 +1493,60 @@ apply_fit_signature_config() {
     local ubootdir="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot"
     local cfgdir="$ubootdir/configs"
     print_step "Enabling FIT signature enforcement in U-Boot defconfig (SEEDSIGNER_FIT_SIGNATURE=1)"
+    local bits="${SEEDSIGNER_FIT_BITS:-2048}"
+    case "$bits" in
+        2048|4096) ;;
+        *) print_error "SEEDSIGNER_FIT_BITS=$bits unsupported (use 2048 or 4096)"; exit 1 ;;
+    esac
+    local syms="CONFIG_FIT_SIGNATURE CONFIG_SPL_FIT_SIGNATURE"
+    # RSA-4096: fit_nodes.sh keys the uboot.img signature algo off
+    # CONFIG_FIT_ENABLE_RSA4096_SUPPORT (rsa4096 vs rsa2048), and fit-core.sh's
+    # check_rsa_algo expects the same. Setting it makes the SPL/U-Boot FIT sign +
+    # verify path use rsa4096. (CONFIG_RSA_N_SIZE=0x200 is already big enough.)
+    [ "$bits" = 4096 ] && syms="$syms CONFIG_FIT_ENABLE_RSA4096_SUPPORT"
     local f found=0 sym
     for f in "$cfgdir"/luckfox_rv1106_uboot*defconfig; do
         [ -f "$f" ] || continue
         found=1
-        for sym in CONFIG_FIT_SIGNATURE CONFIG_SPL_FIT_SIGNATURE; do
+        for sym in $syms; do
             sed -i -E "/^# ${sym} is not set\$/d; /^${sym}=/d" "$f"
             echo "${sym}=y" >> "$f"
         done
-        print_success "FIT signature enabled in $(basename "$f")"
+        print_success "FIT signature enabled in $(basename "$f") (rsa${bits})"
     done
     if [ "$found" != 1 ]; then
         print_error "SEEDSIGNER_FIT_SIGNATURE=1 but no luckfox_rv1106_uboot*defconfig under $cfgdir"
         exit 1
     fi
+    apply_fit_kernel_algo "$bits"
     # With CONFIG_FIT_SIGNATURE=y the SDK signs the FIT *during* the build:
     # scripts/fit-core.sh runs check_rsa_keys and `mkimage -k keys/`, which abort
     # with "ERROR: No keys/dev.key" unless the dev.{key,pubkey,crt} triple is
     # present in the u-boot tree. Provide one so the build completes.
-    provision_fit_build_keys "$ubootdir/keys"
+    provision_fit_build_keys "$ubootdir/keys" "$bits"
     arm_fit_burn_key_hash "$ubootdir"   # opt-in: SEEDSIGNER_FIT_BURN_KEY_HASH=1 (IRREVERSIBLE fuse)
+}
+
+# The kernel boot.img FIT template hardcodes its signature algo and ignores the
+# u-boot CONFIG_FIT_ENABLE_RSA4096_SUPPORT. `sysdrv/source/kernel/boot.its` ships
+# `algo = "sha256,rsa2048";`; on a 4096 build sign_boot_image would still pack a
+# 2048-shaped signature and SPL/U-Boot (now expecting rsa4096) would reject it.
+# Patch the template to match the requested key size. Gated on signed; a 2048
+# build leaves it untouched (byte-identical to today).
+apply_fit_kernel_algo() {
+    local bits="$1"
+    [ "$bits" = 4096 ] || return 0
+    local its="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/boot.its"
+    [ -f "$its" ] || { print_error "kernel FIT template not found: $its"; exit 1; }
+    if grep -q 'algo = "sha256,rsa4096";' "$its"; then
+        print_success "kernel boot.its already set to sha256,rsa4096"
+        return 0
+    fi
+    grep -q 'algo = "sha256,rsa2048";' "$its" \
+        || { print_error "kernel boot.its: expected 'algo = \"sha256,rsa2048\";' — SDK layout changed"; exit 1; }
+    sed -i 's/algo = "sha256,rsa2048";/algo = "sha256,rsa4096";/' "$its"
+    grep -q 'algo = "sha256,rsa4096";' "$its" || { print_error "kernel boot.its: rsa4096 rewrite failed"; exit 1; }
+    print_success "patched kernel boot.its signature algo -> sha256,rsa4096"
 }
 
 # IRREVERSIBLE. Arm the OTP key-hash burn. The build's u-boot make.sh never
@@ -1559,7 +1593,7 @@ arm_fit_burn_key_hash() {
 # no security (the key is public); real protection needs the Stage 2 re-sign with
 # a secret key. See secure-boot/dev-keys/README.md.
 provision_fit_build_keys() {
-    local keydir="$1" k
+    local keydir="$1" bits="${2:-2048}" k
     mkdir -p "$keydir"
     if [ -f "$keydir/dev.key" ] && [ -f "$keydir/dev.pubkey" ] && [ -f "$keydir/dev.crt" ]; then
         print_success "reusing existing FIT signing key already in $keydir"
@@ -1574,12 +1608,15 @@ provision_fit_build_keys() {
         print_success "using supplied FIT signing key from SEEDSIGNER_FIT_KEY_DIR (its pubkey is embedded in the loader; no host resign needed)"
         return 0
     fi
+    # Pick the committed PUBLIC dev key matching the requested key size. The 4096
+    # key is a distinct, secondary public dev key (secure-boot/dev-keys-4096/).
     local devkeys="$SEEDSIGNER_LUCKFOX_DIR/secure-boot/dev-keys"
+    [ "$bits" = 4096 ] && devkeys="$SEEDSIGNER_LUCKFOX_DIR/secure-boot/dev-keys-4096"
     for k in dev.key dev.pubkey dev.crt; do
         [ -f "$devkeys/$k" ] || { print_error "committed public dev key missing: $devkeys/$k (stale Docker image? rebuild with --force)"; exit 1; }
     done
     cp "$devkeys/dev.key" "$devkeys/dev.pubkey" "$devkeys/dev.crt" "$keydir/"
-    print_step "Using the committed PUBLIC dev key as the FIT build placeholder"
+    print_step "Using the committed PUBLIC dev key (rsa${bits}) as the FIT build placeholder"
     print_success "  this key is NOT secret and grants NO protection — re-sign the exported fit-sign"
     print_success "  tree with your real secret key (fit-sign.sh --key-dir <real>) before you burn."
     print_success "  (A burn done with this placeholder is recoverable but unsecurable; see"
@@ -2577,6 +2614,9 @@ assert_shared_build_files() {
               secure-boot/dev-keys/dev.key \
               secure-boot/dev-keys/dev.pubkey \
               secure-boot/dev-keys/dev.crt \
+              secure-boot/dev-keys-4096/dev.key \
+              secure-boot/dev-keys-4096/dev.pubkey \
+              secure-boot/dev-keys-4096/dev.crt \
               SDK_COMMIT \
               mkfs-ubifs-determinism/build-mkfs-ubifs.sh \
               mkfs-ubifs-determinism/sort-dirents.patch \
