@@ -99,64 +99,64 @@ Record that hash. After fusing there is no way to read it back to compare.
 
 ---
 
-## Stage 1 — build U-Boot with signature enforcement
+## Stage 1 — build a fully-signed image
 
-**The SDK signs the FIT *during* the build.** This is the key thing to
-understand: `CONFIG_FIT_SIGNATURE=y` and in-build signing are coupled in this
-SDK. `sysdrv/source/uboot/u-boot/scripts/fit-core.sh` runs `check_rsa_keys` and
-`mkimage -k keys/` while packing `uboot.img`, so the u-boot build **aborts with
-`ERROR: No keys/dev.key` unless `keys/dev.{key,pubkey,crt}` exist in the u-boot
-tree.** There is no "compile enforcement in, sign later" — enforcement needs a
-key present at build time. `mkimage` also embeds that key's public half into the
-SPL DTB (the loader), so whatever key builds the image is the one the loader
-trusts, until it is replaced in Stage 2.
+**The build signs the whole chain in place.** With `SEEDSIGNER_FIT_SIGNATURE=1`:
 
-Two ways to run the build:
+1. `CONFIG_(SPL_)FIT_SIGNATURE=y` is set in the u-boot defconfig, and the
+   committed **PUBLIC dev key**
+   ([`secure-boot/dev-keys/`](../../opt/luckfox/secure-boot/dev-keys/)) is placed
+   in the u-boot tree (`apply_fit_signature_config`). The u-boot build then signs
+   `uboot.img` and embeds that key's public half into the SPL DTB (the loader).
+2. **After** the firmware build, `sign_boot_image` signs `boot.img` too, via the
+   SDK's own `scripts/fit.sh --boot_img` — because nothing else in this SDK ever
+   signs `boot.img` (`mk-fitimage.sh` packs it with the `dev` signature *template*
+   and no `-k`). Without this step an enforcing u-boot rejects `boot.img` at boot
+   (`Failed to verify required signature 'key-dev'`) and falls back to maskrom.
 
-**A. The `seedsigner-os` Docker build (what the bench uses).** Opt in with
-`SEEDSIGNER_FIT_SIGNATURE=1`; the build enables `CONFIG_(SPL_)FIT_SIGNATURE`,
-lays down the committed **PUBLIC dev key**
-([`secure-boot/dev-keys/`](../../opt/luckfox/secure-boot/dev-keys/)) so the build
-completes, and exports a `fit-sign-tree-<profile>/` under `build-output/` for
-host re-signing:
+So the whole chain — loader → `uboot.img` → `boot.img` — is signed by one key,
+and **the direct build output boots as-is.** No separate signing pass is needed.
 
 ```sh
 SEEDSIGNER_FIT_SIGNATURE=1 ./build.sh --luckfox build --nand --model mini --variant dev
 ```
 
-The dev key's pubkey is only a placeholder — Stage 2 replaces it with your real
-secret key. (A host path can't be handed to the container, so on the Docker path
-the real key is always applied post-build in Stage 2.) The key is **fixed and
-public** on purpose: it keeps the signed build reproducible, and if you skip
-Stage 2 and burn anyway the board fuses to a key everyone has — **recoverable
-(still updatable) rather than a permanent brick**, though it grants no protection
-and the board can then never move to a real key. See
+The dev key is **fixed and public** on purpose: it keeps the signed build
+reproducible, and if you burn OTP with it the board fuses to a key everyone has —
+**recoverable (still updatable) rather than a permanent brick** — though it grants
+no protection and the board can then never move to a real key. See
 [`secure-boot/dev-keys/README.md`](../../opt/luckfox/secure-boot/dev-keys/README.md).
 
-**B. A standalone SDK checkout** (native, no Docker) — here you can build with
-the real key directly, so the loader embeds the real pubkey and Stage 2 is only
-needed to arm the burn:
+> **Testing with the dev key (Stage 3 straight after Stage 1):** flash the direct
+> output. `## Verified-boot: 0` (unfused) but the software signature checks are
+> live, so this proves the signed chain boots before you ever touch a fuse.
 
-```sh
-bash <seedsigner-os>/opt/luckfox/prepare-sdk-checkout.sh ~/sdk-parent \
-     https://github.com/3rdIteration/luckfox-pico.git
-SDK=~/sdk-parent/luckfox-pico
+**Building with a real secret key.** Replace the dev key with your own before the
+build so the loader/uboot/boot are signed by it:
 
-bash "$SB/enable-fit-signature.sh" "$SDK"       # sets CONFIG_(SPL_)FIT_SIGNATURE=y
-cp ~/keys/dev.key ~/keys/dev.pubkey ~/keys/dev.crt \
-   "$SDK/sysdrv/source/uboot/u-boot/keys/"       # the real key the build signs with
-cd "$SDK" && ./build.sh lunch                    # pick RV1103_Luckfox_Pico_Mini
-./build.sh                                       # or ./build.sh uboot for just the loader chain
-```
+- **Native `build-local.sh`:** set `SEEDSIGNER_FIT_KEY_DIR=<dir with
+  dev.{key,pubkey,crt}>` (generate with
+  [`secure-boot/make-dev-keys.sh`](../../opt/luckfox/secure-boot/make-dev-keys.sh),
+  including `--from` a BIP85 PEM). A host path resolves natively here.
+- **Docker:** a host path can't be handed to the container. Either use the native
+  path above, or (advanced) mount your key dir in and point `SEEDSIGNER_FIT_KEY_DIR`
+  at the mount.
 
-The exact defconfig `enable-fit-signature.sh` edits:
-`$SDK/sysdrv/source/uboot/u-boot/configs/luckfox_rv1106_uboot_defconfig`.
+## Stage 2 — (legacy) host re-sign — NOT used on this SDK
 
-> An enforcing build whose images are **not** signed will not boot. That's why
-> Stage 2 (sign) always follows Stage 1 on the Docker path, and why enforcement
-> is never in the auto-applied build patches (it is opt-in only).
+> **This SDK does not support the `fit-sign.sh` host re-sign flow.** `fit-sign.sh`
+> needs a `fit_signcfg/sign.readonly_config` carrying the SPL/uboot checksums and
+> a `MINIALL.ini`, and **nothing in this luckfox SDK ever generates it** (checked:
+> no `-k`, no `fit-sign`, no `sign.readonly_config` emission anywhere in
+> `project/build.sh`). The build in Stage 1 signs everything in place instead, so
+> the raw output is already bootable and — when built with your real key — already
+> protected. The `sign-secure-boot.sh --build-tree` path and the exported
+> `fit-sign-tree/` remain only for a future SDK that emits that config; skip them.
 
-## Stage 2 — sign the whole chain with the real key
+The rest of this section (the old `fit-sign.sh` invocation) is retained below for
+reference only.
+
+## Stage 2 (reference only) — sign the whole chain with the real key
 
 With a build tree, `fit-sign.sh` re-signs loader + idblock + `uboot.img` +
 `boot.img` in one pass and **replaces the pubkey embedded in the SPL DTB** with
