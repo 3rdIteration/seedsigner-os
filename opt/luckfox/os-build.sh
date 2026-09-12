@@ -1556,6 +1556,38 @@ provision_fit_build_keys() {
     print_success "   secure-boot/dev-keys/README.md.)"
 }
 
+# Sign the FINAL boot.img in-container (opt-in). The u-boot build signs uboot.img
+# (fit-core.sh, because we enabled CONFIG_FIT_SIGNATURE), but NOTHING in this SDK
+# signs boot.img -- mk-fitimage.sh packs it with the "dev" signature *template*
+# and no `-k`, so an enforcing u-boot rejects it at boot ("Failed to verify
+# required signature 'key-dev'"), which is exactly the bench failure we saw.
+#
+# Sign it with the SDK's own scripts/fit.sh --boot_img: it unpacks the built
+# boot.img to recover its .its, re-signs the FIT with keys/dev.* (placed in the
+# u-boot tree by apply_fit_signature_config) and writes the signed image back to
+# <u-boot>/boot.img. This is the same tested path that signs uboot.img. At
+# runtime u-boot verifies it with the pubkey already embedded in uboot.img, so
+# the whole chain (loader -> uboot.img -> boot.img) is now consistently signed by
+# one key -- the direct build output boots, no host re-sign needed.
+#
+# Runs BEFORE normalise_boot_images so the update.img repack embeds the signed
+# boot.img. fit.sh runs fit_check_sign internally and is `set -e`, so a bad sign
+# aborts here rather than shipping an unbootable enforced image.
+sign_boot_image() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local ubootdir="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot"
+    local img="$LUCKFOX_SDK_DIR/output/image/boot.img"
+    print_step "Signing boot.img with the FIT key (SEEDSIGNER_FIT_SIGNATURE=1)"
+    [ -f "$img" ] || { print_error "boot.img not found at $img"; exit 1; }
+    [ -f "$ubootdir/scripts/fit.sh" ] || { print_error "u-boot fit.sh missing under $ubootdir"; exit 1; }
+    [ -f "$ubootdir/keys/dev.key" ] || { print_error "FIT signing key missing at $ubootdir/keys/dev.key (apply_fit_signature_config should have placed it)"; exit 1; }
+    ( cd "$ubootdir" && ./scripts/fit.sh --boot_img "$img" ) \
+        || { print_error "boot.img signing (fit.sh --boot_img) failed"; exit 1; }
+    # fit_gen_boot_img wrote the signed FIT to <u-boot>/boot.img; copy it back.
+    [ -f "$ubootdir/boot.img" ] && cp -f "$ubootdir/boot.img" "$img"
+    print_success "boot.img signed (whole chain now signed with the FIT key)"
+}
+
 export_fit_sign_tree() {
     [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
     local board_profile="$1"
@@ -2181,6 +2213,7 @@ s/^endef\nendif/endef\nendif\nendif/
 
     print_step "Packaging Firmware"
     sdk_build firmware
+    sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE normalise so update.img embeds the signed boot.img.
     normalise_boot_images
     export_fit_sign_tree "$board_profile"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
     # The SDK emits sd_update.txt/tftp_update.txt staging every partition at

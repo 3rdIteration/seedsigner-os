@@ -158,6 +158,8 @@ cmd_sign() {
     log "full-chain signing via fit-sign.sh (loader + idblock + uboot + boot)"
     local burnflag=""
     if [ "$BURN" = 1 ]; then confirm_burn; burnflag="--burn-key-hash"; fi
+    # fit-sign.sh requires its --out-dir to already exist (check_dir_exist).
+    mkdir -p "$IMAGES/signed"
     "$T/fit-sign.sh" --key-dir "$KEYS" --src-dir "$BUILD_TREE" --out-dir "$IMAGES/signed" $burnflag
     log "signed images in: $IMAGES/signed"
     return
