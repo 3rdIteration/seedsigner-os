@@ -36,8 +36,12 @@ Options:
   --output DIR   - Set output directory (default: ./build-output)
   --repos-dir DIR- Bind-mount the SDK/app checkouts from DIR instead of the
                    named Docker volume 'seedsigner-repos' (used by CI)
-  --cache-dir DIR- Host directory for the Rust toolchain cache. Without it
-                   host-rust (and LLVM) is rebuilt from source every build
+  --cache-dir DIR- Host directory for the Rust toolchain cache (default: named
+                   volume 'seedsigner-rustcache'). Without it host-rust/LLVM is
+                   rebuilt from source every build -- the single longest step
+  --ccache-dir DIR Host directory for the Buildroot ccache (default: named
+                   volume 'seedsigner-ccache'). CI passes a host dir so
+                   actions/cache can persist it between runs
   --nand         - Build NAND-flashable system image artifacts
   --microsd      - Build MicroSD image artifacts
   --model TARGET - Target model: mini|max|pi|both|all (default: both)
@@ -145,12 +149,15 @@ build_docker_image() {
     print_success "Docker image built: $IMAGE_NAME"
 }
 
-# Host paths for the repo tree and the build cache, set by --repos-dir /
-# --cache-dir. Empty means the historical behaviour: repos live in the Docker
-# volume 'seedsigner-repos', and there is no cache. CI sets both so that
-# actions/cache can see them on the runner filesystem.
+# Host paths for the repo tree and the build caches, set by
+# --repos-dir / --cache-dir / --ccache-dir. Empty means the local default: repos
+# and caches live in named Docker volumes. CI sets host dirs instead so
+# actions/cache can see them on the runner filesystem (a named volume does not
+# survive between CI runs). --cache-dir is the Rust/LLVM toolchain cache;
+# --ccache-dir is the Buildroot ccache.
 REPOS_DIR_HOST=""
 CACHE_DIR_HOST=""
+CCACHE_DIR_HOST=""
 
 run_build() {
     local mode="$1"
@@ -186,13 +193,24 @@ run_build() {
         repos_mount="$volume_name"
     fi
 
+    # Build environment variables. Declared BEFORE the cache blocks so they can
+    # append to it. (Previously env_args was (re)declared *after* the Rust-cache
+    # block, so its `-e RUST_TOOLCHAIN_CACHE=...` was clobbered and never reached
+    # the container -- the Rust/LLVM toolchain cache silently never worked.)
+    local env_args="-e BUILD_MODEL=$build_model"
+    if [[ -n "$build_jobs" ]]; then
+        env_args="$env_args -e BUILD_JOBS=$build_jobs"
+        print_success "Using $build_jobs parallel build jobs"
+    fi
+
     # Persistent Buildroot ccache. Mounted at Buildroot's default cache dir
     # ($HOME/.buildroot-ccache in the container) so BR2_CCACHE=y (set in the
-    # buildroot defconfig) reuses compiled objects across builds -- the biggest
-    # win on a clean checkout, which otherwise recompiles every package. ccache
-    # is determinism-safe (same preprocessed source + flags -> identical object),
-    # so this does NOT compromise reproducibility the way KEEP_SDK_CHECKOUT does.
+    # buildroot defconfig) reuses compiled objects across builds. ccache is
+    # determinism-safe (same preprocessed source + flags -> identical object), so
+    # this does NOT compromise reproducibility the way KEEP_SDK_CHECKOUT does.
     # A named volume by default; overridable with a host dir via --ccache-dir.
+    # NOTE: ccache does NOT cover the Rust toolchain -- rustc isn't ccache-aware;
+    # that has its own cache below.
     local ccache_mount
     if [[ -n "$CCACHE_DIR_HOST" ]]; then
         mkdir -p "$CCACHE_DIR_HOST"
@@ -209,25 +227,29 @@ run_build() {
         ccache_mount="$ccache_volume"
     fi
 
-    # Host Rust toolchain cache. Without it the container rebuilds host-rust --
-    # and therefore LLVM -- from source on every build, which is the single
-    # longest step there is. See rust-toolchain-cache.sh.
-    local cache_arg=""
+    # Host Rust toolchain cache. Buildroot builds host-rust (and therefore LLVM)
+    # FROM SOURCE for the uclibc Tier-3 target -- comfortably the single longest
+    # step. rust-toolchain-cache.sh restores/packages it when RUST_TOOLCHAIN_CACHE
+    # is set. A named volume by default (so it Just Works, like ccache);
+    # overridable with a host dir via --cache-dir (CI uses that so actions/cache
+    # can see it on the runner filesystem).
+    local cache_arg cache_mount
     if [[ -n "$CACHE_DIR_HOST" ]]; then
         mkdir -p "$CACHE_DIR_HOST"
-        local abs_cache_dir
-        abs_cache_dir="$(realpath "$CACHE_DIR_HOST")"
-        cache_arg="-v $abs_cache_dir:/build/cache"
-        env_args="$env_args -e RUST_TOOLCHAIN_CACHE=/build/cache/rust-toolchain.tar.zst"
-        print_success "Build cache directory: $abs_cache_dir"
+        cache_mount="$(realpath "$CACHE_DIR_HOST")"
+        print_success "Rust toolchain cache (bind mount): $cache_mount"
+    else
+        local rustcache_volume="seedsigner-rustcache"
+        if ! docker volume ls | grep -q "$rustcache_volume"; then
+            print_success "Creating Docker volume for persistent Rust toolchain cache: $rustcache_volume"
+            docker volume create "$rustcache_volume"
+        else
+            print_success "Using existing Rust toolchain cache volume: $rustcache_volume"
+        fi
+        cache_mount="$rustcache_volume"
     fi
-    
-    # Set up build environment variables
-    local env_args="-e BUILD_MODEL=$build_model"
-    if [[ -n "$build_jobs" ]]; then
-        env_args="-e BUILD_JOBS=$build_jobs -e BUILD_MODEL=$build_model"
-        print_success "Using $build_jobs parallel build jobs"
-    fi
+    cache_arg="-v $cache_mount:/build/cache"
+    env_args="$env_args -e RUST_TOOLCHAIN_CACHE=/build/cache/rust-toolchain.tar.zst"
 
     # Forward the build-shaping variables into the container. Only BUILD_MODEL and
     # BUILD_JOBS used to cross the boundary, so a Docker build silently took
@@ -539,6 +561,18 @@ main() {
                     shift 2
                 else
                     print_error "Missing argument for --cache-dir"
+                    exit 1
+                fi
+                ;;
+            # Host directory for the Buildroot ccache (BR2_CCACHE). Without it a
+            # named Docker volume is used, which is right locally but does not
+            # survive between CI runs -- CI passes a host dir + actions/cache.
+            --ccache-dir)
+                if [[ -n "$2" ]]; then
+                    CCACHE_DIR_HOST="$2"
+                    shift 2
+                else
+                    print_error "Missing argument for --ccache-dir"
                     exit 1
                 fi
                 ;;

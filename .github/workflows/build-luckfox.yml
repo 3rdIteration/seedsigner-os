@@ -345,6 +345,21 @@ jobs:
         restore-keys: |
           luckfox-rust-v3-${{ steps.meta.outputs.sdk_commit }}-
 
+    # Buildroot ccache (BR2_CCACHE): caches package C/C++ object compilation
+    # across runs, complementing the Rust cache above. Determinism-safe (same
+    # preprocessed source + flags -> identical object). A named Docker volume
+    # (the local default) does not survive between CI runs, so CI persists a host
+    # dir here. ccache is content-addressed, so a broad key + restore-keys is
+    # fine; the run_id suffix makes each run save an updated cache.
+    - name: Restore Buildroot ccache
+      uses: actions/cache@v4
+      with:
+        path: luckfox-ccache
+        key: luckfox-ccache-${{ matrix.hardware }}-${{ matrix.boot }}-${{ github.run_id }}
+        restore-keys: |
+          luckfox-ccache-${{ matrix.hardware }}-${{ matrix.boot }}-
+          luckfox-ccache-
+
     - name: Build image in Docker
       env:
         # Consumed by opt/luckfox/build.sh's env passthrough. Passing the repo
@@ -367,6 +382,7 @@ jobs:
           --output       "$GITHUB_WORKSPACE/build-artifacts" \
           --repos-dir    "$GITHUB_WORKSPACE/luckfox-repos" \
           --cache-dir    "$GITHUB_WORKSPACE/luckfox-cache" \
+          --ccache-dir   "$GITHUB_WORKSPACE/luckfox-ccache" \
           --variant         "${{ inputs.build_variant || 'dev' }}" \
           --usb-mode        "${{ inputs.usb_mode || 'auto' }}" \
           --debug-network   "${{ inputs.debug_network || 'auto' }}" \
@@ -380,9 +396,10 @@ jobs:
       if: always()
       run: |
         # The container runs as root, so everything it wrote is root-owned and
-        # the upload/summary steps below cannot read it. Same fix as
-        # build-buildroot.yml in the seedsigner repo.
-        sudo chown -R "$USER:$USER" build-artifacts luckfox-cache 2>/dev/null || true
+        # the upload/summary steps below (and actions/cache's post-save of the
+        # cache dirs) cannot read it. Same fix as build-buildroot.yml in the
+        # seedsigner repo.
+        sudo chown -R "$USER:$USER" build-artifacts luckfox-cache luckfox-ccache 2>/dev/null || true
 
     - name: Free space before artifact upload
       if: always()
