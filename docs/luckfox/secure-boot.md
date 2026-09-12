@@ -1109,6 +1109,31 @@ python3 -c 'import re,struct,sys; d=open(sys.argv[1],"rb").read(); [print(m.star
 struct block from there yields the `/images/*` and `/configurations/conf/signature` properties
 quoted in §3.2.
 
+### 11.1 Reproducibility of a signed release
+
+Examined 2026-09-12 with [`secure-boot/verify-fit-payloads.py`](../../opt/luckfox/secure-boot/verify-fit-payloads.py).
+A signed `uboot.img` / `boot.img` is a ~2 KB FDT header (metadata + per-image sha256 + a 256-byte
+RSA-PSS `/configurations/conf/signature/value`) followed by the image **data stored externally**
+(`data-position` / `data-size`). Confirmed on the signed build: recomputing sha256 over each
+external payload matches the stored `hash` node exactly, and the `kernel` payload hash equals the
+value seen at boot on UART.
+
+The consequence for reproducible releases: **every payload and all metadata in these two FITs is
+key-independent — the only key-dependent bytes are the 256-byte `signature/value`, and the pubkey
+isn't even in these FITs (it's in the loader's SPL DTB).** So a signed release can be verified as
+"reproducible payloads + a detached signature": rebuild with the same config (the baked NAND
+bootargs in the kernel DTB are part of the deterministic payload; the *key* is not), then
+`verify-fit-payloads.py compare <release-image> <rebuilt-image>` must report every payload MATCH.
+Authenticity (the 256-byte value) is checked separately against the published pubkey.
+
+Two limits: the **loader** (`download.bin` / `idblock.img`) is not a plain FIT — its SPL DTB embeds
+the pubkey + `burn-key-hash` + an `rk_sign_tool` signature as binary in a `boot_merger` blob
+(pubkey N little-endian near `0x3bc`, §10 Q16), so stripping/comparing it needs the encoding that
+question tracks. And **swapping** a FIT signature offline (re-sign the reproducible payload with a
+different key, without a rebuild) is feasible for `uboot.img`/`boot.img` — recompute the data-to-sign
+from the `hashed-nodes`/`hashed-strings` properties, RSA-PSS sign, splice `value` — but is not
+implemented here, and the loader half is blocked on the same Q16 encoding.
+
 ---
 
 ## 12. References
