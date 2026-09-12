@@ -1,11 +1,19 @@
 # Luckfox Pico — secure boot feasibility report
 
-**Status: research only. Nothing in this repo enables secure boot, and no build burns a fuse.**
-This document records what the hardware and vendor SDK already support, what would have to change,
-and what remains unknown — so a future attempt starts from evidence rather than from scratch.
+**Status: confirmed working end-to-end on a sacrificial RV1103 Pico Mini (2026-09-12), with the
+committed *public* dev key.** A normal build is still completely unaffected and burns nothing. The
+signing, enforcement and OTP-burn path is **opt-in**, gated behind `SEEDSIGNER_FIT_SIGNATURE=1`
+(sign the whole chain) and, only for the irreversible fuse, `SEEDSIGNER_FIT_BURN_KEY_HASH=1` — both
+off by default. See [§13](#13-bench-test-results-rv1103-pico-mini) for what was confirmed on silicon
+and [`secure-boot-bench-procedure.md`](secure-boot-bench-procedure.md) for the runnable steps.
+
+This document records what the hardware and vendor SDK support, what the opt-in tooling now does,
+what was confirmed on hardware, and what remains unknown — so the next attempt (especially a **real
+secret key** and a **signed rootfs**, neither of which is done) starts from evidence.
 
 Read [§7 Consequences](#7-consequences-decide-these-before-touching-a-fuse) before acting on any of
-it. Enabling secure boot burns one-time fuses. It cannot be undone, and a mistake bricks the board.
+it. Enabling secure boot burns one-time fuses. It cannot be undone, and a mistake bricks the board —
+though a board fused to the *public* dev key stays recoverable, because anyone can sign for it.
 
 ---
 
@@ -13,17 +21,17 @@ it. Enabling secure boot burns one-time fuses. It cannot be undone, and a mistak
 
 | Question | Answer |
 |---|---|
-| Does RV1103/RV1106 support secure boot? | Yes — BootROM verifies the loader against a public-key hash in OTP. |
-| Is the plumbing already present? | Largely. The SDK's U-Boot compiles in secure-OTP access and RSA; `uboot.img` and `boot.img` are already signature-shaped FITs. |
-| What is missing? | Signature *verification* is not enabled, the signing key is Rockchip's `dev` placeholder, and no fuse is burned. |
-| Is the signing tool available? | Yes — `rk_sign_tool` is vendored in the SDK. |
-| Is there RV1106 documentation? | **No.** No public Rockchip secure boot document covers RV1103/RV1106. Parts of this report are extrapolated. |
-| Does it cover the rootfs? | No. The vendor chain stops at `boot.img`. Extending it is a design decision — see [§6](#6-extending-the-chain-to-the-rootfs). |
+| Does RV1103/RV1106 support secure boot? | **Yes — confirmed on silicon.** BootROM verifies the loader against a public-key hash in OTP; the burn and enforcement were observed on a fused Mini (§13). |
+| Is the plumbing already present? | Yes. The SDK's U-Boot compiles in secure-OTP access and RSA; `uboot.img` and `boot.img` are signature-shaped FITs. The opt-in build now enables verification and signs the whole chain. |
+| What was missing, and is it now done? | Verification is enabled by `SEEDSIGNER_FIT_SIGNATURE=1`; the whole chain (loader→`uboot.img`→`boot.img`) is signed at build time; the fuse is armed by `SEEDSIGNER_FIT_BURN_KEY_HASH=1`. **Still a placeholder:** the key is the committed *public* dev key — a real secret key is the production step. |
+| Is the signing tool available? | Yes — `rk_sign_tool` is vendored. Note: on this SDK the whole chain is signed by the in-build `make.sh`/`fit.sh` FIT flow; the standalone `rkbin/fit-sign.sh` **re-sign** flow is *not usable here* (§13). |
+| Is there RV1106 documentation? | **No.** No public Rockchip secure boot document covers RV1103/RV1106. This report was extrapolated, then **confirmed on hardware**. |
+| Does it cover the rootfs? | **No — still unsigned.** The chain stops at `boot.img`; the rootfs partition is unverified. Extending it is unimplemented design work — see [§6](#6-extending-the-chain-to-the-rootfs). |
 | Does it work on SD-boot boards with no NAND? | Yes, identically — the fuse is in the SoC, not the storage. But the unverified rootfs matters far more there; see [§4.1](#41-boot-media-sd-card-boot-works-the-same-way). |
-| Can it be tested without burning a fuse? | **Yes, almost all of it.** Verification above the BootROM is U-Boot config we control, so keys, signing and the negative tests can all be rehearsed and reverted — see [§5.4](#54-staged-rollout--rehearse-everything-before-the-fuse). |
-| Can the private key stay offline / in hardware? | **Yes, for every tier.** The tool has native HSM/PKCS#11 config, plus a verified extract/inject path that emits bare 32-byte SHA-256 digests — see [§5.2](#52-can-the-private-key-stay-on-a-smartcard--hsm). |
+| Can it be tested without burning a fuse? | **Yes — confirmed.** A signed build boots unfused (`Verified-boot: 0`) with the software checks live, so keys, signing and boot are all rehearsed before the fuse — see [§5.4](#54-staged-rollout--rehearse-everything-before-the-fuse). |
+| Can the private key stay offline / in hardware? | The tool has native HSM/PKCS#11 config and a partly-cracked extract/inject path (still open, §10 Q16). **Not yet exercised** — the confirmed run used a key file. |
 | Does it stop someone swapping in a look-alike device? | **No.** Secure boot verifies software, not hardware. Anti-phishing words close that gap; see [§8](#8-device-pin-and-anti-phishing-words). |
-| Is the kernel command line trusted? | **No.** `sys_bootargs` is imported from the unsigned env partition and merged into the kernel command line. On a fused board this still lets an attacker boot the signed kernel into their own rootfs — see [§6.6](#66-the-kernel-command-line-is-attacker-controlled). |
+| Is the kernel command line trusted? | **Now partly.** On a *signed* build `root=` is baked into the signed DTB (u-boot can't rewrite a signed FIT's bootargs at runtime), closing the accidental/default case. But `sys_bootargs` from the unsigned env partition is still merged *after* it, so full lockdown still needs `CONFIG_CMDLINE_FORCE=y` or stripping `sys_bootargs` from `CONFIG_ENVF_LIST` — see [§6.6](#66-the-kernel-command-line-is-attacker-controlled). |
 
 ---
 
@@ -47,9 +55,12 @@ RV1106 launched after both guides. Treat their flows as *the mechanism*, not as 
 (`cc --chip 1106` → "setting chip ok"), and the verb set in [§5.3](#53-signing) is taken from
 its own help output rather than from the guides.
 
-**Extrapolated, must be validated on sacrificial hardware** — the OTP burn flow in
-[§5.4](#54-staged-rollout--rehearse-everything-before-the-fuse), i.e. what the BootROM actually does
-once `--burn-key-hash` has written the fuse.
+**Confirmed on sacrificial hardware (2026-09-12)** — the OTP burn flow in
+[§5.4](#54-staged-rollout--rehearse-everything-before-the-fuse) is no longer extrapolated: on a
+fused RV1103 Mini the SPL wrote the key hash (`RSA: Write RSA key hash successfully`), a wrong-key
+(unsigned) image was then rejected, the correctly signed image booted, and Maskrom recovery still
+worked. What was extrapolated is now observed. See [§13](#13-bench-test-results-rv1103-pico-mini).
+The remaining unknowns are a **real** (non-public) key and RSA-4096 in silicon.
 
 ---
 
@@ -493,6 +504,14 @@ Signing must happen **after** the images are built and after any post-processing
 
 Each stage is reversible until Stage D. Do all of them on a sacrificial board first.
 
+> **These stages were run end-to-end on 2026-09-12** (RV1103 Mini, committed public dev key) and all
+> passed — see [§13.1](#131-signed--fused-run-2026-09-12-committed-public-dev-key). Two practical
+> notes from that run: signing is done **in-build** (`SEEDSIGNER_FIT_SIGNATURE=1` signs the whole
+> chain; `boot.img` needs the extra `sign_boot_image` step because the SDK doesn't sign it), and the
+> burn is armed with `SEEDSIGNER_FIT_BURN_KEY_HASH=1` rather than a manual `rk_sign_tool` step. The
+> `rk_sign_tool vi` offline checks below still work for inspection. Substitute your real secret key
+> for the dev key in a real deployment.
+
 **What to watch in the boot log.** An unfused, unsigned RV1103 Mini (SeedSigner build, booting from
 SPI NAND) prints these today. They are the before-state every stage should be compared against:
 
@@ -720,6 +739,17 @@ are in the same list, so the partition layout can be redefined as well. Writing 
 trivial on SD boards, where it sits on the removable card. On NAND boards `sd_update.txt`'s
 `mtd write` reaches it ([§4.1](#41-boot-media-sd-card-boot-works-the-same-way)). Secure boot doesn't
 notice, because no unsigned firmware ever runs.
+
+> **Update (2026-09-12): a signed FIT changes the runtime picture, and the opt-in build now bakes
+> `root=` into the signed DTB.** When `boot.img` is a signed, conf-required FIT, u-boot no longer
+> rewrites the kernel DTB's `/chosen/bootargs` at runtime — the fused Mini booted with exactly the
+> `/chosen` string baked into the DTB. This was first seen as a *failure* (the SDK's shared
+> `ipc.dtsi` hardcodes the SD default `root=/dev/mmcblk1p7`, so the NAND board hung; `apply_signed_nand_bootargs`
+> now bakes `root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=<size>` in for signed NAND).
+> The security upshot: `root` is now pinned inside the signed image rather than taken from the
+> unsigned env. **This is a real improvement but not a full fix** — `sys_bootargs` is still merged
+> *after* the baked `/chosen`, so an attacker who writes the env partition can still append a later
+> `root=`/`rdinit=` that wins. Mitigations 1–3 below still stand for full lockdown.
 
 **The same code has good news:** the import is filtered by that list, so the partition **cannot**
 set `bootdelay` or Rockchip's `cli` variable. Neither is whitelisted, which means
@@ -979,19 +1009,36 @@ Checked against a built image:
 2. ~~Does RV1106 use the `sign_flag=0x20` flow?~~ **Answered NO (hardware-confirmed, 2026-09).**
    Flashing a loader signed with `ss --flag 0x20` on an RV1103 Mini produced no OTP write
    (`Verified-boot` stayed `0`, no `otp write key success`, board unfused). RV1106 burns the key
-   hash only via the FIT `--burn-key-hash` mechanism (`fit-sign.sh`), which needs a U-Boot build
-   tree. The legacy loader `sign_flag` path does nothing on this SoC.3. Does enabling `CONFIG_FIT_SIGNATURE` / `CONFIG_SPL_FIT_SIGNATURE` in the Luckfox U-Boot defconfig
-   work without further patching?
+   hash only via the FIT `--burn-key-hash` mechanism, confirmed via the in-build `make.sh` FIT flow
+   (`arm_fit_burn_key_hash`). The legacy loader `sign_flag` path does nothing on this SoC.
+3. ~~Does enabling `CONFIG_FIT_SIGNATURE` / `CONFIG_SPL_FIT_SIGNATURE` in the Luckfox U-Boot
+   defconfig work without further patching?~~ **Answered (2026-09):** it works, but with three
+   non-obvious requirements the opt-in build now handles: (a) the in-build signing aborts with
+   `ERROR: No keys/dev.key` unless `keys/dev.{key,pubkey,crt}` are present in the U-Boot tree —
+   `SEEDSIGNER_FIT_SIGNATURE=1` drops the committed dev key there; (b) **`boot.img` is NOT signed
+   by the SDK build** — `mk-fitimage.sh` packs it with the `dev` signature *template* and no `-k`,
+   and nothing in `project/build.sh` signs it, so an enforcing U-Boot rejects it
+   (`Failed to verify required signature 'key-dev'`). The build now signs it in place with the SDK's
+   own `scripts/fit.sh --boot_img` (`sign_boot_image`); (c) a signed FIT means the kernel command
+   line must be **baked into the signed DTB** (§6.6), because u-boot won't rewrite a signed FIT's
+   `/chosen` at runtime. Separately, the standalone `rkbin/fit-sign.sh` *re-sign* flow is **not
+   usable on this SDK** — it needs a `fit_signcfg/sign.readonly_config` (SPL/uboot checksums +
+   `MINIALL.ini`) that this SDK never generates. Sign in-build instead.
 4. Is the OTP public-key-hash region on RV1106 write-locked independently, and does burning it
    affect the OTP regions the `cpuinfo` driver reads?
-5. Can a fused board still enter Maskrom via the BOOT button, and does Maskrom accept an unsigned
-   loader afterwards? **This determines whether any recovery path survives.**
+5. ~~Can a fused board still enter Maskrom via the BOOT button, and does Maskrom accept an unsigned
+   loader afterwards?~~ **Answered (2026-09-12, fused Mini):** the BOOT button still enters Maskrom
+   on a fused board; an **unsigned** (wrong-key) image is **rejected** (won't boot or flash); a
+   correctly **dev-key-signed** image flashes and boots. So recovery survives, but only with an
+   image signed by the fused key — which, for the public dev key, anyone can produce.
 6. Can `uboot.img` / `boot.img` be signed with upstream `mkimage -N pkcs11` against a hardware token
    instead of `rk_sign_tool si`, and does the resulting FIT still satisfy Rockchip's SPL
    verification? ([§5.2](#52-can-the-private-key-stay-on-a-smartcard--hsm))
-7. Does `rk_sign_tool` need to run before or after this repo's `normalise_boot_images()`
-   reproducibility pass, and does that pass invalidate an existing signature?
-   ([§5.3](#53-signing))
+7. ~~Does signing need to run before or after this repo's `normalise_boot_images()` pass, and does
+   that pass invalidate a signature?~~ **Answered:** `boot.img` is signed after the firmware build
+   but **before** `normalise_boot_images()`, which only rewrites `download.bin` and `update.img`
+   (the live-clock stamps) and never touches the signed `uboot.img`/`boot.img` FITs — so it does not
+   invalidate them. The loader/`uboot.img` are signed by the in-build `make.sh` FIT flow.
 8. ~~What does `ss --extract` emit?~~ **Answered:** two bare 32-byte SHA-256 digests
    (`si_usb_head.bin`, `si_flash_head.bin`), signed with **RSA-PSS**. Still open: the exact file
    name and location `ss --inject` expects the signed data in — injection was not completed here
@@ -1011,9 +1058,16 @@ Checked against a built image:
     stays closed under `CONFIG_BOOTDELAY=-2`. `sys_bootargs`, `blkdevparts` and `mtdparts` are, and
     `sys_bootargs` gets merged into the kernel command line. Treat the env partition as
     attacker-controlled ([§6.6](#66-the-kernel-command-line-is-attacker-controlled)).
-13. Does `CONFIG_CMDLINE_FORCE=y` work with the SDK's 5.10 kernel and Rockchip's device-tree boot
-    path, and what's the complete command line it would have to carry? Today that's `root=`,
-    `rootfstype=` and `rk_dma_heap_cma=` from `sys_bootargs`, plus the `mtdparts` U-Boot appends.
+13. **Partly addressed.** On a *signed* build the kernel command line's `root=` (plus `ubi.mtd`,
+    `rootfstype`, `rk_dma_heap_cma`) is now **baked into the signed DTB `/chosen`** by
+    `apply_signed_nand_bootargs`, because u-boot won't rewrite a signed FIT's bootargs at runtime.
+    This was found the hard way: the first fused build hung at `Waiting for root device
+    /dev/mmcblk1p7` (the shared `ipc.dtsi` SD default) with 32M CMA, because the SDK's usual runtime
+    injection of the NAND rootfs args is dropped for a signed FIT. Baking closes the accidental case
+    and pins `root` inside the signed image — but `sys_bootargs` from the unsigned env is still
+    merged *after* it, so an attacker could still append a later `root=`/`rdinit=`. Full lockdown
+    still needs `CONFIG_CMDLINE_FORCE=y` (untested on this 5.10 kernel; must carry the *complete*
+    line) or stripping `sys_bootargs`/`mtdparts` from `CONFIG_ENVF_LIST`.
 14. **How should `boot.img` rollback be enforced without OP-TEE?** Stock U-Boot proper enforces a
     `boot.img` rollback index only through OP-TEE, and this build doesn't ship OP-TEE. There are two
     options. One is to patch U-Boot to compare the FIT `rollback-index` against a floor compiled
@@ -1034,7 +1088,11 @@ Checked against a built image:
 17. Does the RV1106 BootROM accept RSA-4096 for the loader, or is it 2048-only in silicon? The tool
     signs and verifies both; only a fused board settles it.
 
-Answer 5 first. It decides whether testing is recoverable or strictly destructive.
+Questions 1–3, 5, 7, 8, 11, 12 and (partly) 13 are now answered — see the strikethroughs above and
+[§13](#13-bench-test-results-rv1103-pico-mini). The open ones that gate a **production** deployment
+are: a real (non-public) signing key and its custody (6, 8b, 10, 16), RSA-4096 in silicon (9/17),
+rollback without OP-TEE (14), and — the big one — a **signed rootfs** ([§6](#6-extending-the-chain-to-the-rootfs)),
+which is designed but unimplemented.
 
 ---
 
@@ -1066,10 +1124,11 @@ quoted in §3.2.
 
 ---
 
-## 13. Bench test results (RV1103 Pico Mini, stock Buildroot image)
+## 13. Bench test results (RV1103 Pico Mini)
 
-Run over ADB (Linux) and UART @ 115200 (U-Boot), stock `Luckfox_Pico_Mini_Flash_250607` image.
-These confirm the analysis above on real hardware; nothing here was signed or fused.
+Run over ADB (Linux) and UART @ 115200 (U-Boot). §13 (below) is the unsigned baseline on the stock
+`Luckfox_Pico_Mini_Flash_250607` image; [§13.1](#131-signed--fused-run-2026-09-12-committed-public-dev-key)
+is the signed + fused run. Together they confirm the analysis above on real hardware.
 
 | # | Test | Result | Bearing |
 |---|---|---|---|
@@ -1087,6 +1146,23 @@ These confirm the analysis above on real hardware; nothing here was signed or fu
 **Note on the boot medium:** this is a NAND Mini (`root=ubi0:rootfs`, `ubi.mtd=6`), not the SD
 layout shown at sector 0 elsewhere in this doc. The `mtd0`→cmdline path is identical in mechanism.
 
-**Confirmed answered:** open questions 12 (env→cmdline: yes) and the §5.4 autoboot interruptibility
-(from source, now on hardware). The signed/fused stages (A–E, §5.4) remain untested.
+### 13.1 Signed + fused run (2026-09-12, committed *public* dev key)
+
+The full signed/fused chain was then exercised on a sacrificial Mini, built with
+`SEEDSIGNER_FIT_SIGNATURE=1` (+ `SEEDSIGNER_FIT_BURN_KEY_HASH=1` for the burn). All confirmed on
+UART:
+
+| # | Test | Result | Bearing |
+|---|---|---|---|
+| C1 | Signed build, unfused, first boot | SPL: `sha256,rsa2048:dev … OK`; U-Boot: `FIT: signed, conf required`, `sha256,rsa2048:dev+ OK` | Whole chain (loader→`uboot.img`→`boot.img`) verifies; enforcement is live in software even before the fuse |
+| C2 | `boot.img` **without** the extra sign step | `conf: sha256,rsa2048:dev- error! Failed to verify required signature 'key-dev'` → maskrom | The SDK does **not** sign `boot.img`; it must be signed in-build (§10 Q3). Fixed by `sign_boot_image` |
+| C3 | Burn (armed loader, first boot) | `## spl…dtb: burn-key-hash=1` at build; `RSA: Write RSA key hash successfully.` at SPL | The OTP fuse is written via the FIT `--burn-key-hash` path — RV1106 secure boot confirmed |
+| C4 | Fused board, unsigned/old image | **rejected** — won't boot or flash | Enforcement confirmed: BootROM checks the loader against the burned hash |
+| C5 | Fused board, dev-key-signed image | flashes and boots | The fused key accepts correctly signed images |
+| C6 | Fused board, BOOT button | enters **Maskrom** | Recovery path survives the fuse (§10 Q5) |
+| C7 | First signed NAND build to userspace | hung at `Waiting for root device /dev/mmcblk1p7`, 32M CMA | Signed FIT uses the DTB's baked `/chosen` (SD default); NAND rootfs args must be baked in (§10 Q13). Fixed by `apply_signed_nand_bootargs` |
+
+**Confirmed answered by this run:** open questions 2, 3, 5, 7 and (partly) 13. RV1106 secure boot
+works end-to-end. **Still not done:** a real (non-public) signing key, RSA-4096 in silicon, and a
+signed rootfs ([§6](#6-extending-the-chain-to-the-rootfs) — the chain still stops at `boot.img`).
 - [`docs/hwrng.md`](../hwrng.md) — how hardware entropy reaches the app on each platform
