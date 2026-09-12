@@ -131,6 +131,22 @@ no protection and the board can then never move to a real key. See
 > output. `## Verified-boot: 0` (unfused) but the software signature checks are
 > live, so this proves the signed chain boots before you ever touch a fuse.
 
+> **A signed FIT disables runtime device-tree edits — bake anything that relied on
+> them.** U-Boot won't rewrite a signed, conf-required FIT's DTB at boot, so two
+> things that normally happen at runtime break on a signed build and must be baked
+> into the DTB at build time. The opt-in build already does both for the Mini:
+> - **Kernel command line** — the SDK injects the NAND `root=ubi0:rootfs …` at
+>   runtime; signed, it uses the DTB's baked SD default and hangs at "Waiting for
+>   root device". `apply_signed_nand_bootargs` bakes the NAND cmdline in.
+> - **SPI display** — `luckfox-config` enables `&spi0`/`spidev0.0` via a runtime
+>   configfs overlay that `dtc`-core-dumps on a signed build (no `__symbols__` to
+>   resolve `&spi0`), so the screen stays black. `apply_spi_display_dts` enables
+>   SPI statically (pinctrl **without** MISO — that pin, RK_PC3, is the panel
+>   reset). Screen + camera confirmed working on the fused board (2026-09-12).
+>
+> If you add any peripheral that depends on a boot-time DTB fixup or overlay,
+> expect the same and bake it in statically for the signed build.
+
 **Building with a real secret key.** Replace the dev key with your own before the
 build so the loader/uboot/boot are signed by it:
 
@@ -213,11 +229,19 @@ Verifying Hash Integrity ... sha256+ OK      <- integrity only, not a signature
 ## Recovery — answer this before Stage D
 
 Burn **one** sacrificial board and immediately test recovery: does the **BOOT
-button still enter Maskrom** on a fused board, and does Maskrom accept an
-**unsigned** loader afterwards? The answer decides whether every later test is
-recoverable or one-shot. (Independently, note UART CTRL+C reaches a U-Boot prompt
-at `bootdelay=0` — bench-confirmed — so a fused production build also wants
+button still enter Maskrom** on a fused board, and does Maskrom accept a
+**dev-key-signed** loader afterwards? The answer decides whether every later test
+is recoverable or one-shot. (Independently, note UART CTRL+C reaches a U-Boot
+prompt at `bootdelay=0` — bench-confirmed — so a fused production build also wants
 `CONFIG_BOOTDELAY=-2` and `CONFIG_CONSOLE_DISABLE_CLI=y`.)
+
+> **Answered on the bench (2026-09-12).** BOOT still enters Maskrom on a fused
+> board; it accepts a **dev-key-signed** loader and **rejects** an unsigned one.
+> Reflashing works with the vendor SocToolKit in **partition (Download) mode** so
+> long as the `DownloadBin` entry is the *signed* `download.bin`, and also via
+> **Firmware → `update.img` → Upgrade** (which carries the signed loader inside the
+> `.img`). So a board fused to the public dev key is fully recoverable — the
+> committed dev key is public, so anyone can produce a loader it accepts.
 
 ## Stage 4 — the burn (irreversible)
 

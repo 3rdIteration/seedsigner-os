@@ -1,11 +1,12 @@
 # Luckfox Pico — secure boot feasibility report
 
 **Status: confirmed working end-to-end on a sacrificial RV1103 Pico Mini (2026-09-12), with the
-committed *public* dev key.** A normal build is still completely unaffected and burns nothing. The
-signing, enforcement and OTP-burn path is **opt-in**, gated behind `SEEDSIGNER_FIT_SIGNATURE=1`
-(sign the whole chain) and, only for the irreversible fuse, `SEEDSIGNER_FIT_BURN_KEY_HASH=1` — both
-off by default. See [§13](#13-bench-test-results-rv1103-pico-mini) for what was confirmed on silicon
-and [`secure-boot-bench-procedure.md`](secure-boot-bench-procedure.md) for the runnable steps.
+committed *public* dev key — fused, enforcing, and running SeedSigner with a working screen and
+camera.** A normal build is still completely unaffected and burns nothing. The signing, enforcement
+and OTP-burn path is **opt-in**, gated behind `SEEDSIGNER_FIT_SIGNATURE=1` (sign the whole chain)
+and, only for the irreversible fuse, `SEEDSIGNER_FIT_BURN_KEY_HASH=1` — both off by default. See
+[§13](#13-bench-test-results-rv1103-pico-mini) for what was confirmed on silicon and
+[`secure-boot-bench-procedure.md`](secure-boot-bench-procedure.md) for the runnable steps.
 
 This document records what the hardware and vendor SDK support, what the opt-in tooling now does,
 what was confirmed on hardware, and what remains unknown — so the next attempt (especially a **real
@@ -1186,8 +1187,20 @@ UART:
 | C5 | Fused board, dev-key-signed image | flashes and boots | The fused key accepts correctly signed images |
 | C6 | Fused board, BOOT button | enters **Maskrom** | Recovery path survives the fuse (§10 Q5) |
 | C7 | First signed NAND build to userspace | hung at `Waiting for root device /dev/mmcblk1p7`, 32M CMA | Signed FIT uses the DTB's baked `/chosen` (SD default); NAND rootfs args must be baked in (§10 Q13). Fixed by `apply_signed_nand_bootargs` |
+| C8 | SPI display on the fused board | first black (`Opening SPI device: No such file or directory`), then working after fix | Same root cause as C7 generalized (below): a signed FIT stops `luckfox-config`'s runtime DT overlay from enabling `&spi0`. Fixed by enabling SPI statically (`apply_spi_display_dts`). Screen + camera confirmed working. |
+| C9 | Reflash the fused board | works in SocToolKit **partition (Download) mode** with the signed `download.bin`, and via **Firmware → `update.img` → Upgrade** | Recovery is straightforward as long as the loader in the list is the signed one |
+
+> **Generalizable finding — a signed FIT disables *all* runtime DTB modification.** U-Boot will not
+> rewrite a signed, conf-required FIT's device tree at boot (that would break verification). Two
+> things that silently relied on that rewrite therefore broke on the first fused build and had to be
+> **baked into the signed DTB at build time** instead: the NAND kernel command line (C7,
+> `apply_signed_nand_bootargs`) and the SPI display, which `luckfox-config` normally enables via a
+> runtime configfs overlay (C8, `apply_spi_display_dts`; the overlay `dtc`-core-dumps because the
+> DTB has no `__symbols__` to resolve `&spi0`). Anticipate this for anything else that depends on a
+> boot-time DTB fixup or overlay — on a signed build it must be static.
 
 **Confirmed answered by this run:** open questions 2, 3, 5, 7 and (partly) 13. RV1106 secure boot
-works end-to-end. **Still not done:** a real (non-public) signing key, RSA-4096 in silicon, and a
-signed rootfs ([§6](#6-extending-the-chain-to-the-rootfs) — the chain still stops at `boot.img`).
+works end-to-end, hardware-validated (screen + camera). **Still not done:** a real (non-public)
+signing key, RSA-4096 in silicon, and a signed rootfs
+([§6](#6-extending-the-chain-to-the-rootfs) — the chain still stops at `boot.img`).
 - [`docs/hwrng.md`](../hwrng.md) — how hardware entropy reaches the app on each platform
