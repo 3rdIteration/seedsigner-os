@@ -43,11 +43,22 @@ SHA-256 for all four: `SHA256SUMS` (pinned by `os-build.sh`).
 * Source: [busybox-1.36.1.tar.bz2](https://busybox.net/downloads/) — sha256
   `b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314`, verified
   against the official `.sha256` file.
-* Config: `allnoconfig` plus only what `/init` needs — sh/ash, mount, umount,
+* Config: `allnoconfig` plus only what `/init` needs — sh/ash, **test** (the
+  shell's `[` builtin is guarded by CONFIG_TEST in busybox 1.36; without it
+  every `[ ... ]` test in /init dies with "[: not found"), mount, umount,
   pivot_root, dd, truncate, sha256sum, ls, cat, echo, sleep, true, false,
   reboot/halt/poweroff, mknod, grep, head, tail, dmesg, rm, mkdir, ln, cp, mv —
   plus `CONFIG_STATIC=y` and `CONFIG_ASH_INTERNAL_GLOB=y` (busybox refuses to
   use uClibc's buggy glob() otherwise).
+* Rebuild procedure that reproduces the committed binary: `make allnoconfig`,
+  then sed-flip ONLY those options from `# CONFIG_X is not set` to
+  `CONFIG_X=y` in .config, then `yes '' | make oldconfig`. Do NOT start from a
+  minimal .config and let oldconfig fill defaults — hundreds of FEATURE_*
+  options default to y and the binary balloons ~1.2 MB (overflows the 4 MiB
+  boot partition). Appending =y lines after allnoconfig also fails: busybox's
+  kconfig rejects them as "reassignment" of already-set symbols.
+* Rebuilt 2026-09-13 to add CONFIG_TEST (first board boot failed at /init line
+  55 with "[: not found"); byte size unchanged, all other applets identical.
 
 ### ss-lcd
 

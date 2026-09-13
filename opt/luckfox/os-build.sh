@@ -1752,7 +1752,7 @@ verify_initramfs_binaries() {
     print_step "Verifying vendored initramfs binaries (SHA-256 pins)"
     # Pinned at commit time; see secure-boot/initramfs-binaries/README.md.
     local -A pins=(
-        [busybox-arm]=768f26caf70c79db56aa239ee944e822bfc7f171865a7b7b96b65de2c1eca22e
+        [busybox-arm]=a6c387c782093a5b8a43483b95d42b28e78ce17cf43e9da96782e59caae35f04
         [minisign-arm]=0256e7b0d85b10ea615e90b51f21103b7ec91631adedd0ebb45a2626e9d0e3c9
         [ss-lcd]=8cdfb04832d7366c7f5f0e5cbcbccca2760c542b5976cda2c56e233c4faea57c
         [minisign-host]=81ffed5915492c9e2a7494b7cd4095d8509e331d0861504b7619fbea7158453e
@@ -1790,10 +1790,11 @@ provision_rootfs_signing_key() {
 apply_initramfs_kernel_config() {
     [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
     local board_profile="$1" boot_medium="$2"
-    # The initramfs /init is a shell script (needs BINFMT_SCRIPT) and the cpio
-    # is gzip-compressed (needs RD_GZIP). Neither symbol is in the SDK defconfig,
-    # so both rely on Kconfig defaults — pin them explicitly instead of trusting
-    # that (verify against what gets built, not what a default should be).
+    # The initramfs /init is a shell script (needs BINFMT_SCRIPT), the cpio is
+    # gzip-compressed (needs RD_GZIP), and /init mounts /proc + /sys to read the
+    # cmdline and wait on UBI (needs PROC_FS/SYSFS). None of these symbols are in
+    # the SDK defconfig, so they rely on Kconfig defaults — pin them explicitly
+    # instead of trusting that (verify against what gets built, not a default).
     local kernel_defconfig
     kernel_defconfig="$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$LUCKFOX_SDK_DIR/.BoardConfig.mk" 2>/dev/null | head -n1)"
     [[ -n "$kernel_defconfig" ]] || kernel_defconfig="luckfox_rv1106_linux_defconfig"
@@ -1803,11 +1804,11 @@ apply_initramfs_kernel_config() {
         exit 1
     fi
     local sym
-    for sym in CONFIG_BINFMT_SCRIPT CONFIG_RD_GZIP; do
+    for sym in CONFIG_BINFMT_SCRIPT CONFIG_RD_GZIP CONFIG_PROC_FS CONFIG_SYSFS; do
         sed -i -E "/^${sym}(=|_)/d;/^# ${sym} is not set\$/d" "$kernel_cfg_file"
         echo "${sym}=y" >> "$kernel_cfg_file"
     done
-    print_success "pinned CONFIG_BINFMT_SCRIPT=y + CONFIG_RD_GZIP=y in $kernel_defconfig (script /init from gzipped initramfs)"
+    print_success "pinned BINFMT_SCRIPT/RD_GZIP/PROC_FS/SYSFS =y in $kernel_defconfig (script /init from gzipped initramfs)"
 }
 
 # Pack the rootfs verifier into an initramfs and embed it in boot.img's FIT
@@ -1839,7 +1840,10 @@ embed_rootfs_verifier() {
     local keydir="${SEEDSIGNER_ROOTFS_KEY_DIR:-$SEEDSIGNER_LUCKFOX_DIR/secure-boot/dev-keys-rootfs}"
     local stage
     stage="$(mktemp -d)"
-    mkdir -p "$stage/bin"
+    # Mountpoints MUST exist in the cpio: mount(2) does not create them, and
+    # devtmpfs auto-mount (DEVTMPFS_MOUNT=y) mounts onto an existing /dev —
+    # without it there is no /dev/ubi0_0 and the verifier can never see UBI.
+    mkdir -p "$stage/bin" "$stage/dev" "$stage/mnt" "$stage/proc" "$stage/sys"
     cp "$bin/busybox-arm"  "$stage/bin/busybox"
     cp "$bin/minisign-arm" "$stage/bin/minisign"
     cp "$bin/ss-lcd"       "$stage/bin/ss-lcd"

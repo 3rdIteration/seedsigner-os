@@ -52,7 +52,12 @@ for w in $(cat /proc/cmdline); do
         root=*) ROOT_DEV="${w#root=}" ;;
     esac
 done
-[ -n "$ROOT_DEV" ] || fail "no root= on kernel command line"
+if [ -z "$ROOT_DEV" ]; then
+    if [ ! -r /proc/cmdline ]; then
+        fail "cannot read kernel command line (/proc not mounted?)"
+    fi
+    fail "no root= on kernel command line"
+fi
 log "cmdline: root=$ROOT_DEV"
 
 case "$ROOT_DEV" in
@@ -86,15 +91,19 @@ done
 log "$SRC_DEV present after ${tries}s"
 
 # --- read the logical volume contents ----------------------------------------
+# Read ONLY the signed prefix, not the whole autoresize-padded volume: on the
+# 64 MiB Mini the rootfs partition is 93 MiB, so a full dd would OOM the
+# ramfs-backed initramfs before verification could start. The signature covers
+# exactly ROOTFS_UBIFS_SIZE leading bytes; everything after it is UBI padding
+# (untrusted and irrelevant to the check).
 lcd orange "SeedSigner" "Verifying rootfs..."
-log "reading $SRC_DEV ..."
-if ! dd if="$SRC_DEV" of=/rootfs.img bs=65536 2>/dev/null; then
+log "reading $SRC_DEV ($ROOTFS_UBIFS_SIZE signed bytes) ..."
+blocks=$(( (ROOTFS_UBIFS_SIZE + 65535) / 65536 ))
+if ! dd if="$SRC_DEV" of=/rootfs.img bs=65536 count=$blocks 2>/dev/null; then
     fail "read error on $SRC_DEV"
 fi
 
-# The volume was created with vol_flags=autoresize, so UBI pads it to the full
-# partition size (padding nodes for dynamic volumes, zero fill for static);
-# the signed artifact is exactly ROOTFS_UBIFS_SIZE bytes.
+# dd over-reads by up to one block when the size is not block-aligned.
 truncate -s "$ROOTFS_UBIFS_SIZE" /rootfs.img 2>/dev/null \
     || fail "cannot truncate volume image"
 
