@@ -7,7 +7,7 @@
 # script streams those bytes through minisign's pre-hashed verifier, which
 # checks them against the signature produced over the exact .ubifs/.squashfs
 # file at build time — without ever materialising the image in RAM (peak ~128
-# KiB) — and only then mounts and pivots to the real rootfs.
+# KiB) — and only then mounts and switches (switch_root) to the real rootfs.
 #
 # Everything here is signed (boot.img FIT) or pinned by it: a modified
 # rootfs cannot change what this script checks, because the script, the
@@ -35,7 +35,10 @@ fail() {
     # Halt, do not reboot: a reboot would just loop back here. The kernel
     # stays up (CPUs stop after userspace exits), so the board is recoverable
     # by power-cycle and nothing keeps writing to the NAND.
-    halt 2>/dev/null || { log "halt failed, spinning"; while :; do sleep 3600; done; }
+    # -f is REQUIRED: plain `halt` signals PID 1 (itself) with SIGUSR1, which
+    # the kernel silently ignores for init — kill() returns success and this
+    # function would RETURN, letting /init continue past a failed check.
+    halt -f 2>/dev/null || { log "halt failed, spinning"; while :; do sleep 3600; done; }
 }
 
 # --- basic filesystems -------------------------------------------------------
@@ -94,6 +97,14 @@ done
 [ -e "$SRC_DEV" ] || fail "no UBI volume (attach failed?)"
 log "$SRC_DEV present after ${tries}s"
 
+# This SDK kernel's devtmpfs does NOT create the magic symlinks mainline has
+# (/dev/stdin -> /proc/self/fd/0, ...); minisign needs /dev/stdin for its
+# -m /dev/stdin streaming input. Create them now that /dev is in its final
+# state (the kernel's devtmpfs auto-mount already happened before we ran).
+ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null || true
+ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null || true
+ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null || true
+
 # --- verify the signature ----------------------------------------------------
 # Stream exactly ROOTFS_UBIFS_SIZE bytes from the volume straight into
 # minisign, which BLAKE2b-512s its input in 64 KiB chunks (the -H/pre-hashed
@@ -116,7 +127,7 @@ if ! dd if="$SRC_DEV" bs=4096 count=$blocks 2>/dev/null \
 fi
 log "signature OK"
 
-# --- mount and pivot ---------------------------------------------------------
+# --- mount and hand over -----------------------------------------------------
 lcd green "SeedSigner" "Rootfs verified" "Starting..."
 log "mounting rootfs ($MNT_CMD) ..."
 if ! $MNT_CMD; then
@@ -124,15 +135,18 @@ if ! $MNT_CMD; then
 fi
 
 cd /mnt || fail "cannot cd /mnt"
-# pivot_root requires the put_old dir to exist; create it if the rootfs does
-# not ship one (it must be empty — a non-empty oldroot would break umount).
-mkdir -p oldroot 2>/dev/null
-pivot_root . oldroot 2>/dev/null || fail "pivot_root failed"
-umount -l /oldroot 2>/dev/null
-
+# The initramfs is the kernel's rootfs pseudo-filesystem, and pivot_root()
+# refuses to work from it (EINVAL — see Documentation/filesystems/ramfs-rootfs-
+# initramfs.rst: "you can neither pivot_root rootfs, nor unmount it").
+# switch_root does the documented handoff: deletes the old initramfs contents
+# (freeing its RAM), moves this mount over /, chroots in and execs the new
+# init. It requires PID 1, a regular /init in the old root and a ramfs/tmpfs
+# root — all true here by construction.
 log "verified boot complete, handing over to /sbin/init"
-# Same fallback chain the kernel would use on a normal (no-initramfs) boot.
-if [ -x /sbin/init ]; then
-    exec /sbin/init
+# NB: test with a path relative to cwd (/mnt) — fs->root still points at the
+# old initramfs until switch_root's chroot, so absolute paths would resolve
+# there (and find nothing).
+if [ -x sbin/init ]; then
+    exec switch_root . /sbin/init
 fi
-exec /bin/sh
+exec switch_root . /bin/sh
