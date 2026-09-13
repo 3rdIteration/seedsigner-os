@@ -76,19 +76,22 @@ case "$ROOT_DEV" in
         ;;
 esac
 
-if [ ! -d /dev/ubi_ctrl ] && [ ! -b "$SRC_DEV" ]; then
+# NB: /dev/ubi0_0 is a CHARACTER device (c 10 69), not a block one — test
+# existence, never -b. (/dev/ubiblock0_0 in the non-dev case IS a block dev;
+# -e covers both.)
+if [ ! -d /dev/ubi_ctrl ] && [ ! -e "$SRC_DEV" ]; then
     mount -t devtmpfs devtmpfs /dev 2>/dev/null \
-        || { mknod -m 660 /dev/ubi_ctrl c 10 69 2>/dev/null; log "WARN: manual /dev setup"; }
+        || { mknod -m 660 /dev/ubi_ctrl c 10 58 2>/dev/null; log "WARN: manual /dev setup"; }
 fi
 
 # --- wait for UBI to attach --------------------------------------------------
 log "waiting for $SRC_DEV (UBI auto-attach) ..."
 tries=0
-while [ ! -b "$SRC_DEV" ] && [ $tries -lt 50 ]; do
+while [ ! -e "$SRC_DEV" ] && [ $tries -lt 50 ]; do
     sleep 1
     tries=$((tries + 1))
 done
-[ -b "$SRC_DEV" ] || fail "no UBI volume (attach failed?)"
+[ -e "$SRC_DEV" ] || fail "no UBI volume (attach failed?)"
 log "$SRC_DEV present after ${tries}s"
 
 # --- verify the signature ----------------------------------------------------

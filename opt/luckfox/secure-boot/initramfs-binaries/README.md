@@ -49,11 +49,14 @@ SHA-256 for all four: `SHA256SUMS` (pinned by `os-build.sh`).
   CONFIG_ASH_TEST — `shell/Config.in`, wired into the builtin table at
   `shell/ash.c`; with allnoconfig both default off and every `[ ... ]` in /init
    dies with "[: not found"), mount, umount, pivot_root, dd, truncate, sha256sum,
-   ls, cat, echo, sleep, true, false, reboot/halt/poweroff, mknod, grep, head,
-   tail, dmesg, rm, mkdir, ln, cp, mv — plus `CONFIG_STATIC=y`,
-   `CONFIG_ASH_INTERNAL_GLOB=y` (busybox refuses to use uClibc's buggy glob()
-   otherwise) and `CONFIG_FEATURE_FANCY_HEAD=y` (enables `head -c`, which /init
-   uses to trim the streamed volume read to exactly the signed byte count).
+    ls, cat, echo, sleep, true, false, reboot/halt/poweroff, mknod, grep, head,
+    tail, dmesg, rm, mkdir, ln, cp, mv — plus `CONFIG_STATIC=y`,
+    `CONFIG_ASH_INTERNAL_GLOB=y` (busybox refuses to use uClibc's buggy glob()
+    otherwise), `CONFIG_FEATURE_FANCY_HEAD=y` (enables `head -c`, which /init
+    uses to trim the streamed volume read to exactly the signed byte count) and
+    `CONFIG_FEATURE_SH_MATH=y` (POSIX `$((...))` arithmetic — /init's wait-loop
+    counter and block-count math; with allnoconfig it defaults off and ash dies
+    at the first `$((` with "syntax error: support for $((arith)) is disabled").
 * Rebuild procedure that reproduces the committed binary: `make allnoconfig`,
   then sed-flip ONLY those options from `# CONFIG_X is not set` to
   `CONFIG_X=y` in .config, then `yes '' | make oldconfig`. Do NOT start from a
@@ -61,11 +64,14 @@ SHA-256 for all four: `SHA256SUMS` (pinned by `os-build.sh`).
   options default to y and the binary balloons ~1.2 MB (overflows the 4 MiB
   boot partition). Appending =y lines after allnoconfig also fails: busybox's
   kconfig rejects them as "reassignment" of already-set symbols.
-* Rebuilt on 2026-09-13 after first-board-boot failures: CONFIG_TEST alone did
+* Rebuilt on 2026-09-13 (twice) after first-board-boot failures: CONFIG_TEST alone did
   NOT fix "[: not found" (that only builds the standalone applet) — what
   registers `[`/`test` as ash builtins is CONFIG_ASH_TEST. The committed binary
-  also carries CONFIG_FEATURE_FANCY_HEAD for `head -c`. Final size 226776,
-  sha256 in SHA256SUMS; all other applets identical to the original build.
+  also carries CONFIG_FEATURE_FANCY_HEAD for `head -c`, and CONFIG_FEATURE_SH_MATH:
+  a second board boot died with "line 89: syntax error: support for $((arith)) is
+  disabled" — the wait-loop counter uses `$((tries + 1))` and allnoconfig leaves
+  POSIX math off. Final size 226776, sha256 in SHA256SUMS; all other applets
+  identical to the original build.
 
 ### ss-lcd
 
