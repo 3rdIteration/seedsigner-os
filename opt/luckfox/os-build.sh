@@ -1850,7 +1850,7 @@ embed_rootfs_verifier() {
     chmod 755 "$stage/bin/"*
     # /init calls these by name; busybox resolves them through symlinks.
     local applet
-    for applet in sh mount umount pivot_root dd truncate sha256sum ls cat echo sleep \
+    for applet in sh mount umount switch_root dd truncate sha256sum ls cat echo sleep \
                   true false reboot halt poweroff mknod grep head tail dmesg rm mkdir ln cp mv; do
         ln -s busybox "$stage/bin/$applet"
     done
