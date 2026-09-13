@@ -18,9 +18,16 @@
 #
 # The hook sits after the COMMON ubinize line in mk_ubi_image_fake(), so it
 # signs $temp_image whatever FS_TYPE is (squashfs on non-dev, ubifs on dev).
-# Only the DEFAULT-geometry image (the one that becomes rootfs.img via the
+# Only the DEFAULT-geometry image (the one that becomes <vol>.img via the
 # `ln -rfs` in mkfs_ubi.sh) is signed; the other two geometry variants are
-# build-time artifacts only.
+# build-time artifacts only. Signing runs in minisign's pre-hashed (-H) mode —
+# BLAKE2b-512 streamed in 64 KiB chunks, recorded inside the .minisig as
+# sig_alg "ED" — so neither signing nor boot-time verification ever holds the
+# whole image in RAM (the 64 MiB Mini OOMs on a raw-mode verify of ~38 MB).
+# mkfs_ubi.sh runs once PER UBI partition, and each invocation's default
+# geometry passes this hook; outputs are therefore named per partition
+# (${UBI_VOL_NAME}.ubifs.{minisig,size}) so oem/userdata cannot clobber the
+# rootfs ones. os-build.sh consumes rootfs.ubifs.* only.
 #
 # The signing runs inside the fakeroot script mkfs_ubi.sh generates, right
 # after the default-geometry mkfs.ubifs call, so it sees the exact bytes that
@@ -54,14 +61,17 @@ fi
 
 MARKER="SEEDSIGNER-ROOTFS-SIGN-BEGIN"
 if grep -q "$MARKER" "$UBI_TOOL"; then
-    # A hook from an older revision of this script would sign in raw mode and
-    # produce a signature the streaming boot-time verifier cannot use — fail
-    # loudly instead of keeping it (a clean SDK checkout removes the hook).
-    if grep -A6 "$MARKER" "$UBI_TOOL" | grep -q -- '-H -m'; then
+    # A hook from an older revision of this script is unusable: pre-streaming
+    # ones sign in raw mode (the boot-time verifier cannot use that), and
+    # pre-per-partition-naming ones write every partition's signature to the
+    # same rootfs.* files (last-built partition wins). Fail loudly instead of
+    # keeping it — a clean SDK checkout removes the hook.
+    if grep -A8 "$MARKER" "$UBI_TOOL" | grep -q -- '-H -m' \
+       && grep -A8 "$MARKER" "$UBI_TOOL" | grep -q '${UBI_VOL_NAME}.ubifs.minisig'; then
         echo "  mkfs_ubi.sh: rootfs signing hook already present (idempotent re-run)"
         exit 0
     fi
-    echo "patch-mkfs-ubi-signing: stale rootfs signing hook in $UBI_TOOL (missing -H); clean the SDK tree and retry" >&2
+    echo "patch-mkfs-ubi-signing: stale rootfs signing hook in $UBI_TOOL; clean the SDK tree and retry" >&2
     exit 1
 fi
 
@@ -114,13 +124,19 @@ hook_lines = [
     # minisign mallocs the ENTIRE message on both sides: 2x38 MB already OOMs
     # the 64 MiB Mini's initramfs.
     '\t\t\techo "printf \'%s\\\\n\' \\"\\$SEEDSIGNER_ROOTFS_KEY_PASSPHRASE\\" | ' + minisign + ' -S -s \\"\\$SEEDSIGNER_ROOTFS_SIGNING_KEY\\" -t seedsigner-os-rootfs -H -m \\"$temp_image\\"" >> $UBI_IMAGE_FAKEROOT',
-    '\t\t\techo "cp -f \\"${temp_image}.minisig\\" \\"$IMAGE_OUTPUT_DIR/rootfs.ubifs.minisig\\"" >> $UBI_IMAGE_FAKEROOT',
+    # Output is named per PARTITION, not hardcoded to rootfs: mkfs_ubi.sh runs
+    # once PER UBI partition (oem, rootfs, userdata — each with its own
+    # $ROOTFS_PART_NAME/$UBI_VOL_NAME), so a fixed name would be overwritten by
+    # every later partition and the "rootfs" signature would actually be the
+    # last-built one (userdata). os-build.sh picks up rootfs.ubifs.*, which is
+    # exactly what this writes when UBI_VOL_NAME=rootfs.
+    '\t\t\techo "cp -f \\"${temp_image}.minisig\\" \\"$IMAGE_OUTPUT_DIR/${UBI_VOL_NAME}.ubifs.minisig\\"" >> $UBI_IMAGE_FAKEROOT',
     # Record the signed image size: UBI autoresize pads the volume, so the
     # initramfs verifier must limit its read of the volume to exactly this many
     # bytes (dd count) before streaming it into minisign. The final rootfs.img
     # is UBI-wrapped and says nothing about it — only here do we know the
     # logical image's size.
-    '\t\t\techo "wc -c < \"$temp_image\" > \"$IMAGE_OUTPUT_DIR/rootfs.ubifs.size\"" >> $UBI_IMAGE_FAKEROOT',
+    '\t\t\techo "wc -c < \"$temp_image\" > \"$IMAGE_OUTPUT_DIR/${UBI_VOL_NAME}.ubifs.size\"" >> $UBI_IMAGE_FAKEROOT',
     '\t\t\techo fi >> $UBI_IMAGE_FAKEROOT',
     '\t\t\t# SEEDSIGNER-ROOTFS-SIGN-END',
     '\t\t\tfi',
