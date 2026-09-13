@@ -14,7 +14,7 @@ shipping a different binary than the one that was reviewed.
 
 | file         | size      | what it is |
 |--------------|-----------|------------|
-| busybox-arm  | ~223 KB   | minimal static busybox, armv7 (sh + coreutils for /init) — in the initramfs |
+| busybox-arm  | ~227 KB   | minimal static busybox, armv7 (sh + coreutils for /init) — in the initramfs |
 | minisign-arm | ~404 KB   | minisign 0.9, armv7 — boot-time signature verification in the initramfs |
 | ss-lcd       | ~60 KB    | ST7789 status display, armv7 (source: ../initramfs/ss-lcd.c) — in the initramfs |
 | minisign-host| ~1.0 MB   | minisign 0.9, x86-64 — build-time signing inside mkfs_ubi.sh's fakeroot script |
@@ -43,13 +43,17 @@ SHA-256 for all four: `SHA256SUMS` (pinned by `os-build.sh`).
 * Source: [busybox-1.36.1.tar.bz2](https://busybox.net/downloads/) — sha256
   `b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314`, verified
   against the official `.sha256` file.
-* Config: `allnoconfig` plus only what `/init` needs — sh/ash, **test** (the
-  shell's `[` builtin is guarded by CONFIG_TEST in busybox 1.36; without it
-  every `[ ... ]` test in /init dies with "[: not found"), mount, umount,
-  pivot_root, dd, truncate, sha256sum, ls, cat, echo, sleep, true, false,
-  reboot/halt/poweroff, mknod, grep, head, tail, dmesg, rm, mkdir, ln, cp, mv —
-  plus `CONFIG_STATIC=y` and `CONFIG_ASH_INTERNAL_GLOB=y` (busybox refuses to
-  use uClibc's buggy glob() otherwise).
+* Config: `allnoconfig` plus only what `/init` needs — sh/ash, **test** (BOTH
+  options are required in busybox 1.36: CONFIG_TEST builds the standalone test
+  applet, while ash's `[`/`test` *shell builtins* are guarded by a separate
+  CONFIG_ASH_TEST — `shell/Config.in`, wired into the builtin table at
+  `shell/ash.c`; with allnoconfig both default off and every `[ ... ]` in /init
+   dies with "[: not found"), mount, umount, pivot_root, dd, truncate, sha256sum,
+   ls, cat, echo, sleep, true, false, reboot/halt/poweroff, mknod, grep, head,
+   tail, dmesg, rm, mkdir, ln, cp, mv — plus `CONFIG_STATIC=y`,
+   `CONFIG_ASH_INTERNAL_GLOB=y` (busybox refuses to use uClibc's buggy glob()
+   otherwise) and `CONFIG_FEATURE_FANCY_HEAD=y` (enables `head -c`, which /init
+   uses to trim the streamed volume read to exactly the signed byte count).
 * Rebuild procedure that reproduces the committed binary: `make allnoconfig`,
   then sed-flip ONLY those options from `# CONFIG_X is not set` to
   `CONFIG_X=y` in .config, then `yes '' | make oldconfig`. Do NOT start from a
@@ -57,8 +61,11 @@ SHA-256 for all four: `SHA256SUMS` (pinned by `os-build.sh`).
   options default to y and the binary balloons ~1.2 MB (overflows the 4 MiB
   boot partition). Appending =y lines after allnoconfig also fails: busybox's
   kconfig rejects them as "reassignment" of already-set symbols.
-* Rebuilt 2026-09-13 to add CONFIG_TEST (first board boot failed at /init line
-  55 with "[: not found"); byte size unchanged, all other applets identical.
+* Rebuilt on 2026-09-13 after first-board-boot failures: CONFIG_TEST alone did
+  NOT fix "[: not found" (that only builds the standalone applet) — what
+  registers `[`/`test` as ash builtins is CONFIG_ASH_TEST. The committed binary
+  also carries CONFIG_FEATURE_FANCY_HEAD for `head -c`. Final size 226776,
+  sha256 in SHA256SUMS; all other applets identical to the original build.
 
 ### ss-lcd
 

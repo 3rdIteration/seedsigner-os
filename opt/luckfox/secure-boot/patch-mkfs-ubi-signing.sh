@@ -54,8 +54,15 @@ fi
 
 MARKER="SEEDSIGNER-ROOTFS-SIGN-BEGIN"
 if grep -q "$MARKER" "$UBI_TOOL"; then
-    echo "  mkfs_ubi.sh: rootfs signing hook already present (idempotent re-run)"
-    exit 0
+    # A hook from an older revision of this script would sign in raw mode and
+    # produce a signature the streaming boot-time verifier cannot use — fail
+    # loudly instead of keeping it (a clean SDK checkout removes the hook).
+    if grep -A6 "$MARKER" "$UBI_TOOL" | grep -q -- '-H -m'; then
+        echo "  mkfs_ubi.sh: rootfs signing hook already present (idempotent re-run)"
+        exit 0
+    fi
+    echo "patch-mkfs-ubi-signing: stale rootfs signing hook in $UBI_TOOL (missing -H); clean the SDK tree and retry" >&2
+    exit 1
 fi
 
 # The target is the echoed ubinize invocation — common to all three FS_TYPE
@@ -100,12 +107,19 @@ hook_lines = [
     '\t\t\tif [ $(( $DEFAULT_UBI_PAGE_SIZE )) -eq $(( $UBI_PAGE_SIZE )) ] && \\',
     '\t\t\t   [ $(( $DEFAULT_UBI_BLOCK_SIZE )) -eq $(( $UBI_BLOCK_SIZE )) ]; then',
     '\t\t\techo "if [ -n \\"\\$SEEDSIGNER_ROOTFS_SIGNING_KEY\\" ]; then" >> $UBI_IMAGE_FAKEROOT',
-    '\t\t\techo "printf \'%s\\\\n\' \\"\\$SEEDSIGNER_ROOTFS_KEY_PASSPHRASE\\" | ' + minisign + ' -S -s \\"\\$SEEDSIGNER_ROOTFS_SIGNING_KEY\\" -t seedsigner-os-rootfs -m \\"$temp_image\\"" >> $UBI_IMAGE_FAKEROOT',
+    # -H: sign the BLAKE2b-512 of the image, streaming it in 64 KiB chunks.
+    # The flag is recorded inside the .minisig (sig_alg "ED"), so the boot-time
+    # verifier streams too — peak RAM stays ~128 KiB no matter how large the
+    # rootfs grows (full NAND, or a multi-GB MicroSD partition). Without -H,
+    # minisign mallocs the ENTIRE message on both sides: 2x38 MB already OOMs
+    # the 64 MiB Mini's initramfs.
+    '\t\t\techo "printf \'%s\\\\n\' \\"\\$SEEDSIGNER_ROOTFS_KEY_PASSPHRASE\\" | ' + minisign + ' -S -s \\"\\$SEEDSIGNER_ROOTFS_SIGNING_KEY\\" -t seedsigner-os-rootfs -H -m \\"$temp_image\\"" >> $UBI_IMAGE_FAKEROOT',
     '\t\t\techo "cp -f \\"${temp_image}.minisig\\" \\"$IMAGE_OUTPUT_DIR/rootfs.ubifs.minisig\\"" >> $UBI_IMAGE_FAKEROOT',
     # Record the signed image size: UBI autoresize pads the volume, so the
-    # initramfs verifier must truncate its dd of the volume to exactly this
-    # many bytes before checking. The final rootfs.img is UBI-wrapped and says
-    # nothing about it — only here do we know the logical image's size.
+    # initramfs verifier must limit its read of the volume to exactly this many
+    # bytes (dd count) before streaming it into minisign. The final rootfs.img
+    # is UBI-wrapped and says nothing about it — only here do we know the
+    # logical image's size.
     '\t\t\techo "wc -c < \"$temp_image\" > \"$IMAGE_OUTPUT_DIR/rootfs.ubifs.size\"" >> $UBI_IMAGE_FAKEROOT',
     '\t\t\techo fi >> $UBI_IMAGE_FAKEROOT',
     '\t\t\t# SEEDSIGNER-ROOTFS-SIGN-END',

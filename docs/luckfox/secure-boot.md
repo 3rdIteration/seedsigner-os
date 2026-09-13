@@ -800,12 +800,19 @@ The design above is implemented for the **Pico Mini NAND** builds behind
 
 **What is signed, and when.** The rootfs volume's *logical* contents — the exact `.ubifs` file
 (dev variant) or `.squashfs` file (non-dev readonly-rootfs) that `mkfs_ubi.sh` packs into UBI —
-are minisign-signed at build time. [`secure-boot/patch-mkfs-ubi-signing.sh`](../../opt/luckfox/secure-boot/patch-mkfs-ubi-signing.sh)
+are minisign-signed at build time **in pre-hashed mode (`-H`)**: minisign streams the image in
+64 KiB chunks through BLAKE2b-512 and signs the 64-byte digest, so neither signing nor
+verification ever holds the whole image in RAM. The hashed mode is recorded inside the `.minisig`
+itself (signature algorithm field `"ED"`), which makes verification self-describing — no flag on
+the verifier side. [`secure-boot/patch-mkfs-ubi-signing.sh`](../../opt/luckfox/secure-boot/patch-mkfs-ubi-signing.sh)
 hooks the SDK's `mkfs_ubi.sh` after its common ubinize line (so it covers every fs type), signs
 only the default-geometry image, and records the signed size in `rootfs.ubifs.size`. Signing runs
 inside the fakeroot script with a vendored x86-64 minisign (`initramfs-binaries/minisign-host`);
 signatures are deterministic (explicit trusted comment, no timestamp), so reproducible builds stay
-byte-identical.
+byte-identical. This is what makes the design scale: peak RAM during verification is ~128 KiB
+regardless of rootfs size — a full 93 MiB NAND partition or a multi-GB MicroSD image verify the
+same way (without `-H`, minisign mallocs the entire message on both sides; 2×38 MB already OOMs
+the 64 MiB Mini's initramfs).
 
 **What verifies, and where.** After `build.sh firmware`, `os-build.sh`'s `embed_rootfs_verifier()`
 assembles a small initramfs — busybox + minisign + an ST7789 status display (`ss-lcd`) + the public
@@ -818,11 +825,15 @@ cryptographic machinery".
 
 **Boot flow.** UBI auto-attaches (`ubi.mtd=6` baked into the signed DTB); `/init` reads `root=`
 from the command line to learn the presentation (squashfs-on-ubiblock vs raw UBIFS), waits for the
-volume, `dd`s its logical contents, truncates to the signed size (UBI autoresize pads the volume),
-runs `minisign -V`, and only then mounts + `pivot_root` to `/sbin/init`. Progress is shown on the
-LCD and logged to UART (`rootfs-verify:` prefix). **Failure policy: red FAIL screen + halt** — no
-reboot loop; a fused board keeps refusing until a correctly signed image is flashed, recovery is a
-power-cycle.
+volume, then **streams** its logical contents straight into `minisign -V`: `dd` reads
+ceil(size/4096) blocks from the volume device and pipes them through `head -c <signed size>` (UBI
+autoresize pads the volume beyond the signed prefix, so the stream is trimmed to exactly the signed
+byte count) into minisign's stdin. Because the signature records pre-hashed mode, minisign BLAKE2b-512s
+the pipe in 64 KiB chunks — no temp file, O(1) RAM end-to-end (see above). A short or failed read
+yields fewer bytes → digest mismatch → fail-closed, indistinguishable from a tampered rootfs. Only
+then does `/init` mount + `pivot_root` to `/sbin/init`. Progress is shown on the LCD and logged to
+UART (`rootfs-verify:` prefix). **Failure policy: red FAIL screen + halt** — no reboot loop; a fused
+board keeps refusing until a correctly signed image is flashed, recovery is a power-cycle.
 
 **Keys.** The default keypair in [`secure-boot/dev-keys-rootfs/`](../../opt/luckfox/secure-boot/dev-keys-rootfs/)
 is **public and committed** — it grants no protection (anyone can sign) but keeps signed builds

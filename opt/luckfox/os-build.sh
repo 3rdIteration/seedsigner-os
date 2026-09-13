@@ -1752,7 +1752,7 @@ verify_initramfs_binaries() {
     print_step "Verifying vendored initramfs binaries (SHA-256 pins)"
     # Pinned at commit time; see secure-boot/initramfs-binaries/README.md.
     local -A pins=(
-        [busybox-arm]=a6c387c782093a5b8a43483b95d42b28e78ce17cf43e9da96782e59caae35f04
+        [busybox-arm]=e6aecb74a8365308e6c5553dd46be53d831d482aac29011b19e3c43269ec8ae6
         [minisign-arm]=0256e7b0d85b10ea615e90b51f21103b7ec91631adedd0ebb45a2626e9d0e3c9
         [ss-lcd]=8cdfb04832d7366c7f5f0e5cbcbccca2760c542b5976cda2c56e233c4faea57c
         [minisign-host]=81ffed5915492c9e2a7494b7cd4095d8509e331d0861504b7619fbea7158453e
@@ -1854,8 +1854,8 @@ embed_rootfs_verifier() {
                   true false reboot halt poweroff mknod grep head tail dmesg rm mkdir ln cp mv; do
         ln -s busybox "$stage/bin/$applet"
     done
-    # /init with the signed .ubifs size baked in (the volume is autoresize-padded,
-    # so a raw dd of /dev/ubi0_0 must be truncated to exactly this many bytes).
+    # /init with the signed image size baked in (the volume is autoresize-padded,
+    # so /init's streaming read of it must stop at exactly this many bytes).
     local ubifs_size_file="$imgdir/rootfs.ubifs.size"
     [ -f "$ubifs_size_file" ] || { print_error "rootfs.ubifs.size missing at $ubifs_size_file -- the mkfs_ubi.sh signing hook did not run"; exit 1; }
     local ubifs_size

@@ -4,9 +4,10 @@
 # Runs from RAM (packed into the signed boot.img FIT ramdisk slot) before
 # pivot_root. The kernel auto-attaches UBI (ubi.mtd=6 baked into the signed
 # DTB), so /dev/ubi0_0 exposes the rootfs volume's logical contents. This
-# script reads those bytes, checks them against the minisign signature that
-# was produced over the exact .ubifs file at build time, and only then mounts
-# and pivots to the real rootfs.
+# script streams those bytes through minisign's pre-hashed verifier, which
+# checks them against the signature produced over the exact .ubifs/.squashfs
+# file at build time — without ever materialising the image in RAM (peak ~128
+# KiB) — and only then mounts and pivots to the real rootfs.
 #
 # Everything here is signed (boot.img FIT) or pinned by it: a modified
 # rootfs cannot change what this script checks, because the script, the
@@ -90,30 +91,27 @@ done
 [ -b "$SRC_DEV" ] || fail "no UBI volume (attach failed?)"
 log "$SRC_DEV present after ${tries}s"
 
-# --- read the logical volume contents ----------------------------------------
-# Read ONLY the signed prefix, not the whole autoresize-padded volume: on the
-# 64 MiB Mini the rootfs partition is 93 MiB, so a full dd would OOM the
-# ramfs-backed initramfs before verification could start. The signature covers
-# exactly ROOTFS_UBIFS_SIZE leading bytes; everything after it is UBI padding
-# (untrusted and irrelevant to the check).
-lcd orange "SeedSigner" "Verifying rootfs..."
-log "reading $SRC_DEV ($ROOTFS_UBIFS_SIZE signed bytes) ..."
-blocks=$(( (ROOTFS_UBIFS_SIZE + 65535) / 65536 ))
-if ! dd if="$SRC_DEV" of=/rootfs.img bs=65536 count=$blocks 2>/dev/null; then
-    fail "read error on $SRC_DEV"
-fi
-
-# dd over-reads by up to one block when the size is not block-aligned.
-truncate -s "$ROOTFS_UBIFS_SIZE" /rootfs.img 2>/dev/null \
-    || fail "cannot truncate volume image"
-
 # --- verify the signature ----------------------------------------------------
-log "verifying minisign signature ..."
-if /bin/minisign -V -p /pubkey -x /rootfs.sig -m /rootfs.img; then
-    log "signature OK"
-else
-    fail "bad rootfs signature"
+# Stream exactly ROOTFS_UBIFS_SIZE bytes from the volume straight into
+# minisign, which BLAKE2b-512s its input in 64 KiB chunks (the -H/pre-hashed
+# mode is recorded inside /rootfs.sig itself — sig_alg "ED" — so no flag is
+# needed here). Peak RAM is ~128 KiB regardless of rootfs size, which is what
+# makes this work for the full 93 MiB NAND partition and would scale to a
+# multi-GB MicroSD image. Only the signed prefix is read: UBI autoresize pads
+# the volume beyond it (untrusted, irrelevant). A short/failed dd yields fewer
+# bytes -> hash mismatch -> fail-closed, same as a tampered rootfs.
+lcd orange "SeedSigner" "Verifying rootfs..."
+log "verifying minisign signature (streaming $ROOTFS_UBIFS_SIZE bytes) ..."
+# dd reads ceil(SIZE/4096) blocks — at most one block of autoresize padding
+# beyond the signed prefix — and head -c trims the stream to exactly SIZE
+# bytes. No byte-at-a-time tail read, no temp file, O(1) RAM end to end.
+blocks=$(( (ROOTFS_UBIFS_SIZE + 4095) / 4096 ))
+if ! dd if="$SRC_DEV" bs=4096 count=$blocks 2>/dev/null \
+     | head -c "$ROOTFS_UBIFS_SIZE" \
+     | /bin/minisign -V -p /pubkey -x /rootfs.sig -m /dev/stdin; then
+    fail "rootfs verification failed (bad signature or read error)"
 fi
+log "signature OK"
 
 # --- mount and pivot ---------------------------------------------------------
 lcd green "SeedSigner" "Rootfs verified" "Starting..."
