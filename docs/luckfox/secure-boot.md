@@ -699,6 +699,16 @@ dm-verity would use the kernel's software SHA — **not** the Rockchip crypto en
 driver is not actually built (see the note below). If hardware acceleration were ever wanted for
 this, it would first have to be made to build.
 
+> **Correction (2026-09-13): dm-verity does not work on UBI at all.** Lazy per-block verification
+> requires the *physical* block layout to be stable between writes — and UBI's whole job is to move
+> data around: wear levelling rewrites LEBs, so a block offset that verified yesterday points at
+> different bytes today. The **logical** volume contents are stable (that is what `/dev/ubi0_0` /
+> `/dev/ubiblock0_0` expose), but their physical location is not, which is exactly the property
+> dm-verity needs and UBI destroys. On eMMC (Pico Pi) a raw block root could use dm-verity; on the
+> NAND boards the only sound scheme is signing the **logical contents** and checking them in full
+> at boot — which is what §6.7 implements. The cost is one full SPI-NAND read of the volume per
+> power-on (a few seconds, measured in §13.3); the device is otherwise idle during it.
+
 > **Correction (bench-confirmed):** `opt/luckfox/os-build.sh` sets `CONFIG_CRYPTO_DEV_ROCKCHIP=y`
 > and asserts it, but the hardware crypto driver is **absent from the running kernel** — `/proc/crypto`
 > has no `rk` algorithms and `ff440000.crypto` is unbound. The umbrella symbol needs
@@ -746,11 +756,20 @@ notice, because no unsigned firmware ever runs.
 > rewrites the kernel DTB's `/chosen/bootargs` at runtime — the fused Mini booted with exactly the
 > `/chosen` string baked into the DTB. This was first seen as a *failure* (the SDK's shared
 > `ipc.dtsi` hardcodes the SD default `root=/dev/mmcblk1p7`, so the NAND board hung; `apply_signed_nand_bootargs`
-> now bakes `root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=<size>` in for signed NAND).
-> The security upshot: `root` is now pinned inside the signed image rather than taken from the
-> unsigned env. **This is a real improvement but not a full fix** — `sys_bootargs` is still merged
-> *after* the baked `/chosen`, so an attacker who writes the env partition can still append a later
-> `root=`/`rdinit=` that wins. Mitigations 1–3 below still stand for full lockdown.
+> now bakes the NAND rootfs cmdline in for signed NAND). The security upshot: `root` is now pinned
+> inside the signed image rather than taken from the unsigned env. **This is a real improvement but
+> not a full fix** — `sys_bootargs` is still merged *after* the baked `/chosen`, so an attacker who
+> writes the env partition can still append a later `root=`/`rdinit=` that wins. Mitigations 1–3
+> below still stand for full lockdown.
+>
+> **Update (2026-09-13): the baked cmdline must match the rootfs fs type.** The first version
+> unconditionally baked `root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs` — correct for dev builds
+> (writable dynamic UBIFS volume) but wrong for non-dev, where readonly-rootfs packs **squashfs**
+> into a *static* UBI volume exposed as `/dev/ubiblock0_0`. A signed non-dev image with the ubifs
+> cmdline cannot mount its own root ("Waiting for root device", no recovery short of reflash).
+> `apply_signed_nand_bootargs` now branches on the resolved readonly-rootfs setting and bakes
+> `ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ubi.mtd=6 rk_dma_heap_cma=<size>`
+> for non-dev — the same split the SDK's own `__GET_TARGET_PARTITION_FS_TYPE` makes for spi_nand.
 
 **The same code has good news:** the import is filtered by that list, so the partition **cannot**
 set `bootdelay` or Rockchip's `cli` variable. Neither is whitelisted, which means
@@ -772,6 +791,50 @@ Mitigations for a secure-boot build, in order of preference:
    command line can't redirect what gets verified.
 
 Only (1) closes the whole class. (2) and (3) are worth keeping as defence in depth.
+
+### 6.7 Implementation: initramfs verifier with minisign (NAND, `SEEDSIGNER_FIT_SIGNATURE=1`)
+
+The design above is implemented for the **Pico Mini NAND** builds behind
+`SEEDSIGNER_FIT_SIGNATURE=1` (the same opt-in that signs `boot.img`). Everything below is in
+`opt/luckfox/`; nothing changes for unsigned or SD/eMMC builds.
+
+**What is signed, and when.** The rootfs volume's *logical* contents — the exact `.ubifs` file
+(dev variant) or `.squashfs` file (non-dev readonly-rootfs) that `mkfs_ubi.sh` packs into UBI —
+are minisign-signed at build time. [`secure-boot/patch-mkfs-ubi-signing.sh`](../../opt/luckfox/secure-boot/patch-mkfs-ubi-signing.sh)
+hooks the SDK's `mkfs_ubi.sh` after its common ubinize line (so it covers every fs type), signs
+only the default-geometry image, and records the signed size in `rootfs.ubifs.size`. Signing runs
+inside the fakeroot script with a vendored x86-64 minisign (`initramfs-binaries/minisign-host`);
+signatures are deterministic (explicit trusted comment, no timestamp), so reproducible builds stay
+byte-identical.
+
+**What verifies, and where.** After `build.sh firmware`, `os-build.sh`'s `embed_rootfs_verifier()`
+assembles a small initramfs — busybox + minisign + an ST7789 status display (`ss-lcd`) + the public
+key + the signature + `/init` — as a deterministic cpio.gz (sorted entries, pinned mtime,
+`cpio --reproducible`, `gzip -n`; all four binaries SHA-256-pinned in-repo) and repacks it into
+`boot.img`'s FIT **ramdisk slot** (`fit-unpack.sh` → add node + conf entry + `"ramdisk"` in
+sign-images → `mkimage -E`). The existing `sign_boot_image()` then re-signs the whole FIT, so the
+verifier is covered by the same RSA signature that protects the kernel — exactly §6.1's "no new
+cryptographic machinery".
+
+**Boot flow.** UBI auto-attaches (`ubi.mtd=6` baked into the signed DTB); `/init` reads `root=`
+from the command line to learn the presentation (squashfs-on-ubiblock vs raw UBIFS), waits for the
+volume, `dd`s its logical contents, truncates to the signed size (UBI autoresize pads the volume),
+runs `minisign -V`, and only then mounts + `pivot_root` to `/sbin/init`. Progress is shown on the
+LCD and logged to UART (`rootfs-verify:` prefix). **Failure policy: red FAIL screen + halt** — no
+reboot loop; a fused board keeps refusing until a correctly signed image is flashed, recovery is a
+power-cycle.
+
+**Keys.** The default keypair in [`secure-boot/dev-keys-rootfs/`](../../opt/luckfox/secure-boot/dev-keys-rootfs/)
+is **public and committed** — it grants no protection (anyone can sign) but keeps signed builds
+reproducible and the failure mode recoverable, mirroring the FIT dev-key pattern. A real key is a
+two-variable change: `SEEDSIGNER_ROOTFS_KEY_DIR` + `SEEDSIGNER_ROOTFS_KEY_PASSPHRASE` (forwarded by
+`build.sh`). The public key ships *inside the signed initramfs*, so §6.3's "pin an authority, not a
+value" holds: rootfs updates only need re-signing with the same key, no OTP or loader work.
+
+**Known limits.** Verification is a full-volume read per power-on (§6.5 correction — dm-verity is
+impossible on UBI). The §6.6 env-partition gap still stands: this closes *rootfs* integrity, not
+command-line control; mitigation (1) (`CONFIG_CMDLINE_FORCE`) remains the outstanding piece for full
+lockdown.
 
 ---
 

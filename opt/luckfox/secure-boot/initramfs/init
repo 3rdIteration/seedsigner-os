@@ -1,0 +1,128 @@
+#!/bin/sh
+# SeedSigner rootfs verification initramfs — Luckfox Pico Mini (NAND).
+#
+# Runs from RAM (packed into the signed boot.img FIT ramdisk slot) before
+# pivot_root. The kernel auto-attaches UBI (ubi.mtd=6 baked into the signed
+# DTB), so /dev/ubi0_0 exposes the rootfs volume's logical contents. This
+# script reads those bytes, checks them against the minisign signature that
+# was produced over the exact .ubifs file at build time, and only then mounts
+# and pivots to the real rootfs.
+#
+# Everything here is signed (boot.img FIT) or pinned by it: a modified
+# rootfs cannot change what this script checks, because the script, the
+# public key and the signature all live in RAM, not on the untrusted volume.
+#
+# Failure policy: show FAIL on the LCD, log to the console, halt (no reboot
+# loop). The device is recovered by power-cycling; a board fused with secure
+# boot will keep refusing to start until a correctly signed image is flashed.
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export HOME=/
+
+ROOTFS_UBIFS_SIZE=__ROOTFS_UBIFS_SIZE__
+
+log() { echo "rootfs-verify: $*"; }
+
+# Best effort, never fatal: a status screen must not become a second failure
+# mode (same contract as files/show-screen-message.py).
+lcd() { /bin/ss-lcd "$@" 2>/dev/null || true; }
+
+fail() {
+    log "FAIL: $1"
+    dmesg | tail -n 30
+    lcd red "ROOTFS VERIFY" "FAILED" "$1"
+    # Halt, do not reboot: a reboot would just loop back here. The kernel
+    # stays up (CPUs stop after userspace exits), so the board is recoverable
+    # by power-cycle and nothing keeps writing to the NAND.
+    halt 2>/dev/null || { log "halt failed, spinning"; while :; do sleep 3600; done; }
+}
+
+# --- basic filesystems -------------------------------------------------------
+mount -t proc proc /proc 2>/dev/null || log "WARN: mounting /proc failed"
+mount -t sysfs sysfs /sys 2>/dev/null || log "WARN: mounting /sys failed"
+
+# --- determine how the real root is presented ---------------------------------
+# non-dev (read-only): squashfs on a static UBI volume exposed as a block device
+#     bootargs: ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs
+# dev (writable): raw dynamic UBIFS volume
+#     bootargs: root=ubi0:rootfs rootfstype=ubifs
+ROOT_DEV=""
+for w in $(cat /proc/cmdline); do
+    case "$w" in
+        root=*) ROOT_DEV="${w#root=}" ;;
+    esac
+done
+[ -n "$ROOT_DEV" ] || fail "no root= on kernel command line"
+log "cmdline: root=$ROOT_DEV"
+
+case "$ROOT_DEV" in
+    /dev/ubiblock*)
+        SRC_DEV="$ROOT_DEV"
+        MNT_CMD="mount -t squashfs -o ro $ROOT_DEV /mnt"
+        ;;
+    ubi0:*)
+        # UBI auto-attach (ubi.mtd=6) exposes the volume's logical contents.
+        SRC_DEV="/dev/ubi0_0"
+        MNT_CMD="mount -t ubifs $ROOT_DEV /mnt"
+        ;;
+    *)
+        fail "unsupported root= ($ROOT_DEV) — expected /dev/ubiblock* or ubi0:*"
+        ;;
+esac
+
+if [ ! -d /dev/ubi_ctrl ] && [ ! -b "$SRC_DEV" ]; then
+    mount -t devtmpfs devtmpfs /dev 2>/dev/null \
+        || { mknod -m 660 /dev/ubi_ctrl c 10 69 2>/dev/null; log "WARN: manual /dev setup"; }
+fi
+
+# --- wait for UBI to attach --------------------------------------------------
+log "waiting for $SRC_DEV (UBI auto-attach) ..."
+tries=0
+while [ ! -b "$SRC_DEV" ] && [ $tries -lt 50 ]; do
+    sleep 1
+    tries=$((tries + 1))
+done
+[ -b "$SRC_DEV" ] || fail "no UBI volume (attach failed?)"
+log "$SRC_DEV present after ${tries}s"
+
+# --- read the logical volume contents ----------------------------------------
+lcd orange "SeedSigner" "Verifying rootfs..."
+log "reading $SRC_DEV ..."
+if ! dd if="$SRC_DEV" of=/rootfs.img bs=65536 2>/dev/null; then
+    fail "read error on $SRC_DEV"
+fi
+
+# The volume was created with vol_flags=autoresize, so UBI pads it to the full
+# partition size (padding nodes for dynamic volumes, zero fill for static);
+# the signed artifact is exactly ROOTFS_UBIFS_SIZE bytes.
+truncate -s "$ROOTFS_UBIFS_SIZE" /rootfs.img 2>/dev/null \
+    || fail "cannot truncate volume image"
+
+# --- verify the signature ----------------------------------------------------
+log "verifying minisign signature ..."
+if /bin/minisign -V -p /pubkey -x /rootfs.sig -m /rootfs.img; then
+    log "signature OK"
+else
+    fail "bad rootfs signature"
+fi
+
+# --- mount and pivot ---------------------------------------------------------
+lcd green "SeedSigner" "Rootfs verified" "Starting..."
+log "mounting rootfs ($MNT_CMD) ..."
+if ! $MNT_CMD; then
+    fail "cannot mount rootfs"
+fi
+
+cd /mnt || fail "cannot cd /mnt"
+# pivot_root requires the put_old dir to exist; create it if the rootfs does
+# not ship one (it must be empty — a non-empty oldroot would break umount).
+mkdir -p oldroot 2>/dev/null
+pivot_root . oldroot 2>/dev/null || fail "pivot_root failed"
+umount -l /oldroot 2>/dev/null
+
+log "verified boot complete, handing over to /sbin/init"
+# Same fallback chain the kernel would use on a normal (no-initramfs) boot.
+if [ -x /sbin/init ]; then
+    exec /sbin/init
+fi
+exec /bin/sh

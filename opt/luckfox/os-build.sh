@@ -43,6 +43,16 @@ export SEEDSIGNER_BOOT_LOG="${SEEDSIGNER_BOOT_LOG:-off}"
 # honoured it -- the exact kind of CI/local divergence that makes an image
 # impossible to reproduce locally. Applied as HARDEN_DISABLE_ADB below.
 export SEEDSIGNER_HARDEN_ADB="${SEEDSIGNER_HARDEN_ADB:-on}"
+# Rootfs verification (only with SEEDSIGNER_FIT_SIGNATURE=1): dir holding a
+# minisign dev.key/dev.pubkey pair used to sign the rootfs volume's logical
+# UBIFS contents at build time. Default: the committed PUBLIC dev keypair in
+# secure-boot/dev-keys-rootfs/ (see its README — grants no protection, keeps
+# signed builds reproducible and the failure mode recoverable).
+export SEEDSIGNER_ROOTFS_KEY_DIR="${SEEDSIGNER_ROOTFS_KEY_DIR:-}"
+# Passphrase for that secret key. The committed dev key uses the documented
+# public passphrase "seedsigner-dev"; a real key via SEEDSIGNER_ROOTFS_KEY_DIR
+# must set this explicitly (no default — an empty prompt would hang the build).
+export SEEDSIGNER_ROOTFS_KEY_PASSPHRASE="${SEEDSIGNER_ROOTFS_KEY_PASSPHRASE:-}"
 # SeedSigner OS Buildroot packages now live in this same repo. build.sh mounts
 # opt/external-packages into the container at /build/external-packages, so there
 # is no seedsigner-os clone.
@@ -442,6 +452,13 @@ apply_sdk_patches() {
     # `build.sh rootfs`, because the pctools step copies these scripts from
     # sysdrv/tools/pc into sysdrv/out/pc and it is the copies that get used.
     bash "$SEEDSIGNER_LUCKFOX_DIR/patch-fs-determinism.sh" "$LUCKFOX_SDK_DIR"
+
+    # Rootfs minisign hook for signed builds: signs the rootfs volume's logical
+    # UBIFS contents during `build.sh firmware` (same pctools-copy constraint as
+    # above). No-op unless SEEDSIGNER_FIT_SIGNATURE=1.
+    if [[ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/secure-boot/patch-mkfs-ubi-signing.sh" "$LUCKFOX_SDK_DIR"
+    fi
 
     # /bin/sdkinfo carries a live build timestamp. project/build.sh's
     # __PACKAGE_ROOTFS() (invoked during `./build.sh firmware`) does:
@@ -1609,16 +1626,33 @@ apply_signed_nand_bootargs() {
     esac
     [ -f "$dtsi" ] || { print_error "signed-NAND bootargs: DTS not found: $dtsi"; exit 1; }
     print_step "Baking NAND rootfs cmdline into signed boot.img DTB (${profile})"
-    if grep -q 'root=ubi0:rootfs' "$dtsi"; then
-        print_success "NAND root already baked in $(basename "$dtsi")"
+
+    # The baked cmdline must match what mkfs_ubi.sh actually built. The SDK's
+    # unsigned path derives both from RK_PARTITION_FS_TYPE_CFG, but on a signed
+    # FIT u-boot cannot rewrite the DTB at runtime, so a mismatch is not a
+    # fallback — it is "Waiting for root device" with no recovery short of a
+    # reflash. readonly-rootfs (resolved by apply_readonly_rootfs, which runs
+    # earlier in build_profile_artifacts) decides: non-dev packs squashfs into a
+    # STATIC UBI volume exposed as /dev/ubiblock0_0; dev keeps a writable
+    # dynamic UBIFS volume at ubi0:rootfs. Same split the SDK's own
+    # __GET_TARGET_PARTITION_FS_TYPE makes for spi_nand.
+    local baked_root marker
+    if [ "${SS_RO_ROOTFS:-0}" = "1" ]; then
+        baked_root="ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ubi.mtd=6 rk_dma_heap_cma=${MINI_CMA_SIZE}"
+    else
+        baked_root="root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=${MINI_CMA_SIZE}"
+    fi
+    marker="${baked_root%% *}"
+    if grep -qF "$marker" "$dtsi"; then
+        print_success "NAND root already baked in $(basename "$dtsi") ($marker)"
         return 0
     fi
     grep -q 'root=/dev/mmcblk1p7' "$dtsi" \
-        || { print_error "signed-NAND bootargs: expected 'root=/dev/mmcblk1p7' in $(basename "$dtsi") — SDK layout changed"; exit 1; }
+        || { print_error "signed-NAND bootargs: expected 'root=/dev/mmcblk1p7' in $(basename "$dtsi") — SDK layout changed (or a different root= was already baked)"; exit 1; }
     # rootfs is mtd6 in our 7-partition NAND layout (env,idblock,uboot,boot,oem,userdata,rootfs).
-    sed -i "s|root=/dev/mmcblk1p7|root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=${MINI_CMA_SIZE}|" "$dtsi"
-    grep -q 'root=ubi0:rootfs' "$dtsi" || { print_error "signed-NAND bootargs: rewrite failed in $dtsi"; exit 1; }
-    print_success "baked: root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=${MINI_CMA_SIZE}"
+    sed -i "s|root=/dev/mmcblk1p7|$baked_root|" "$dtsi"
+    grep -qF "$marker" "$dtsi" || { print_error "signed-NAND bootargs: rewrite failed in $(basename "$dtsi")"; exit 1; }
+    print_success "baked: $baked_root"
 }
 
 # Enable the SPI display (spidev0.0) STATICALLY in the kernel DTB, instead of via
@@ -1696,6 +1730,243 @@ sign_boot_image() {
     # fit_gen_boot_img wrote the signed FIT to <u-boot>/boot.img; copy it back.
     [ -f "$ubootdir/boot.img" ] && cp -f "$ubootdir/boot.img" "$img"
     print_success "boot.img signed (whole chain now signed with the FIT key)"
+}
+
+# --- Rootfs verification (SEEDSIGNER_FIT_SIGNATURE=1) -------------------------
+#
+# The rootfs volume's logical UBIFS contents are signed at build time by the
+# minisign hook in mkfs_ubi.sh (secure-boot/patch-mkfs-ubi-signing.sh). These
+# functions:
+#   * verify the vendored initramfs binaries against their pinned hashes,
+#   * resolve the signing key and export it for the fakeroot script,
+#   * make sure the kernel can run a script /init from a gzipped initramfs,
+#   * after `build.sh firmware`, pack the verifier (busybox + minisign + ss-lcd
+#     + pubkey + signature) into an initramfs and embed it in boot.img's FIT
+#     ramdisk slot. The subsequent sign_boot_image() re-signs the whole FIT,
+#     including the new ramdisk image: fit-unpack.sh iterates /images generically
+#     and "ramdisk" is added to sign-images by the repack below.
+
+verify_initramfs_binaries() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local dir="$SEEDSIGNER_LUCKFOX_DIR/secure-boot/initramfs-binaries" f actual
+    print_step "Verifying vendored initramfs binaries (SHA-256 pins)"
+    # Pinned at commit time; see secure-boot/initramfs-binaries/README.md.
+    local -A pins=(
+        [busybox-arm]=768f26caf70c79db56aa239ee944e822bfc7f171865a7b7b96b65de2c1eca22e
+        [minisign-arm]=0256e7b0d85b10ea615e90b51f21103b7ec91631adedd0ebb45a2626e9d0e3c9
+        [ss-lcd]=8cdfb04832d7366c7f5f0e5cbcbccca2760c542b5976cda2c56e233c4faea57c
+        [minisign-host]=81ffed5915492c9e2a7494b7cd4095d8509e331d0861504b7619fbea7158453e
+    )
+    for f in "${!pins[@]}"; do
+        [ -f "$dir/$f" ] || { print_error "vendored binary missing: $dir/$f (stale checkout?)"; exit 1; }
+        actual="$(sha256sum "$dir/$f" | cut -d' ' -f1)"
+        if [ "$actual" != "${pins[$f]}" ]; then
+            print_error "SHA-256 mismatch for $dir/$f: got $actual, want ${pins[$f]}"; exit 1
+        fi
+    done
+    print_success "initramfs binaries match their pins"
+}
+
+provision_rootfs_signing_key() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local keydir="${SEEDSIGNER_ROOTFS_KEY_DIR:-$SEEDSIGNER_LUCKFOX_DIR/secure-boot/dev-keys-rootfs}" k
+    for k in dev.key dev.pubkey; do
+        [ -f "$keydir/$k" ] || { print_error "rootfs signing key missing: $keydir/$k (set SEEDSIGNER_ROOTFS_KEY_DIR to a dir with minisign dev.key/dev.pubkey)"; exit 1; }
+    done
+    if [[ -z "${SEEDSIGNER_ROOTFS_KEY_PASSPHRASE:-}" ]]; then
+        if [ "$keydir" = "$SEEDSIGNER_LUCKFOX_DIR/secure-boot/dev-keys-rootfs" ]; then
+            # The committed dev key's passphrase is public and documented in its
+            # README; defaulting it keeps the plain SEEDSIGNER_FIT_SIGNATURE=1
+            # build unattended. A real key must set it explicitly.
+            export SEEDSIGNER_ROOTFS_KEY_PASSPHRASE="seedsigner-dev"
+        else
+            print_error "SEEDSIGNER_ROOTFS_KEY_DIR is set but SEEDSIGNER_ROOTFS_KEY_PASSPHRASE is empty (the signing step would hang on a prompt)"; exit 1
+        fi
+    fi
+    export SEEDSIGNER_ROOTFS_SIGNING_KEY="$keydir/dev.key"
+    print_success "rootfs signing key: $SEEDSIGNER_ROOTFS_SIGNING_KEY"
+}
+
+apply_initramfs_kernel_config() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local board_profile="$1" boot_medium="$2"
+    # The initramfs /init is a shell script (needs BINFMT_SCRIPT) and the cpio
+    # is gzip-compressed (needs RD_GZIP). Neither symbol is in the SDK defconfig,
+    # so both rely on Kconfig defaults — pin them explicitly instead of trusting
+    # that (verify against what gets built, not what a default should be).
+    local kernel_defconfig
+    kernel_defconfig="$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$LUCKFOX_SDK_DIR/.BoardConfig.mk" 2>/dev/null | head -n1)"
+    [[ -n "$kernel_defconfig" ]] || kernel_defconfig="luckfox_rv1106_linux_defconfig"
+    local kernel_cfg_file="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/arch/arm/configs/$kernel_defconfig"
+    if [[ ! -f "$kernel_cfg_file" ]]; then
+        print_error "Kernel defconfig not found for initramfs config: $kernel_cfg_file"
+        exit 1
+    fi
+    local sym
+    for sym in CONFIG_BINFMT_SCRIPT CONFIG_RD_GZIP; do
+        sed -i -E "/^${sym}(=|_)/d;/^# ${sym} is not set\$/d" "$kernel_cfg_file"
+        echo "${sym}=y" >> "$kernel_cfg_file"
+    done
+    print_success "pinned CONFIG_BINFMT_SCRIPT=y + CONFIG_RD_GZIP=y in $kernel_defconfig (script /init from gzipped initramfs)"
+}
+
+# Pack the rootfs verifier into an initramfs and embed it in boot.img's FIT
+# ramdisk slot. Runs after `build.sh firmware` (rootfs.ubifs.minisig exists by
+# then) and before sign_boot_image (which re-signs the whole FIT, ramdisk
+# included). The repack mirrors what scripts/mkimg + fit-core.sh do: unpack the
+# built boot.img with the SDK's own fit-unpack.sh, add a ramdisk image node +
+# config entry (+ "ramdisk" in sign-images), and mkimage -E it back.
+embed_rootfs_verifier() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local board_profile="$1" boot_medium="$2"
+    if [[ "$boot_medium" != "nand" ]]; then
+        print_info "rootfs verification is NAND-only (UBIFS); skipping for $boot_medium"
+        return 0
+    fi
+    print_step "Embedding rootfs verifier in boot.img initramfs (SEEDSIGNER_FIT_SIGNATURE=1)"
+
+    local imgdir="$LUCKFOX_SDK_DIR/output/image"
+    local sig="$imgdir/rootfs.ubifs.minisig"
+    [ -f "$sig" ] || { print_error "rootfs signature missing at $sig -- the mkfs_ubi.sh signing hook did not run (patch-mkfs-ubi-signing.sh applied? SEEDSIGNER_ROOTFS_SIGNING_KEY exported?)"; exit 1; }
+
+    local ubootdir="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot"
+    local img="$imgdir/boot.img"
+    [ -f "$img" ] || { print_error "boot.img not found at $img (run 'build.sh firmware' first)"; exit 1; }
+
+    # --- assemble the initramfs staging tree ---------------------------------
+    local bin="$SEEDSIGNER_LUCKFOX_DIR/secure-boot/initramfs-binaries"
+    local src="$SEEDSIGNER_LUCKFOX_DIR/secure-boot/initramfs"
+    local keydir="${SEEDSIGNER_ROOTFS_KEY_DIR:-$SEEDSIGNER_LUCKFOX_DIR/secure-boot/dev-keys-rootfs}"
+    local stage
+    stage="$(mktemp -d)"
+    mkdir -p "$stage/bin"
+    cp "$bin/busybox-arm"  "$stage/bin/busybox"
+    cp "$bin/minisign-arm" "$stage/bin/minisign"
+    cp "$bin/ss-lcd"       "$stage/bin/ss-lcd"
+    chmod 755 "$stage/bin/"*
+    # /init calls these by name; busybox resolves them through symlinks.
+    local applet
+    for applet in sh mount umount pivot_root dd truncate sha256sum ls cat echo sleep \
+                  true false reboot halt poweroff mknod grep head tail dmesg rm mkdir ln cp mv; do
+        ln -s busybox "$stage/bin/$applet"
+    done
+    # /init with the signed .ubifs size baked in (the volume is autoresize-padded,
+    # so a raw dd of /dev/ubi0_0 must be truncated to exactly this many bytes).
+    local ubifs_size_file="$imgdir/rootfs.ubifs.size"
+    [ -f "$ubifs_size_file" ] || { print_error "rootfs.ubifs.size missing at $ubifs_size_file -- the mkfs_ubi.sh signing hook did not run"; exit 1; }
+    local ubifs_size
+    ubifs_size="$(cat "$ubifs_size_file")"
+    [[ "$ubifs_size" =~ ^[0-9]+$ ]] && [ "$ubifs_size" -gt 0 ] \
+        || { print_error "rootfs.ubifs.size is not a positive integer: '$ubifs_size'"; exit 1; }
+    sed "s/__ROOTFS_UBIFS_SIZE__/$ubifs_size/" "$src/init" > "$stage/init"
+    chmod 755 "$stage/init"
+    cp "$keydir/dev.pubkey" "$stage/pubkey"
+    cp "$sig"               "$stage/rootfs.sig"
+
+    # --- deterministic cpio.gz ------------------------------------------------
+    # newc headers carry inode + device numbers, which vary with the host's
+    # filesystem allocation order; --reproducible (GNU cpio >= 2.13) zeroes
+    # them along with uid/gid. mtime is pinned to SOURCE_DATE_EPOCH explicitly
+    # (touch), gzip -n drops its timestamp header, and LC_ALL=C sort fixes the
+    # entry order — so two builds of the same commit produce identical bytes.
+    # The archive is written OUTSIDE $stage: it must not appear in the tree
+    # while find is still enumerating it (a pipeline runs all three at once).
+    local work
+    work="$(mktemp -d)"
+    local epoch="${SOURCE_DATE_EPOCH:-0}"
+    (
+        cd "$stage"
+        find . -exec touch -d "@$epoch" {} + 2>/dev/null || true
+        LC_ALL=C find . | LC_ALL=C sort | \
+            cpio -o -H newc --owner=0:0 --reproducible --quiet 2>/dev/null | gzip -9 -n > "$work/ramdisk"
+    )
+    local cpio_size
+    cpio_size="$(stat -c %s "$work/ramdisk")"
+    print_info "initramfs cpio.gz: ${cpio_size} bytes"
+
+    # --- repack boot.img with the ramdisk slot --------------------------------
+    ( cd "$ubootdir" && ./scripts/fit-unpack.sh -f "$img" -o "$work/unpack" ) \
+        || { print_error "fit-unpack of boot.img failed"; exit 1; }
+    cp "$work/ramdisk" "$work/unpack/ramdisk"
+
+    # fit-unpack.sh's gen_its() emits dtc output (tab-indented), so every edit
+    # below is whitespace-tolerant. The conf-level signature node carries
+    # sign-images = "fdt", "kernel", "multi"; — the list mkimage -r signs from,
+    # which is how the new ramdisk gets covered by sign_boot_image's re-sign.
+    local its="$work/unpack/image.its"
+    python3 - "$its" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+s = open(path).read()
+
+if re.search(r'\n\s*ramdisk \{', s):
+    sys.exit("boot.img already contains a ramdisk node (double embed?)")
+
+# image node: before the resource node (order inside /images is irrelevant to
+# u-boot; keeping it last mirrors how fit-core.sh's own ITS templates grow).
+node = """
+\t\tramdisk {
+\t\t\tdata = /incbin/("ramdisk");
+\t\t\ttype = "ramdisk";
+\t\t\tarch = "arm";
+\t\t\tos = "linux";
+\t\t\tcompression = "gzip";
+\t\t\tload = <0xffffff02>;
+
+\t\t\thash {
+\t\t\t\talgo = "sha256";
+\t\t\t};
+\t\t};
+"""
+m = re.search(r"(\n[ \t]*resource \{)", s)
+if not m:
+    sys.exit("resource node not found in image.its (unexpected FIT layout)")
+s = s[:m.start()] + node + s[m.start():]
+
+# conf entry, next to kernel/fdt/multi.
+m = re.search(r"(kernel = \"kernel\";)", s)
+if not m:
+    sys.exit("conf kernel entry not found in image.its")
+s = s.replace(m.group(1), m.group(1) + "\n\t\t\tramdisk = \"ramdisk\";", 1)
+
+# sign-images: append "ramdisk" to whatever list is there (do not hardcode the
+# rest — a future ITS change must keep working).
+m = re.search(r'(sign-images\s*=\s*)("[^"]*(?:\s*,\s*"[^"]*")*)\s*;', s)
+if not m:
+    sys.exit("sign-images property not found in image.its (unexpected FIT layout)")
+imgs = m.group(2).strip()
+if '"ramdisk"' in imgs:
+    sys.exit("ramdisk already listed in sign-images (double embed?)")
+s = s[:m.start()] + 'sign-images = ' + imgs + ', "ramdisk";' + s[m.end():]
+
+open(path, "w").write(s)
+PYEOF
+    [ $? -eq 0 ] || { print_error "failed to add ramdisk node to image.its"; exit 1; }
+
+    # Same mkimage invocation fit-core.sh uses for boot FITs (./tools/mkimage in
+    # the u-boot tree, built by the uboot stage): external data at a fixed
+    # offset, no signing here — sign_boot_image does that next. dtc is already
+    # required on PATH by fit-unpack.sh above, so nothing extra to check.
+    local offs="0x1000"
+    if grep -q '^CONFIG_FIT_ENABLE_RSA4096_SUPPORT=y' "$ubootdir/.config" 2>/dev/null; then
+        offs="0x1200"
+    fi
+    local mkimage="$ubootdir/tools/mkimage"
+    [ -x "$mkimage" ] || { print_error "u-boot tools/mkimage not built at $mkimage (run the uboot stage first)"; exit 1; }
+    ( cd "$work/unpack" && "$mkimage" -f image.its -E -p $offs boot.img.new ) \
+        || { print_error "mkimage repack of boot.img failed"; exit 1; }
+
+    # --- assertions before the signed image ships ------------------------------
+    local newimg="$work/unpack/boot.img.new"
+    ( cd "$ubootdir" && ./scripts/fit-unpack.sh -f "$newimg" -o "$work/check" ) >/dev/null \
+        || { print_error "repacked boot.img does not unpack cleanly"; exit 1; }
+    [ -s "$work/check/ramdisk" ] || { print_error "ramdisk missing from repacked boot.img"; exit 1; }
+    cmp -s "$work/check/ramdisk" "$work/ramdisk" \
+        || { print_error "ramdisk in repacked boot.img differs from the built cpio.gz"; exit 1; }
+
+    cp -f "$newimg" "$img"
+    rm -rf "$stage" "$work"
+    print_success "boot.img now carries the rootfs-verifier initramfs (will be signed by sign_boot_image)"
 }
 
 export_fit_sign_tree() {
@@ -1796,6 +2067,14 @@ build_profile_artifacts() {
     apply_rng_dts_patch "$board_profile"
     apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
     apply_signed_nand_bootargs "$board_profile" "$boot_medium"   # signed NAND: bake root=ubi0 into the DTB (no-op otherwise)
+
+    # Rootfs verification setup, all no-ops unless SEEDSIGNER_FIT_SIGNATURE=1.
+    # provision_rootfs_signing_key must run before `build.sh firmware`: the
+    # mkfs_ubi.sh fakeroot script inherits SEEDSIGNER_ROOTFS_SIGNING_KEY from
+    # this environment to sign the rootfs volume's logical UBIFS contents.
+    verify_initramfs_binaries
+    provision_rootfs_signing_key
+    apply_initramfs_kernel_config "$board_profile" "$boot_medium"
 
     # USB role (the adb switch) — shared with CI via configure-usb-mode.sh.
     print_step "Configuring USB mode (SEEDSIGNER_USB_MODE=$SEEDSIGNER_USB_MODE, variant=$SEEDSIGNER_BUILD_VARIANT)"
@@ -2325,6 +2604,7 @@ s/^endef\nendif/endef\nendif\nendif/
 
     print_step "Packaging Firmware"
     sdk_build firmware
+    embed_rootfs_verifier "$board_profile" "$boot_medium"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE sign_boot_image so the FIT signature covers the new ramdisk.
     sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE normalise so update.img embeds the signed boot.img.
     normalise_boot_images
     export_fit_sign_tree "$board_profile"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
