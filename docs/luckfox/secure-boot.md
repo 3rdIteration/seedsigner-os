@@ -61,7 +61,7 @@ its own help output rather than from the guides.
 fused RV1103 Mini the SPL wrote the key hash (`RSA: Write RSA key hash successfully`), a wrong-key
 (unsigned) image was then rejected, the correctly signed image booted, and Maskrom recovery still
 worked. What was extrapolated is now observed. See [§13](#13-bench-test-results-rv1103-pico-mini).
-The remaining unknowns are a **real** (non-public) key and RSA-4096 in silicon.
+RSA-4096 is now answered — this boot chain is **RSA-2048 only** ([§13.2](#132-rsa-4096-probe-2026-09-12-unfused-board)); the remaining unknown is a **real** (non-public) signing key.
 
 ---
 
@@ -1046,8 +1046,7 @@ Checked against a built image:
    ([§5.2](#52-can-the-private-key-stay-on-a-smartcard--hsm)).
 8b. What are the correct `hsm_engine_id` / `hsm_private_key_id` values for a PKCS#11 token? Native
    HSM support exists in `setting.ini` and is the preferred route over extract/inject.
-9. Is RSA-4096 accepted by the RV1106 BootROM for the loader, or is it 2048-only? `kk --bits 4096`
-   generates a key, but that says nothing about what the ROM will verify ([§5.1](#51-generating-the-key)).
+9. ~~Is RSA-4096 accepted by the RV1106 BootROM for the loader, or is it 2048-only?~~ **Answered (2026-09-12): 2048-only — and it fails in software before the ROM question arises.** A `SEEDSIGNER_FIT_BITS=4096` build on an *unfused* board died at SPL (`sha256,rsa4096:dev`, no OK → reset loop → `spl_early_init() failed: -22`): the SPL HW-crypto verify hardcodes `key_len != RSA2048_BYTES → -EINVAL` ([§13.2](#132-rsa-4096-probe-2026-09-12-unfused-board)). The knob was reverted; **do not fuse a 4096 hash**.
 10. What do `mcr` (secondary cert) and `ss --cert` enable? If they support a root/delegate key
     hierarchy, that would allow the root key to stay permanently offline.
 11. ~~Does `ss --version` drive the rollback index?~~ **Answered:** no — `fit-sign.sh` takes a
@@ -1086,14 +1085,12 @@ Checked against a built image:
     pubkey N **little-endian** (offset 0x3bc), so the signature is almost certainly little-endian too,
     plus an unconfirmed PSS salt length. Cracking it enables signing on an **air-gapped SeedSigner**
     with a BIP85 key — see the bench doc's airgapped-signing section.
-17. Does the RV1106 BootROM accept RSA-4096 for the loader, or is it 2048-only in silicon? The tool
-    signs and verifies both; only a fused board settles it.
+17. ~~Does the RV1106 BootROM accept RSA-4096 for the loader, or is it 2048-only in silicon?~~ **Answered (2026-09-12): moot — the chain is 2048-only in software.** The SPL verify path rejects any non-2048 key with `-EINVAL` before the BootROM link is ever reached, so a fused-board test would only measure mask-ROM support for an image that cannot boot anyway ([§13.2](#132-rsa-4096-probe-2026-09-12-unfused-board)).
 
-Questions 1–3, 5, 7, 8, 11, 12 and (partly) 13 are now answered — see the strikethroughs above and
+Questions 1–3, 5, 7, 8, 9, 11, 12, 17 and (partly) 13 are now answered — see the strikethroughs above and
 [§13](#13-bench-test-results-rv1103-pico-mini). The open ones that gate a **production** deployment
-are: a real (non-public) signing key and its custody (6, 8b, 10, 16), RSA-4096 in silicon (9/17),
-rollback without OP-TEE (14), and — the big one — a **signed rootfs** ([§6](#6-extending-the-chain-to-the-rootfs)),
-which is designed but unimplemented.
+are: a real (non-public) signing key and its custody (6, 8b, 10, 16), rollback without OP-TEE (14),
+and — the big one — a **signed rootfs** ([§6](#6-extending-the-chain-to-the-rootfs)), which is designed but unimplemented.
 
 ---
 
@@ -1201,6 +1198,43 @@ UART:
 
 **Confirmed answered by this run:** open questions 2, 3, 5, 7 and (partly) 13. RV1106 secure boot
 works end-to-end, hardware-validated (screen + camera). **Still not done:** a real (non-public)
-signing key, RSA-4096 in silicon, and a signed rootfs
-([§6](#6-extending-the-chain-to-the-rootfs) — the chain still stops at `boot.img`).
+signing key and a signed rootfs ([§6](#6-extending-the-chain-to-the-rootfs) — the chain still stops
+at `boot.img`).
+
+### 13.2 RSA-4096 probe (2026-09-12, unfused board)
+
+To answer [§10 Q9/Q17](#10-open-questions-for-a-future-attempt), a `SEEDSIGNER_FIT_BITS=4096` build
+(a secondary committed public 4096 dev key; the knob was added for this probe and **reverted after
+the result**) was flashed to an *unfused* Mini — the reversible test, since an unfused BootROM never
+checks the loader:
+
+| # | Test | Result | Bearing |
+|---|---|---|---|
+| D1 | 4096-signed build, unfused board, first boot | SPL prints `sha256,rsa4096:dev` — **no `OK`** (the 2048 path prints `sha256,rsa2048:dev OK`) — then a reset loop ending in `spl_early_init() failed: -22` | The SPL *software* verify of an rsa4096 image fails on this SoC **before any fuse**. A 4096 fuse is a NO-GO: if the more capable SPL cannot verify it, the mask ROM almost certainly cannot either — and fusing would be the only (irreversible) way to find out |
+
+**Root cause, from the pinned SDK source** (`3rdIteration/luckfox-pico` @ `0b5c1f30`, U-Boot
+2017.09-based): RSA-2048 is the *only* key size this boot chain supports — in software, before we
+ever reach the untestable BootROM link:
+
+1. `common/image-sig.c`'s `crypto_algos[]` has exactly two RSA entries (`rsa2048`, `rsa4096`) and
+   `include/u-boot/rsa.h` defines only `RSA2048_BYTES` / `RSA4096_BYTES` — there is **no 3072**
+   anywhere, so `mkimage` would reject `sha256,rsa3072` at sign time.
+2. `lib/rsa/rsa-verify.c`'s `rsa_mod_exp_hw()` is a hardcoded 2048-or-4096 `#ifdef`, not a size
+   parameter: any other modulus length returns `-EINVAL`.
+3. **Decisive:** the SPL secure-boot path (`CONFIG_SPL_BUILD && CONFIG_SPL_FIT_HW_CRYPTO`) contains,
+   *outside* the 4096 ifdef:
+
+   ```c
+   if (info->crypto->key_len != RSA2048_BYTES)
+       return -EINVAL;
+   ```
+
+   The SPL hardware-crypto verify is **hardcoded to RSA-2048 only** — that `-EINVAL` is the `-22` in
+   D1. A 4096-signed `uboot.img` can therefore never pass SPL on this SDK, regardless of config.
+
+**Conclusion:** stay on the validated RSA-2048 path (fully working end-to-end, fused and enforcing).
+Fusing a 4096 hash would be a blind gamble on the one link that cannot be tested reversibly. Getting
+>2048 to work would mean patching U-Boot C *and* the Rockchip HW-crypto driver — against a PKA silicon
+and mask ROM that may not physically support it; not worth it for a device whose real trust anchor is
+the seed. RSA-2048 + SHA-256 is the supported key size on this platform, full stop.
 - [`docs/hwrng.md`](../hwrng.md) — how hardware entropy reaches the app on each platform
