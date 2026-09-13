@@ -62,8 +62,11 @@ fi
 # cases in mk_ubi_image_fake(), where $temp_image already holds the logical
 # image (.squashfs / .erofs / .ubifs) that is about to be packed into UBI. A
 # changed/missing target must fail loudly, not silently no-op.
-TARGET='echo "$MKUBINIZE_TOOL -o $output_image -m $ubifs_miniosize -p $UBI_BLOCK_SIZE -v $temp_ubinize_file" >> $UBI_IMAGE_FAKEROOT'
-if ! grep -qF "$TARGET" "$UBI_TOOL"; then
+#
+# patch-fs-determinism.sh (which os-build.sh runs FIRST) rewrites this line to
+# add `-Q $EPOCH` (the ubinize image_seq pin), so the match must accept both
+# forms — anchored on the parts neither side ever changes.
+if ! grep -qE 'echo "\$MKUBINIZE_TOOL( -Q [^ ]+)? -o \$output_image .*>> \$UBI_IMAGE_FAKEROOT' "$UBI_TOOL"; then
     echo "patch-mkfs-ubi-signing: ubinize invocation line not found in $UBI_TOOL (SDK changed?)" >&2
     exit 1
 fi
@@ -73,10 +76,11 @@ fi
 # geometry (the one mkfs_ubi.sh symlinks to rootfs.img) and copies the
 # signature next to the final image where os-build.sh picks it up.
 python3 - "$UBI_TOOL" "$MINISIGN_BIN" <<'PYEOF'
-import sys
+import re, sys
 
 path, minisign = sys.argv[1], sys.argv[2]
-target = 'echo "$MKUBINIZE_TOOL -o $output_image -m $ubifs_miniosize -p $UBI_BLOCK_SIZE -v $temp_ubinize_file" >> $UBI_IMAGE_FAKEROOT'
+target_re = re.compile(
+    r'^\s*echo "\$MKUBINIZE_TOOL( -Q \S+)? -o \$output_image .*>> \$UBI_IMAGE_FAKEROOT\s*$')
 
 # Three quoting rules, because of how mkfs_ubi.sh works:
 #  * The geometry filter must run at GENERATION time — UBI_PAGE_SIZE /
@@ -115,7 +119,7 @@ out = []
 inserted = False
 for line in lines:
     out.append(line)
-    if not inserted and line.rstrip("\n").strip() == target:
+    if not inserted and target_re.match(line):
         out.extend(h + "\n" for h in hook_lines)
         inserted = True
 
