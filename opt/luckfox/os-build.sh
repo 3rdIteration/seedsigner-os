@@ -1902,9 +1902,13 @@ s = open(path).read()
 if re.search(r'\n\s*ramdisk \{', s):
     sys.exit("boot.img already contains a ramdisk node (double embed?)")
 
-# image node: before the resource node (order inside /images is irrelevant to
-# u-boot; keeping it last mirrors how fit-core.sh's own ITS templates grow).
-node = """
+    # image node: before the resource node (order inside /images is irrelevant to
+    # u-boot; keeping it last mirrors how fit-core.sh's own ITS templates grow).
+    # load = <0xffffff02> is NOT a real address — it is fit-core.sh's
+    # RAMDISK_ADDR_PLACEHOLDER, which sign_boot_image's sed fixup replaces with
+    # the board's actual ramdisk_addr_r (same convention as fdt=...ff00 /
+    # kernel=...ff01 in the vendor template). Do not "fix" it to a real address.
+    node = """
 \t\tramdisk {
 \t\t\tdata = /incbin/("ramdisk");
 \t\t\ttype = "ramdisk";
@@ -1929,15 +1933,28 @@ if not m:
     sys.exit("conf kernel entry not found in image.its")
 s = s.replace(m.group(1), m.group(1) + "\n\t\t\tramdisk = \"ramdisk\";", 1)
 
-# sign-images: append "ramdisk" to whatever list is there (do not hardcode the
-# rest — a future ITS change must keep working).
-m = re.search(r'(sign-images\s*=\s*)("[^"]*(?:\s*,\s*"[^"]*")*)\s*;', s)
+# sign-images: append ramdisk to whatever list is there (do not hardcode the
+# rest — a future ITS change must keep working). U-Boot parses this property as
+# a sequence of NUL-terminated strings, and BOTH source forms compile to that:
+#   hand-written array : "fdt", "kernel", "multi"
+#   dtc re-serialization (what fit-unpack.sh emits): "fdt\0kernel\0multi"
+# so append in whichever form is present.
+m = re.search(r'sign-images\s*=\s*(?:"[^"]*"|\s*"[^"]*"(?:\s*,\s*"[^"]*")*)\s*;', s)
 if not m:
     sys.exit("sign-images property not found in image.its (unexpected FIT layout)")
-imgs = m.group(2).strip()
-if '"ramdisk"' in imgs:
-    sys.exit("ramdisk already listed in sign-images (double embed?)")
-s = s[:m.start()] + 'sign-images = ' + imgs + ', "ramdisk";' + s[m.end():]
+prop = m.group(0).rstrip().rstrip(';')
+body = prop.split('=', 1)[1].strip()
+if re.fullmatch(r'"[^"]*"', body):
+    # single-string (NUL-escaped) form: append \0ramdisk inside the quotes
+    if 'ramdisk' in body:
+        sys.exit("ramdisk already listed in sign-images (double embed?)")
+    new = prop[:-1] + '\\0ramdisk";'   # drop closing quote, add NUL + name
+else:
+    # array form: append , "ramdisk" before the ;
+    if '"ramdisk"' in body:
+        sys.exit("ramdisk already listed in sign-images (double embed?)")
+    new = prop + ', "ramdisk";'        # prop ends at the last element's closing quote
+s = s[:m.start()] + new + s[m.end():]
 
 open(path, "w").write(s)
 PYEOF
