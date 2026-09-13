@@ -1902,13 +1902,13 @@ s = open(path).read()
 if re.search(r'\n\s*ramdisk \{', s):
     sys.exit("boot.img already contains a ramdisk node (double embed?)")
 
-    # image node: before the resource node (order inside /images is irrelevant to
-    # u-boot; keeping it last mirrors how fit-core.sh's own ITS templates grow).
-    # load = <0xffffff02> is NOT a real address — it is fit-core.sh's
-    # RAMDISK_ADDR_PLACEHOLDER, which sign_boot_image's sed fixup replaces with
-    # the board's actual ramdisk_addr_r (same convention as fdt=...ff00 /
-    # kernel=...ff01 in the vendor template). Do not "fix" it to a real address.
-    node = """
+# image node: before the resource node (order inside /images is irrelevant to
+# u-boot; keeping it last mirrors how fit-core.sh's own ITS templates grow).
+# load = <0xffffff02> is NOT a real address — it is fit-core.sh's
+# RAMDISK_ADDR_PLACEHOLDER, which sign_boot_image's sed fixup replaces with
+# the board's actual ramdisk_addr_r (same convention as fdt=...ff00 /
+# kernel=...ff01 in the vendor template). Do not "fix" it to a real address.
+node = """
 \t\tramdisk {
 \t\t\tdata = /incbin/("ramdisk");
 \t\t\ttype = "ramdisk";
