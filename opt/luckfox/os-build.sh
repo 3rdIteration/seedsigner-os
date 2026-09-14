@@ -1043,6 +1043,18 @@ apply_spidev_bufsiz() {
     bash "$SEEDSIGNER_LUCKFOX_DIR/pin-spidev-bufsiz.sh" "$LUCKFOX_SDK_DIR" "$sdk_hardware" 8192
 }
 
+# Extend the RV1106 OTP nvmem region so /init can read the secure-boot enable
+# fuse (offset 0x80) and show "SECURE BOOT not enabled" on unfused boards.
+# Shared with CI via patch-otp-size.sh; applies to every board — all three use
+# rv1106_data in rockchip-otp.c (the Mini's RV1103 includes rv1106.dtsi).
+# No-op unless SEEDSIGNER_FIT_SIGNATURE=1: unsigned builds keep the kernel
+# byte-identical to before this feature.
+apply_otp_size_patch() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    print_step "Extending OTP nvmem region for secure-boot fuse read"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-otp-size.sh" "$LUCKFOX_SDK_DIR"
+}
+
 apply_hwrng_kernel_patch() {
     local board_profile="$1"
     local boot_medium="$2"
@@ -2097,6 +2109,7 @@ build_profile_artifacts() {
     apply_spi_display_dts "$board_profile"
     apply_hwrng_kernel_patch "$board_profile" "$boot_medium"
     apply_rng_dts_patch "$board_profile"
+    apply_otp_size_patch
     apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
     apply_signed_nand_bootargs "$board_profile" "$boot_medium"   # signed NAND: bake root=ubi0 into the DTB (no-op otherwise)
 
@@ -2343,6 +2356,12 @@ s/^endef\nendif/endef\nendif\nendif/
     if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
         bash "$SEEDSIGNER_LUCKFOX_DIR/assert-kernel-network.sh" "$LUCKFOX_SDK_DIR" "${SS_STRIP_NET:-1}" 1 1
         bash "$SEEDSIGNER_LUCKFOX_DIR/assert-readonly-rootfs.sh" "$LUCKFOX_SDK_DIR" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
+    fi
+
+    # Secure-boot fuse readability (dev AND non-dev: /init's "SECURE BOOT not
+    # enabled" screen needs it in both). No-op unless FIT signing is on.
+    if [[ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ]]; then
+        bash "$SEEDSIGNER_LUCKFOX_DIR/assert-otp-size.sh" "$LUCKFOX_SDK_DIR"
     fi
 
     print_step "Building Rootfs"
@@ -2879,8 +2898,9 @@ assert_shared_build_files() {
     for s in prepare-sdk-checkout.sh rust-toolchain-cache.sh \
              patch-fs-determinism.sh mkfs-ext4-deterministic.sh ss-fs-normalise.sh \
              apply-partition-layout.sh \
-             pin-spidev-bufsiz.sh readonly-rootfs.sh \
-             assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
+              pin-spidev-bufsiz.sh readonly-rootfs.sh \
+              assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
+              patch-otp-size.sh assert-otp-size.sh \
              harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
              install-gnupg-home.sh install-build-time.sh \

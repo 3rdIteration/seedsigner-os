@@ -907,6 +907,15 @@ apply_spidev_bufsiz() {
     bash "$SCRIPT_DIR/pin-spidev-bufsiz.sh" "$WORK_DIR/luckfox-pico" "$sdk_hardware" 8192
 }
 
+# Extend the RV1106 OTP nvmem region so /init can read the secure-boot enable
+# fuse (offset 0x80) and show "SECURE BOOT not enabled" on unfused boards.
+# Shared with CI via patch-otp-size.sh; applies to every board — all three use
+# rv1106_data in rockchip-otp.c (the Mini's RV1103 includes rv1106.dtsi).
+apply_otp_size_patch() {
+    print_header "Extending OTP nvmem region for secure-boot fuse read"
+    bash "$SCRIPT_DIR/patch-otp-size.sh" "$WORK_DIR/luckfox-pico"
+}
+
 apply_usb_mode_config() {
     local hardware="$1"
 
@@ -1985,6 +1994,7 @@ main() {
     apply_uart2_fiq_kernel_patch "$hardware" "$boot_medium"
     apply_hwrng_kernel_patch "$hardware" "$boot_medium"
     apply_rng_dts_patch "$hardware"
+    apply_otp_size_patch
     apply_kernel_network_strip "$hardware" "$boot_medium"
     apply_readonly_rootfs "$hardware" "$boot_medium"
     apply_spidev_bufsiz "$hardware"

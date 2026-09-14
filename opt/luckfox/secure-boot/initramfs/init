@@ -112,7 +112,33 @@ ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null || true
 ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null || true
 ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null || true
 
+# --- secure-boot fuse check ---------------------------------------------------
+# OTP offset 0x80 is the SoC's secure-boot enable flag — U-Boot SPL reads this
+# exact byte (OTP_SECURE_BOOT_ENABLE_ADDR, include/configs/rv1106_common.h): a
+# fully blown word reads 0xff, blank reads 0x00. When it is NOT fused, nothing
+# in the boot chain is actually verified, so say so on the panel and skip the
+# rootfs check (the same signed image must also boot unlocked devices). The
+# nvmem blob is raw binary — ash cannot capture it into a variable without
+# mangling it — so hash just that one byte with dd + sha256sum and compare
+# against two known constants. FAIL-CLOSED: an empty read (no driver, short
+# blob, read error) hashes to the empty-input constant and verifies anyway.
+SECURE_BOOT_FUSED=1
+otp_byte_hash=$(dd if=/sys/bus/nvmem/devices/rockchip-otp0/nvmem bs=1 skip=128 count=1 2>/dev/null | sha256sum)
+otp_byte_hash=${otp_byte_hash%% *}
+case "$otp_byte_hash" in
+    a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89) SECURE_BOOT_FUSED=1 ;;  # byte == 0xff: fused
+    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) SECURE_BOOT_FUSED=1 ;;  # empty read: fail-closed
+    *) SECURE_BOOT_FUSED=0 ;;  # not fused
+esac
+
 # --- verify the signature ----------------------------------------------------
+if [ "$SECURE_BOOT_FUSED" = 0 ]; then
+    log "secure boot NOT fused (OTP byte 0x80 != 0xff) — skipping rootfs verification"
+    lcd orange SHIELDSIGNER SECURE BOOT not enabled "" BOOTING
+    # Hold so a human can actually read it: without this, mount + switch_root
+    # take over the panel in ~2 s and the warning is invisible.
+    sleep 5
+else
 # Stream exactly ROOTFS_UBIFS_SIZE bytes from the volume straight into
 # minisign, which BLAKE2b-512s its input in 64 KiB chunks (the -H/pre-hashed
 # mode is recorded inside /rootfs.sig itself — sig_alg "ED" — so no flag is
@@ -154,9 +180,10 @@ if ! dd if="$SRC_DEV" bs=4096 count=$blocks 2>/dev/null \
 else
     log "signature OK"
 fi
+fi
 
 # --- mount and hand over -----------------------------------------------------
-if [ "$UNVERIFIED" = 0 ]; then
+if [ "$SECURE_BOOT_FUSED" = 1 ] && [ "${UNVERIFIED:-0}" = 0 ]; then
     lcd green PASSED rootfs signature valid "" BOOTING
 fi
 log "mounting rootfs ($MNT_CMD) ..."
