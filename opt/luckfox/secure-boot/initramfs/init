@@ -134,6 +134,18 @@ if ! $MNT_CMD; then
     fail "cannot mount rootfs"
 fi
 
+# switch_root moves this mount over / — everything mounted on the OLD root
+# (the kernel's devtmpfs auto-mounted at our /dev, plus /proc and /sys) becomes
+# unreachable from the new one. Bind them onto the new root so it inherits live
+# kernel filesystems: without /dev there are no gpiochip/i2c/video nodes and
+# the app cannot start (Buildroot relies on devtmpfs auto-population —
+# BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS — so nothing else creates them).
+mount --bind /dev  /mnt/dev  || fail "cannot bind-mount /dev"
+mount --bind /proc /mnt/proc || mount -t proc proc /mnt/proc \
+    || fail "cannot provide /proc to new root"
+mount --bind /sys  /mnt/sys  || mount -t sysfs sysfs /mnt/sys \
+    || fail "cannot provide /sys to new root"
+
 cd /mnt || fail "cannot cd /mnt"
 # The initramfs is the kernel's rootfs pseudo-filesystem, and pivot_root()
 # refuses to work from it (EINVAL — see Documentation/filesystems/ramfs-rootfs-
