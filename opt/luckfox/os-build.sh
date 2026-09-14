@@ -1754,7 +1754,7 @@ verify_initramfs_binaries() {
     local -A pins=(
         [busybox-arm]=b0de0dc31407e40aa24bb79d7b4f195e2ebbb0b383788622a2f1e7132b9901d6
         [minisign-arm]=0256e7b0d85b10ea615e90b51f21103b7ec91631adedd0ebb45a2626e9d0e3c9
-        [ss-lcd]=8cdfb04832d7366c7f5f0e5cbcbccca2760c542b5976cda2c56e233c4faea57c
+        [ss-lcd]=a75dd2e19c1d8b6c4e31e6f33304cbc88da9a6cfb31ef01354a1ebf055126e57
         [minisign-host]=81ffed5915492c9e2a7494b7cd4095d8509e331d0861504b7619fbea7158453e
     )
     for f in "${!pins[@]}"; do
