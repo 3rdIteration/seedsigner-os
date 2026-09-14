@@ -1754,7 +1754,7 @@ verify_initramfs_binaries() {
     local -A pins=(
         [busybox-arm]=b0de0dc31407e40aa24bb79d7b4f195e2ebbb0b383788622a2f1e7132b9901d6
         [minisign-arm]=0256e7b0d85b10ea615e90b51f21103b7ec91631adedd0ebb45a2626e9d0e3c9
-        [ss-lcd]=a75dd2e19c1d8b6c4e31e6f33304cbc88da9a6cfb31ef01354a1ebf055126e57
+        [ss-lcd]=08a22dbb0ee339977b974994b2224b0f0de92a423dab1c420a4c3457dad9bcf4
         [minisign-host]=81ffed5915492c9e2a7494b7cd4095d8509e331d0861504b7619fbea7158453e
     )
     for f in "${!pins[@]}"; do
@@ -1862,7 +1862,18 @@ embed_rootfs_verifier() {
     ubifs_size="$(cat "$ubifs_size_file")"
     [[ "$ubifs_size" =~ ^[0-9]+$ ]] && [ "$ubifs_size" -gt 0 ] \
         || { print_error "rootfs.ubifs.size is not a positive integer: '$ubifs_size'"; exit 1; }
-    sed "s/__ROOTFS_UBIFS_SIZE__/$ubifs_size/" "$src/init" > "$stage/init"
+    # The verification-failure escape-hatch key: GPIO1_C7 is wired to a button
+    # on every variant (io_config.json), so /init's waitkey program is identical
+    # for all boards — only the label shown differs.
+    local waitkey_key_name
+    case "$board_profile" in
+        mini) waitkey_key_name="KEY_DOWN" ;;  # FOX_22
+        max)  waitkey_key_name="KEY1" ;;      # FOX_40
+        pi)   waitkey_key_name="KEY3" ;;      # FOX_PI
+        *)    print_error "unknown board profile for waitkey key name: $board_profile"; exit 1 ;;
+    esac
+    sed -e "s/__ROOTFS_UBIFS_SIZE__/$ubifs_size/" \
+        -e "s/__WAITKEY_KEY_NAME__/$waitkey_key_name/" "$src/init" > "$stage/init"
     chmod 755 "$stage/init"
     cp "$keydir/dev.pubkey" "$stage/pubkey"
     cp "$sig"               "$stage/rootfs.sig"

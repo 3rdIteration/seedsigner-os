@@ -21,6 +21,10 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export HOME=/
 
 ROOTFS_UBIFS_SIZE=__ROOTFS_UBIFS_SIZE__
+# Name of the GPIO-HAT key wired to GPIO1_C7 on this board (substituted at
+# build time): mini=KEY_DOWN, max=KEY1, pi=KEY3. See the verification-failure
+# escape hatch below.
+WAITKEY_KEY_NAME=__WAITKEY_KEY_NAME__
 
 log() { echo "rootfs-verify: $*"; }
 
@@ -31,7 +35,10 @@ lcd() { /bin/ss-lcd "$@" 2>/dev/null || true; }
 fail() {
     log "FAIL: $1"
     dmesg | tail -n 30
-    lcd red "ROOTFS VERIFY" "FAILED" "$1"
+    # Fixed layout (no arbitrary-length reasons on the LCD — they overflow;
+    # the actual reason is on the UART log above). Generic wording: fail()
+    # covers cmdline/UBI/mount/GPIO errors, not just signature failures.
+    lcd red FAILED boot halted "" HALTING
     # Halt, do not reboot: a reboot would just loop back here. The kernel
     # stays up (CPUs stop after userspace exits), so the board is recoverable
     # by power-cycle and nothing keeps writing to the NAND.
@@ -114,21 +121,44 @@ ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null || true
 # multi-GB MicroSD image. Only the signed prefix is read: UBI autoresize pads
 # the volume beyond it (untrusted, irrelevant). A short/failed dd yields fewer
 # bytes -> hash mismatch -> fail-closed, same as a tampered rootfs.
-lcd orange "SeedSigner" "Verifying rootfs..."
+lcd orange SHIELDSIGNER Verifying rootfs Signature
 log "verifying minisign signature (streaming $ROOTFS_UBIFS_SIZE bytes) ..."
 # dd reads ceil(SIZE/4096) blocks — at most one block of autoresize padding
 # beyond the signed prefix — and head -c trims the stream to exactly SIZE
 # bytes. No byte-at-a-time tail read, no temp file, O(1) RAM end to end.
+UNVERIFIED=0
 blocks=$(( (ROOTFS_UBIFS_SIZE + 4095) / 4096 ))
 if ! dd if="$SRC_DEV" bs=4096 count=$blocks 2>/dev/null \
      | head -c "$ROOTFS_UBIFS_SIZE" \
      | /bin/minisign -V -p /pubkey -x /rootfs.sig -m /dev/stdin; then
-    fail "rootfs verification failed (bad signature or read error)"
+    log "FAIL: rootfs verification failed (bad signature or read error)"
+    dmesg | tail -n 30
+    # Escape hatch: a person with physical access can press the GPIO-HAT key
+    # to boot an UNVERIFIED rootfs. The pin is GPIO1_C7 — wired to a button on
+    # every Luckfox variant (KEY_DOWN on Mini, KEY1 on Pro Max, KEY3 on Pico
+    # Pi), so one baked-in program works for all three boards; only the label
+    # shown differs (__WAITKEY_KEY_NAME__, substituted at build time). The four
+    # register writes are the same IOMUX/pull-up/direction/IE sequence that
+    # /usr/bin/configure-gpio.sh applies before each app launch — required,
+    # because the RV1106 pinctrl driver silently ignores gpiolib bias flags.
+    # "press KEY_DOWN" is 14 chars — the max that fits a body line at 2x.
+    lcd red FAILED rootfs signature mismatch "" "press $WAITKEY_KEY_NAME"
+    if ! /bin/ss-lcd waitkey /dev/gpiochip1 23 \
+         0xFF538014 0x70000000 0xFF5381C8 0xC0004000 \
+         0xFF53000C 0x00800000 0xFF538188 0x00800080; then
+        fail "cannot access HAT key (GPIO)"
+    fi
+    log "WARN: $WAITKEY_KEY_NAME pressed — continuing with UNVERIFIED rootfs"
+    lcd green BOOTING
+    UNVERIFIED=1
+else
+    log "signature OK"
 fi
-log "signature OK"
 
 # --- mount and hand over -----------------------------------------------------
-lcd green "SeedSigner" "Rootfs verified" "Starting..."
+if [ "$UNVERIFIED" = 0 ]; then
+    lcd green PASSED rootfs signature valid "" BOOTING
+fi
 log "mounting rootfs ($MNT_CMD) ..."
 if ! $MNT_CMD; then
     fail "cannot mount rootfs"

@@ -88,9 +88,19 @@ SHA-256 for all four: `SHA256SUMS` (pinned by `os-build.sh`).
   the public-domain 8x8 font `font8x8_basic.h` (Daniel Hepper / Marcel Sondaar,
   based on IBM's public-domain VGA fonts).
 * The ST7789 init sequence, SPI settings and GPIO lines are ported from the
-  SeedSigner app's own driver (`seedsigner/hardware/displays/st7789_mpy.py` +
-  `io_config.json` FOX_22 profile), which is the reference implementation for
-  this panel.
+  SeedSigner app's own driver (`seedsigner/hardware/displays/ST7789.py` — the
+  factory in `display_driver.py` selects it for 240x240 panels; `st7789_mpy.py`
+  is only used for 320x240) + `io_config.json` FOX_22 profile. Key values that
+  differ from the mpy driver: MADCTL=0x70, COLMOD=0x05 (RGB order), and a
+  single init pass with a 150 ms post-reset wait.
+* Two modes: `ss-lcd <color> <title> [line x4]` draws a status screen;
+  `ss-lcd waitkey <gpiochip> <line> <reg writes...>` blocks until the button
+  goes LOW (the verification-failure escape hatch in `/init`). The register
+  writes are raw IOMUX/pull-up/direction/IE sequences — required because the
+  RV1106 pinctrl driver silently ignores gpiolib bias flags, and they must run
+  before the chardev line request. Note: this SDK kernel's `linereq_create()`
+  returns 0 and writes the fd into the request struct (Rockchip backport), so
+  the code reads `req.fd` rather than using the ioctl return value.
 
 ## Why committed binaries instead of building at build time
 

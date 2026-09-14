@@ -3,11 +3,17 @@
  *
  * Usage: ss-lcd <color> <line1> [line2 ...]
  *        ss-lcd diag
+ *        ss-lcd waitkey <chipdev> <line> [<addr> <value> ...]
  *   line1 is drawn as a centred title at 3x scale, remaining lines are body
  *   text at 2x scale. <color> applies to all text; the background is black.
  *   Colors: red green yellow cyan magenta blue white orange grey
  *   "diag" draws a test pattern (white bar + asymmetric corner squares) for
  *   checking the panel's coordinate mapping on a headless board.
+ *   "waitkey" writes each <addr> <value> pair to physical memory via /dev/mem
+ *   (Rockchip write-with-mask format), then blocks until the GPIO line reads
+ *   LOW — used by /init for the KEY-press escape hatch after a failed rootfs
+ *   verification. The register pairs configure IOMUX/pull-up/direction/IE,
+ *   because the RV1106 pinctrl driver silently ignores gpiolib bias flags.
  *
  * The panel wiring matches the SeedSigner app's io_config.json FOX_22 profile
  * (seedsigner/hardware/io_config.json). Every register value and timing below
@@ -34,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "font8x8_basic.h"
@@ -112,6 +119,91 @@ static void gpio_set(int line_fd, int value)
     if (ioctl(line_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &v) < 0) {
         fprintf(stderr, "ss-lcd: gpio set failed (%s)\n", strerror(errno));
     }
+}
+
+/* Write a 32-bit value to a physical address via /dev/mem. mmap is the only
+ * path that reaches RV1106 peripheral addresses: lseek() past the end of RAM
+ * fails EFBIG (the kernel sizes /dev/mem to system memory), while an mmap at
+ * the page-aligned base works — this is exactly what the `io` tool does, and
+ * it is how /usr/bin/configure-gpio.sh configures every button pin on each
+ * boot. Values are in Rockchip write-with-mask format (bits [31:16] mask,
+ * bits [15:0] value). */
+static int mem_write32(uint32_t addr, uint32_t value)
+{
+    off_t page = (off_t)(addr & ~(uint32_t)0xFFF);
+    size_t off = (size_t)(addr & 0xFFF);
+    /* Cover [page, page+off+4), rounded up to whole pages. */
+    size_t len = ((off + 4) + 4095) & ~(size_t)4095;
+    int fd = open("/dev/mem", O_RDWR);
+
+    if (fd < 0) {
+        fprintf(stderr, "ss-lcd: /dev/mem not available (%s)\n", strerror(errno));
+        return -1;
+    }
+    void *p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, page);
+    if (p == MAP_FAILED) {
+        fprintf(stderr, "ss-lcd: /dev/mem mmap of 0x%08X failed (%s)\n", addr, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    *(volatile uint32_t *)((uint8_t *)p + off) = value;
+    munmap(p, len);
+    close(fd);
+    return 0;
+}
+
+/* Block until `line` on `chipdev` reads LOW (active-low button pressed).
+ * The caller must have already configured the pin's IOMUX/pull/IE registers
+ * (passed as addr/value pairs) — the RV1106 pinctrl driver silently ignores
+ * GPIO_V2 bias flags, so a plain gpiolib request alone leaves the pin
+ * un-pulled and floating. Returns 0 on press, -1 on error. */
+static int gpio_wait_pressed(const char *chipdev, uint32_t line,
+                             const uint32_t *regs, size_t n_regs)
+{
+    struct gpio_v2_line_request req;
+    size_t i;
+
+    for (i = 0; i < n_regs; i += 2) {
+        if (mem_write32(regs[i], regs[i + 1]) < 0)
+            return -1;
+    }
+
+    int fd = open(chipdev, O_RDWR);
+    if (fd < 0) {
+        fprintf(stderr, "ss-lcd: %s not available (%s)\n", chipdev, strerror(errno));
+        return -1;
+    }
+    memset(&req, 0, sizeof(req));
+    req.offsets[0] = line;
+    req.num_lines = 1;
+    snprintf(req.consumer, sizeof(req.consumer), "ss-lcd");
+    req.config.flags = GPIO_V2_LINE_FLAG_INPUT;
+
+    if (ioctl(fd, GPIO_V2_GET_LINE_IOCTL, &req) < 0) {
+        fprintf(stderr, "ss-lcd: gpio input request failed (%s)\n", strerror(errno));
+        close(fd);
+        return -1;
+    }
+    int line_fd = req.fd > 0 ? req.fd : 0;
+
+    /* Let the pull-up settle before sampling, then poll at 20 Hz. */
+    usleep(100 * 1000);
+    for (;;) {
+        struct gpio_v2_line_values v;
+        memset(&v, 0, sizeof(v));
+        v.mask = 1; /* select line 0 — a zero mask makes the kernel return EINVAL */
+        if (ioctl(line_fd, GPIO_V2_LINE_GET_VALUES_IOCTL, &v) < 0) {
+            fprintf(stderr, "ss-lcd: gpio read failed (%s)\n", strerror(errno));
+            close(line_fd);
+            return -1;
+        }
+        if (!(v.bits & 1))
+            break; /* pressed (active-low) */
+        usleep(50 * 1000);
+    }
+    close(line_fd);
+    close(fd);
+    return 0;
 }
 
 /* ---------- SPI ---------- */
@@ -263,8 +355,11 @@ static void put_pixel(uint16_t *fb, int x, int y, uint16_t color)
     fb[y * PANEL_W + x] = (uint16_t)(((color & 0xFF) << 8) | (color >> 8));
 }
 
-/* draw one font row (8 px) of `ch` at (x, y), scaled by `scale` */
-static void put_glyph(uint16_t *fb, int ch, int x, int y, int scale, uint16_t fg)
+/* Glyph scaling is fixed-point: `scale8` is the pixel size of ONE source
+ * font pixel in eighths (24 == 3x, 16 == 2x, 20 == 2.5x). Each set source
+ * pixel becomes a rectangle [col*scale8, (col+1)*scale8) >> 3, so fractional
+ * scales render without seams or double-width pixels. */
+static void put_glyph(uint16_t *fb, int ch, int x, int y, int scale8, uint16_t fg)
 {
     const unsigned char *glyph = (const unsigned char *)font8x8_basic[ch & 0x7F];
     int row, col;
@@ -276,31 +371,35 @@ static void put_glyph(uint16_t *fb, int ch, int x, int y, int scale, uint16_t fg
              * horizontally mirrored.) */
             if (!(glyph[row] & (0x01 << col)))
                 continue;
+            int x0 = x + ((col * scale8) >> 3);
+            int x1 = x + (((col + 1) * scale8) >> 3);
+            int y0 = y + ((row * scale8) >> 3);
+            int y1 = y + (((row + 1) * scale8) >> 3);
             int px, py;
-            for (py = 0; py < scale; py++)
-                for (px = 0; px < scale; px++)
-                    put_pixel(fb, x + col * scale + px, y + row * scale + py, fg);
+            for (py = y0; py < y1; py++)
+                for (px = x0; px < x1; px++)
+                    put_pixel(fb, px, py, fg);
         }
     }
 }
 
-static void draw_text(uint16_t *fb, const char *text, int x, int y, int scale, uint16_t fg)
+static void draw_text(uint16_t *fb, const char *text, int x, int y, int scale8, uint16_t fg)
 {
     while (*text) {
-        put_glyph(fb, *text, x, y, scale, fg);
-        x += 8 * scale;
+        put_glyph(fb, *text, x, y, scale8, fg);
+        x += (8 * scale8) >> 3;
         text++;
     }
 }
 
-static void draw_text_centered(uint16_t *fb, const char *text, int y, int scale, uint16_t fg)
+static void draw_text_centered(uint16_t *fb, const char *text, int y, int scale8, uint16_t fg)
 {
-    int w = (int)strlen(text) * 8 * scale;
+    int w = (int)strlen(text) * ((8 * scale8) >> 3);
     int x = (PANEL_W - w) / 2;
 
     if (x < 0)
         x = 0;
-    draw_text(fb, text, x, y, scale, fg);
+    draw_text(fb, text, x, y, scale8, fg);
 }
 
 static uint16_t parse_color(const char *name)
@@ -328,9 +427,40 @@ int main(int argc, char **argv)
     uint16_t *fb;
     int i;
 
-    if (argc < 2 || (argc < 3 && strcmp(argv[1], "diag"))) {
-        fprintf(stderr, "usage: ss-lcd <color> <line1> [line2 ...]\n");
+    if (argc < 2 || (argc < 3 && strcmp(argv[1], "diag") && strcmp(argv[1], "waitkey"))) {
+        fprintf(stderr, "usage: ss-lcd <color> <line1> [line2 ...] | diag | waitkey ...\n");
         return 2;
+    }
+
+    /* waitkey mode: no LCD involvement. Exits 0 on key press, non-zero on any
+     * error — /init treats a failure as "cannot confirm" and halts. */
+    if (!strcmp(argv[1], "waitkey")) {
+        uint32_t regs[32];
+        size_t n = 0;
+        long line;
+        int r;
+
+        if (argc < 4) {
+            fprintf(stderr, "usage: ss-lcd waitkey <chipdev> <line> [<addr> <value> ...]\n");
+            return 2;
+        }
+        line = strtol(argv[3], NULL, 0);
+        if (line < 0 || line > 0xFF) {
+            fprintf(stderr, "ss-lcd: bad line '%s'\n", argv[3]);
+            return 2;
+        }
+        for (r = 4; r < argc; r += 2) {
+            if (r + 1 >= argc || n + 2 > sizeof(regs) / sizeof(regs[0])) {
+                fprintf(stderr, "ss-lcd: register args must be addr/value pairs\n");
+                return 2;
+            }
+            regs[n++] = (uint32_t)strtoul(argv[r], NULL, 0);
+            regs[n++] = (uint32_t)strtoul(argv[r + 1], NULL, 0);
+        }
+
+        if (gpio_wait_pressed(argv[2], (uint32_t)line, regs, n) < 0)
+            return 1;
+        return 0;
     }
 
     /* Best effort from here on: any failure prints to the console and exits 0. */
@@ -395,13 +525,23 @@ int main(int argc, char **argv)
             for (x2 = 0; x2 < 40; x2++)
                 put_pixel(fb, x2, y2, rgb565(0, 255, 0));
     } else {
-        /* argv[2] is the title (3x), the rest are body lines (2x). */
+        /* argv[2] is the title — 3x if it fits the panel width, else 2.5x,
+         * else 2x (fixed-point eighths); the rest are body lines at 2x. */
+        int tlen = (int)strlen(argv[2]);
+        static const int tscales[] = { 24, 20, 16 }; /* 3x, 2.5x, 2x */
+        int ti, tscale8;
+        for (ti = 0; ti < 3; ti++) {
+            if (tlen * ((8 * tscales[ti]) >> 3) <= PANEL_W || ti == 2) {
+                tscale8 = tscales[ti];
+                break;
+            }
+        }
         int y = 48;
-        draw_text_centered(fb, argv[2], y, 3, fg);
-        y += 8 * 3 + 16;
-        for (i = 3; i < argc && y < PANEL_H - 8 * 2; i++) {
-            draw_text(fb, argv[i], 8, y, 2, fg);
-            y += 8 * 2 + 4;
+        draw_text_centered(fb, argv[2], y, tscale8, fg);
+        y += ((8 * tscale8) >> 3) + 16;
+        for (i = 3; i < argc && y < PANEL_H - 16; i++) {
+            draw_text(fb, argv[i], 8, y, 16, fg); /* 2x */
+            y += ((8 * 16) >> 3) + 4;
         }
     }
 
