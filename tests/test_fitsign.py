@@ -76,10 +76,16 @@ def build_fit(payload=b"KERNELPAYLOAD" * 8):
     f.begin("kernel")
     f.prop("type", b"kernel\x00")
     f.prop("data-size", struct.pack(">I", len(payload)))
-    f.prop("data-position", struct.pack(">I", 0))          # patched below
+    f.prop("data-position", struct.pack(">I", 0))          # patched in build_fit
     f.begin("hash")
     f.prop("algo", b"sha256\x00")
     f.prop("value", hashlib.sha256(payload).digest())
+    f.end()
+    # Rockchip's sibling node: same algo, but it holds the hash of the
+    # DECOMPRESSED payload, so `rehash` must leave it alone.
+    f.begin("digest")
+    f.prop("algo", b"sha256\x00")
+    f.prop("value", bytes(range(32)))
     f.end()
     f.end()
     f.end()
@@ -102,7 +108,13 @@ def build_fit(payload=b"KERNELPAYLOAD" * 8):
     f.end()
     f.end()
     f.end()
-    return f.finish() + bytearray(payload)
+    blob = f.finish()
+    # The payload is stored externally, right after the FDT (mkimage -E), so
+    # data-position is only knowable once the FDT is built. Patch it in place.
+    buf = blob + bytearray(payload)
+    _, off = fs.fdt_props(buf)["/images/kernel"]["data-position"]
+    struct.pack_into(">I", buf, off, len(blob))
+    return buf
 
 
 class Synthetic(unittest.TestCase):
@@ -234,6 +246,51 @@ class Synthetic(unittest.TestCase):
         fs.main(["canonicalise", a])
         fs.main(["canonicalise", b])
         self.assertEqual(bytes(fs.read(a)), bytes(fs.read(b)))
+
+
+class Rehash(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="fitsign-rehash-")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def fit(self, name="r.img"):
+        p = os.path.join(self.tmp, name)
+        with open(p, "wb") as fh:
+            fh.write(build_fit())
+        return p
+
+    def test_rehash_leaves_a_correct_hash_alone(self):
+        p = self.fit()
+        before = bytes(fs.read(p))
+        self.assertEqual(fs.main(["rehash", p]), 0)
+        self.assertEqual(before, bytes(fs.read(p)))
+
+    def test_rehash_fixes_a_stale_hash(self):
+        p = self.fit()
+        buf = fs.read(p)
+        _, off = fs.fdt_props(buf)["/images/kernel/hash"]["value"]
+        buf[off] ^= 0xff
+        fs.write_out(buf, p, None)
+        self.assertEqual(fs.main(["rehash", p]), 0)
+        buf = fs.read(p)
+        pos, size, _ = fs._image_payloads(buf)["kernel"]
+        want = hashlib.sha256(bytes(buf[pos:pos + size])).digest()
+        self.assertEqual(fs.fdt_props(buf)["/images/kernel/hash"]["value"][0], want)
+
+    def test_rehash_never_touches_the_rockchip_digest_node(self):
+        """It holds the DECOMPRESSED payload hash; rewriting it would brick boot."""
+        p = self.fit()
+        buf = fs.read(p)
+        _, off = fs.fdt_props(buf)["/images/kernel/hash"]["value"]
+        buf[off] ^= 0xff                      # force rehash to do some work
+        fs.write_out(buf, p, None)
+        self.assertEqual(fs.main(["rehash", p]), 0)
+        self.assertEqual(fs.fdt_props(fs.read(p))["/images/kernel/digest"]["value"][0],
+                         bytes(range(32)))
 
 
 class Artifacts(unittest.TestCase):

@@ -25,8 +25,8 @@ The regions are then, in file order:
   4. the strings-block prefix named by `hashed-strings`.
 
 The FDT header and the memory-reserve block are NOT covered, and neither are
-the external payloads - those are bound in by the sha256 `hash`/`digest`
-subnodes, which are themselves covered. Verified by reconstructing the digest
+the external payloads - those are bound in by the sha256 `hash` subnodes, which
+are themselves covered. Verified by reconstructing the digest
 and checking it against the shipped signature under the committed dev pubkey,
 for both uboot.img and boot.img.
 
@@ -46,8 +46,18 @@ Pure stdlib.
   sign         <img> --key <pem> [-o]    sign locally (key on this host)
   splice       <img> --sig <f> [-o]      write an externally-made signature back
   verify       <img> --pubkey <pem>      full offline verification
+  rehash       <img> [-o <f>]            recompute payload `hash` nodes
+  setkey       <img> --pubkey --old-pubkey [-o]   swap the embedded RSA key
   canonicalise <img> [-o <f>]            zero the key-dependent + timestamp bytes
   info         <img>                     what would be signed, and with what
+
+A full offline key swap of the whole chain is therefore:
+
+  rkloader.py setkey download.bin  --pubkey new.pub   &&  rkloader.py sign ... --key new.key
+  rkloader.py setkey idblock.img   --pubkey new.pub   &&  rkloader.py sign ... --key new.key
+  fitsign.py  setkey uboot.img --pubkey new.pub --old-pubkey old.pub
+  fitsign.py  rehash uboot.img  &&  fitsign.py sign uboot.img --key new.key
+  fitsign.py  sign   boot.img   --key new.key          # carries no key itself
 
 Exit codes: 0 ok, 1 usage/IO, 2 verification failed, 3 parse error.
 """
@@ -282,6 +292,101 @@ def cmd_verify(a):
     return 2
 
 
+def _image_payloads(buf):
+    """{name: (data_offset, size, {hash_node: (algo, value_offset, value_len)})}"""
+    props = fdt_props(buf)
+    out = {}
+    for node, pr in props.items():
+        if not node.startswith("/images/") or node.count("/") != 2:
+            continue
+        if "data-size" not in pr or "data-position" not in pr:
+            continue
+        size = struct.unpack(">I", pr["data-size"][0])[0]
+        pos = struct.unpack(">I", pr["data-position"][0])[0]
+        # ONLY `hash`. Rockchip's sibling `digest` node also says algo="sha256"
+        # but holds the hash of the DECOMPRESSED payload (the second sha256 in
+        # U-Boot's "Checking uboot ... sha256(..) + sha256(..) + OK" line), so it
+        # cannot be recomputed from the stored bytes and must never be rewritten
+        # from them. It is not covered by the signature either - uboot.img's
+        # hashed-nodes lists /images/uboot/hash, not /images/uboot/digest.
+        hashes = {}
+        hn = node + "/hash"
+        if hn in props and "value" in props[hn]:
+            algo = props[hn].get("algo", (b"", 0))[0].rstrip(b"\x00").decode("latin1")
+            raw, off = props[hn]["value"]
+            hashes[hn] = (algo, off, len(raw))
+        out[node.split("/")[-1]] = (pos, size, hashes)
+    return out
+
+
+def cmd_rehash(a):
+    """Recompute every sha256 payload hash. Needed after patching a payload."""
+    buf = read(a.image)
+    changed = 0
+    for name, (pos, size, hashes) in sorted(_image_payloads(buf).items()):
+        actual = hashlib.sha256(bytes(buf[pos:pos + size])).digest()
+        for hn, (algo, off, ln) in hashes.items():
+            if algo != "sha256" or ln != 32:
+                print("   %-10s %s: skipping algo=%r len=%d" % (name, hn.split("/")[-1], algo, ln))
+                continue
+            if bytes(buf[off:off + ln]) != actual:
+                buf[off:off + ln] = actual
+                changed += 1
+                print("   %-10s %s updated -> %s" % (name, hn.split("/")[-1], actual.hex()[:16]))
+    if changed:
+        print("rehashed %s (%d hash node(s)); the signature is now stale - re-sign it"
+              % (write_out(buf, a.image, a.out), changed))
+    else:
+        print("%s: all payload hashes already correct" % a.image)
+    return 0
+
+
+def cmd_setkey(a):
+    """Replace the RSA public key embedded in a payload (uboot.img's control DTB).
+
+    boot.img carries no key, so this is a no-op there; uboot.img embeds the
+    pubkey that U-Boot proper uses to verify boot.img, inside its uncompressed
+    `fdt` payload (the U-Boot control DTB).
+
+    Note this does NOT touch the lzma-compressed `uboot` payload, which has a
+    Rockchip `digest` node this tool cannot recompute - see _image_payloads().
+    """
+    buf = read(a.image)
+    new = load_pubkey(a.pubkey)[0]
+    old = load_pubkey(a.old_pubkey)[0] if a.old_pubkey else None
+    if old is None:
+        raise FitError("--old-pubkey is required: the key to replace cannot be "
+                       "located in the payload otherwise")
+    hits = 0
+    old_be, new_be = old.to_bytes(256, "big"), new.to_bytes(256, "big")
+    at = bytes(buf).find(old_be)
+    while at >= 0:
+        buf[at:at + 256] = new_be
+        hits += 1
+        at = bytes(buf).find(old_be, at + 256)
+    # the Montgomery constants U-Boot's verifier keeps alongside the modulus
+    old_n0 = (-pow(old, -1, 1 << 32)) % (1 << 32)
+    new_n0 = (-pow(new, -1, 1 << 32)) % (1 << 32)
+    at = bytes(buf).find(struct.pack(">I", old_n0))
+    if at >= 0:
+        struct.pack_into(">I", buf, at, new_n0)
+        hits += 1
+    old_r2 = pow(2, 2 * 2048, old).to_bytes(256, "big")
+    new_r2 = pow(2, 2 * 2048, new).to_bytes(256, "big")
+    at = bytes(buf).find(old_r2)
+    if at >= 0:
+        buf[at:at + 256] = new_r2
+        hits += 1
+    if not hits:
+        print("%s embeds no copy of that key - nothing to do" % a.image)
+        return 0
+    dst = write_out(buf, a.image, a.out)
+    print("replaced the embedded key in %s (%d location(s))" % (dst, hits))
+    print("   run 'fitsign.py rehash' then 'sign' - the payload changed, so its "
+          "hash node and the signature are both stale")
+    return 0
+
+
 def cmd_canonicalise(a):
     """Zero every byte that a rebuild cannot be expected to reproduce."""
     buf = read(a.image)
@@ -326,6 +431,10 @@ def main(argv=None):
     sp.add_argument("--pubkey", help="verify the result against this public key")
     v = add("verify", cmd_verify)
     v.add_argument("--pubkey", required=True, help="RSA public key PEM")
+    add("rehash", cmd_rehash, out=True)
+    sk = add("setkey", cmd_setkey, out=True)
+    sk.add_argument("--pubkey", required=True, help="the new RSA public key PEM")
+    sk.add_argument("--old-pubkey", required=True, help="the key currently embedded")
     add("canonicalise", cmd_canonicalise, out=True)
 
     a = p.parse_args(argv)
