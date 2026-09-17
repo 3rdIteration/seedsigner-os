@@ -26,6 +26,7 @@ Background, threat model and consequences: [`docs/luckfox/secure-boot.md`](../..
 | `enable-fit-signature.sh` | Turn on `CONFIG_FIT_SIGNATURE` / `CONFIG_SPL_FIT_SIGNATURE` in a **checked-out SDK's** U-Boot defconfig. Opt-in on purpose (see below). |
 | `rkloader.py` | Sign / verify / inspect / re-key `download.bin` and `idblock.img` **offline, in pure Python** — no `rk_sign_tool`, no vendor blob. `digest` + `splice` are the air-gap boundary: 32 bytes out to the signer, 256 bytes back. Tested by `tests/test_rkloader.py`. |
 | `fitsign.py` | Sign / verify / splice / canonicalise the U-Boot FIT images (`uboot.img`, `boot.img`) **offline, in pure Python** — no `mkimage`, no SDK. Re-derives exactly what mkimage signed from the `hashed-nodes` / `hashed-strings` properties the FIT already carries. Tested by `tests/test_fitsign.py`. |
+| `minisign.py` | Sign / verify the **rootfs** with minisign (Ed25519) **in pure Python** — no `minisign-host` binary. `keygen --entropy` turns 32 bytes of BIP85 entropy straight into the keypair, so the rootfs key is reproducible from a seed and need never be stored. Byte-compatible with the vendored binary. Tested by `tests/test_minisign.py`. |
 | `verify-fit-payloads.py` | Parse a FIT; list payloads and recomputed hashes, dump the signature node, or compare two images' payloads (release vs rebuild). |
 
 ## Why enforcement is not an auto-applied SDK patch
