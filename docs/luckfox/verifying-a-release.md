@@ -56,8 +56,13 @@ enabled* on an unfused board.
 
 Worth knowing so the checks are not over-read:
 
-- **Loader / idblock** — the 0x600-byte header only. That header contains the
-  hashes the BootROM chain uses; the rest of the file is covered transitively.
+- **Loader / idblock** — the signature covers the 0x600-byte header only. The
+  SPL and the SPL DTB that carries the public key are covered *transitively*, by
+  two sha256 entries inside that header (`hdr+0x090` and `hdr+0x0e8`, over sector
+  ranges given at `hdr+0x078` / `hdr+0x0d0`, relative to the header). `verify`
+  checks both, and it has to: because those hashes live *inside* the signed
+  header, an image with a stale one carries a perfectly valid signature and is
+  still rejected by the SPL at boot.
 - **`uboot.img` / `boot.img`** — the FIT metadata: the whole device-tree
   *structure*, plus the properties of the nodes named in `hashed-nodes`. The
   external payloads (kernel, DTB, ramdisk, resource) are bound in through their

@@ -110,6 +110,35 @@ the old one**.
 > characterised** beyond the modulus. This is the least-proven step here. Test
 > unfused.
 
+Re-keying `idblock.img` changes the SPL DTB, which lives inside a hashed
+component, so the component hash has to be refreshed before the header is
+signed. `sign_buf()` does that for you; the ordering only matters if you drive
+the pieces by hand.
+
+## Arming the OTP burn
+
+A loader whose SPL DTB carries `burn-key-hash = <1>` writes the public-key hash
+to OTP on first boot and turns on secure boot **permanently**. That is normally
+a build-time option (`SEEDSIGNER_FIT_BURN_KEY_HASH=1`), but it can be done to an
+already-signed image:
+
+```bash
+python3 $SB/rkloader.py setburn idblock.img --confirm I-UNDERSTAND-THIS-BURNS-A-FUSE
+python3 $SB/rkloader.py sign    idblock.img --key your.key
+python3 $SB/rkloader.py verify  idblock.img --pubkey your.pub
+```
+
+The property costs 30 bytes and the DTB is followed by padding inside its
+component, so the file length does not change. Validated against a real
+`SEEDSIGNER_FIT_BURN_KEY_HASH=1` build: the armed DTB is byte-identical to the
+one the SDK emits.
+
+`setburn` clears the signature, so the image must be re-signed afterwards, and
+it refuses without the confirmation token. **Arm only what you intend to fuse:
+booting a board from an armed loader is the irreversible step, and if the key
+whose hash gets burned is the published dev key, the board is permanently
+fused to a key everyone has.**
+
 ## The rootfs key is not yet independently swappable
 
 Today the rootfs signature and the signed size are baked **inside** the
