@@ -3139,6 +3139,7 @@ assert_shared_build_files() {
                 assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
                patch-otp-size.sh assert-otp-size.sh \
                harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
+               strip-whitespace-filenames.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
              install-gnupg-home.sh install-build-time.sh \
               uboot-recovery-config.sh compile-translations.sh \
@@ -3146,6 +3147,9 @@ assert_shared_build_files() {
               secure-boot/dev-keys/dev.key \
               secure-boot/dev-keys/dev.pubkey \
               secure-boot/dev-keys/dev.crt \
+              secure-boot/build-initramfs-binaries.sh \
+              secure-boot/patch-mkfs-squashfs-signing.sh \
+              secure-boot/patch-mkfs-ubi-signing.sh \
               SDK_COMMIT \
               mkfs-ubifs-determinism/build-mkfs-ubifs.sh \
               mkfs-ubifs-determinism/sort-dirents.patch \

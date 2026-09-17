@@ -54,6 +54,14 @@
 
 set -eu
 
+# Byte semantics for names, not the host's idea of characters: ${#name} below
+# sizes directory slots for the LONGEST name in a directory, and under a UTF-8
+# locale it would count an accented cert filename as fewer units than the bytes
+# ext4 actually stores -- an under-sized slot forces debugfs 'ln' to allocate,
+# which is precisely the host-dependence this script exists to remove. Also
+# makes the `sort` below C-collated regardless of the caller's environment.
+export LC_ALL=C
+
 err() { echo "mkfs-ext4-deterministic: $*" >&2; exit 1; }
 
 src="${1:-}"

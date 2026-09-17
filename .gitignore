@@ -2,6 +2,7 @@
 .idea/
 .buildroot-ccache/
 .ccache/
+buildroot_dl/
 opt/output/
 __pycache__/
 

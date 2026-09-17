@@ -9,13 +9,59 @@ check_sha256() {
   echo "${expected_sha256}  ${file}" | sha256sum -c -
 }
 
+# Everything this script fetches -- the prebuilt diy-tools squashfs, the four
+# seedsigner_os release images, and (on La Frite) the bootloader -- comes
+# straight off a CDN on every build and is thrown away with the container. Those
+# CDNs do go down: an Apache 503 failed the La Frite build outright in run
+# 32726173869. Keep the downloads in buildroot's download dir, which CI mounts
+# from the host and caches, so a repeat build reuses them instead of re-fetching.
+# BR2_DL_DIR is exported to post-image scripts by buildroot's EXTRA_ENV.
+#
+# The cached copy is checksummed before use exactly like a fresh download, so a
+# truncated or tampered file falls back to downloading rather than being
+# trusted. Caching changes where the bytes come from, never whether they are
+# verified.
 download_and_verify() {
   local url="$1"
   local expected_sha256="$2"
   local output_file="${3:-$(basename "${url}")}"
+  local cache_dir="${BR2_DL_DIR:-/buildroot_dl}/seedsigner-post-image"
+  # Named after the URL, not output_file: every board writes the squashfs to the
+  # same "diy-tools.squashfs", but armhf and aarch64 are different artifacts and
+  # the download cache is a single entry shared across the whole matrix -- so
+  # keying on the output name has the boards overwriting each other's copy every
+  # run. No URL fetched here carries a query string.
+  local cached="${cache_dir}/$(basename "${url}")"
+
+  if [ -f "${cached}" ] && echo "${expected_sha256}  ${cached}" | sha256sum -c --status -; then
+    echo "Using cached $(basename "${url}") from ${cache_dir}"
+    cp "${cached}" "${output_file}"
+    return 0
+  fi
 
   wget -O "${output_file}" "${url}"
-  check_sha256 "${output_file}" "${expected_sha256}"
+
+  # Explicit rather than leaning on "set -e": this function no longer ends with
+  # the checksum, so without this a mismatch would be masked by the exit status
+  # of the caching copy below, and the bad file would be cached to boot.
+  if ! check_sha256 "${output_file}" "${expected_sha256}"; then
+    rm -f "${output_file}"
+    return 1
+  fi
+
+  # Best-effort: the file is downloaded and verified by the time we get here, so
+  # a read-only or full BR2_DL_DIR must warn, not fail the build under "set -e".
+  # Write via a temp name so an interrupted job cannot leave a half-copied file
+  # for the next run to find (it would fail the checksum, but re-download every
+  # time until something overwrote it).
+  if mkdir -p "${cache_dir}" 2>/dev/null && cp "${output_file}" "${cached}.$$" 2>/dev/null; then
+    mv -f "${cached}.$$" "${cached}" || rm -f "${cached}.$$"
+  else
+    rm -f "${cached}.$$" 2>/dev/null || true
+    echo "warning: could not cache $(basename "${url}") in ${cache_dir}" >&2
+  fi
+
+  return 0
 }
 
 verify_git_head() {
