@@ -265,101 +265,89 @@ if [ -s "$cmds" ]; then
     debugfs -f "$vfile" "$dst" > "$vout" 2>/dev/null || true   # exit code is useless; the output is parsed below
     python3 - "$src" "$cmds.raw" "$vout" <<'PYEOF' || err "populate verification failed: image does not match source tree (ran out of space?)"
 import sys, os
-src, raw_path, vout_path = sys.argv[1], sys.argv[2], sys.argv[3]
-srcb = os.fsencode(src)
+src_b = os.fsencode(sys.argv[1])
+raw_path, vout_path = sys.argv[2], sys.argv[3]
 
-# Names are handled as BYTES end to end. A rootfs may carry any byte in a
-# filename -- /etc/ssl/certs ships four accented letters in
-# NetLock_Arany_=Class_Gold=_Fotanusitvany.pem alone -- and decoding them as
-# text would make this comparison depend on the build host's locale, or crash
-# outright on a name that is not valid UTF-8.
-#
-# debugfs's `ls -l` prints every name byte literally EXCEPT bytes < 32, >= 127
-# and '\', which it renders as \xHH, lowercase (debugfs/ls.c print_filename).
-# So ESCAPE the source names the same way and compare in that domain. Encoding
-# forwards is exact; decoding debugfs's output instead would have to guess
-# whether a "\x41" it read was an escape debugfs emitted or four real bytes of
-# a filename. Note a space (32) is NOT escaped -- that is why whitespace names
-# are rejected outright by the census above, which is also what keeps the
-# rightmost field of a listing line unambiguous.
-def esc(b):
-    return ''.join('\\x%02x' % c if c < 32 or c >= 127 or c == 0x5c else chr(c)
-                   for c in b)
+def unescape(b):
+    # debugfs's ls output escapes non-printable bytes as \xNN (and a literal
+    # backslash as \\) regardless of locale -- e.g. the UTF-8 name
+    # "Főtanúsítvány.pem" is displayed as "F\xc5\x91tan\xc3\xbas...". The on-disk
+    # bytes are correct; only the display is escaped, so reverse it before
+    # comparing. Everything here stays in raw bytes: no locale/encoding
+    # assumption anywhere in this check.
+    out = bytearray()
+    i, n = 0, len(b)
+    while i < n:
+        if b[i:i+1] == b'\\':
+            if b[i+1:i+2] == b'x' and i + 4 <= n:
+                try:
+                    out.append(int(b[i+2:i+4], 16))   # two ASCII hex digits -> byte value
+                    i += 4
+                    continue
+                except ValueError:
+                    pass
+            elif b[i+1:i+2] == b'\\':
+                out.append(0x5c)                 # literal backslash
+                i += 2
+                continue
+        out.append(b[i])
+        i += 1
+    return bytes(out)
 
-# expected: dirpath bytes (b"/usr/bin", root b"/") -> {escaped name: (type, size-or-None)}
+def show(b):                                     # for error messages only
+    return b.decode('utf-8', 'backslashreplace')
+
+# expected: dirpath (b"/usr/bin", root is b"/") -> {name-bytes: (type, size-or-None)}
 expected = {}
 with open(raw_path, 'rb') as f:
     for line in f:
         parts = line.rstrip(b'\n').split(b' ', 2)
         if len(parts) < 3: continue
-        t, path = parts[0].decode('ascii'), parts[2]
+        t, _links, path = parts
         p = path[2:] if path.startswith(b'./') else path
-        if t == 'd':                             # register the dir itself (catches failed mkdir of empty dirs)
+        if t == b'd':                            # register the dir itself (catches failed mkdir of empty dirs)
             expected.setdefault(b'/' + p, {})
         parent, name = os.path.split(p)          # b'git001' -> (b'', b'git001'): top level lives in b'/'
         key = b'/' + parent if parent else b'/'
         size = None
-        if t in ('f', 'l'):                      # regular files and symlinks have a comparable size
-            try: size = os.lstat(os.path.join(srcb, p)).st_size
-            except OSError as e: sys.exit("cannot stat source entry %s: %s" % (esc(p), e))
-        expected.setdefault(key, {})[esc(name)] = (t, size)
+        if t in (b'f', b'l'):                    # regular files and symlinks have a comparable size
+            try: size = os.lstat(os.path.join(src_b, p)).st_size
+            except OSError as e: sys.exit(f"cannot stat source entry {show(p)}: {e}")
+        expected.setdefault(key, {})[name] = (t, size)
 
 # actual: each listing section starts with debugfs's own "debugfs: ls -l <dir>"
-# echo line, so sections are self-describing and order-independent. That echo is
-# the command line as written, so the directory path in it is raw, UNescaped
-# bytes -- only the entry names within a listing come from print_filename.
+# echo line, so sections are self-describing and order-independent. Names (and
+# the dir path in the header) arrive escaped -- unescape both.
 actual = {}
 cur_dir = None
-LSPFX = b'debugfs: ls -l '
 with open(vout_path, 'rb') as f:
     for line in f:
         s = line.rstrip(b'\n')
         if s.startswith(b'debugfs: '):
-            cur_dir = s[len(LSPFX):].strip() if s.startswith(LSPFX) else None
+            cur_dir = unescape(s[len(b'debugfs: ls -l '):].strip()) if s.startswith(b'debugfs: ls -l ') else None
             continue
         parts = s.split()
         # "INO MODE (LINKS) UID GID SIZE DATE TIME NAME..."
         if cur_dir is not None and len(parts) >= 9 and parts[0].isdigit() and parts[2].startswith(b'('):
-            name = b' '.join(parts[8:]).decode('ascii', 'replace')   # ASCII by construction; see esc()
-            actual.setdefault(cur_dir, {})[name] = (parts[1], int(parts[5]))
-
-# Collect EVERY mismatched directory rather than exiting on the first one: an
-# ext4 target takes hours to reach this point, so one failed build should name
-# everything that needs attention instead of one directory per build.
-problems = []
-
-# Names are joined by hand rather than printed as a list: they are already
-# escaped, and a list repr would escape every backslash a second time.
-def show(names):
-    return ", ".join(names[:5]) + (", ..." if len(names) > 5 else "")
+            actual.setdefault(cur_dir, {})[unescape(b' '.join(parts[8:]))] = (parts[1], int(parts[5]))
 
 for key in sorted(expected):
     if key not in actual:                        # dir never listed -> its mkdir failed
-        problems.append("directory %s missing from image listing" % esc(key))
-        continue
+        sys.exit(f"directory {show(key)} missing from image listing")
     got = {n: v for n, v in actual[key].items()
-           if n not in ('.', '..') and not (key == b'/' and n == 'lost+found')}   # mke2fs artifact
+            if n not in (b'.', b'..') and not (key == b'/' and n == b'lost+found')}   # mke2fs artifact
     exp = expected[key]
     missing = sorted(set(exp) - set(got))
     extra   = sorted(set(got) - set(exp))
-    badsize = ["%s (src=%s img=%s)" % (n, exp[n][1], got[n][1]) for n in sorted(set(exp) & set(got))
-               if exp[n][0] in ('f', 'l') and got[n][1] != exp[n][1]]
+    badsize = [f"{show(n)} (src={exp[n][1]} img={got[n][1]})" for n in sorted(set(exp) & set(got))
+                if exp[n][0] in (b'f', b'l') and got[n][1] != exp[n][1]]
     if missing or extra or badsize:
-        msg = "directory %s: " % esc(key)
-        if missing: msg += "missing [%s] " % show(missing)
-        if extra:   msg += "unexpected [%s] " % show(extra)
-        if badsize: msg += "wrong size [%s]" % show(badsize)
-        problems.append(msg)
-
-if problems:
-    for msg in problems[:20]:
-        print(msg, file=sys.stderr)
-    if len(problems) > 20:
-        print("... and %d more mismatched director%s"
-              % (len(problems) - 20, "y" if len(problems) - 20 == 1 else "ies"), file=sys.stderr)
-    sys.exit(1)
-print("  verified %d entries across %d directories"
-      % (sum(len(v) for v in expected.values()), len(expected)))
+        msg = f"directory {show(key)}: "
+        if missing: msg += f"missing {[show(n) for n in missing[:5]]}{'...' if len(missing) > 5 else ''} "
+        if extra:   msg += f"unexpected {[show(n) for n in extra[:5]]} "
+        if badsize: msg += f"wrong size {badsize[:5]}"
+        sys.exit(msg)
+print(f"  verified {sum(len(v) for v in expected.values())} entries across {len(expected)} directories")
 PYEOF
 fi
 

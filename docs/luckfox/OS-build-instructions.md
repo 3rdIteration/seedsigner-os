@@ -350,8 +350,10 @@ cd output/image
 
 # Determine board label (mini or max based on your build)
 BOARD_LABEL="mini"  # or "max"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-IMAGE_NAME="seedsigner-luckfox-pico-${BOARD_LABEL}-sd-${TIMESTAMP}.img"
+# Artifact name tag: <appref>-os<develop|production>-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>
+# (match build-local.sh's artifact_tag so manual and scripted builds compare by name)
+TAG="dev-os-production-unsigned"
+IMAGE_NAME="seedsigner-luckfox-pico-${BOARD_LABEL}-sd-${TAG}.img"
 
 # Use blkenvflash to create the SD image
 ../../seedsigner-os/opt/luckfox/blkenvflash "$IMAGE_NAME"
@@ -393,8 +395,9 @@ Then package:
 cd output/image
 
 BOARD_LABEL="mini"  # or "max"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-NAND_BUNDLE_DIR="seedsigner-luckfox-pico-${BOARD_LABEL}-nand-files-${TIMESTAMP}"
+# Same artifact name tag as the SD image above (see artifact_tag in build-local.sh)
+TAG="dev-os-production-unsigned"
+NAND_BUNDLE_DIR="seedsigner-luckfox-pico-${BOARD_LABEL}-nand-files-${TAG}"
 
 mkdir -p "$NAND_BUNDLE_DIR"
 
@@ -404,9 +407,9 @@ cp update.img download.bin env.img idblock.img uboot.img boot.img \
    "$NAND_BUNDLE_DIR/"
 
 # Create tar.gz archive
-tar -czf "seedsigner-luckfox-pico-${BOARD_LABEL}-nand-bundle-${TIMESTAMP}.tar.gz" "$NAND_BUNDLE_DIR"
+tar -czf "seedsigner-luckfox-pico-${BOARD_LABEL}-nand-bundle-${TAG}.tar.gz" "$NAND_BUNDLE_DIR"
 
-echo "NAND bundle created: seedsigner-luckfox-pico-${BOARD_LABEL}-nand-bundle-${TIMESTAMP}.tar.gz"
+echo "NAND bundle created: seedsigner-luckfox-pico-${BOARD_LABEL}-nand-bundle-${TAG}.tar.gz"
 ```
 
 ---

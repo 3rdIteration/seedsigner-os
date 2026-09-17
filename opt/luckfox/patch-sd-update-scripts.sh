@@ -166,12 +166,29 @@ for name in sd_update.txt tftp_update.txt; do
     [ "$steps" -gt 0 ] || fail "$name has no mw.b staging steps to check"
 
     if [ "$overrun" -ne 0 ]; then
+        # The microSD auto-flash path (NAND bundle on a FAT card -> U-Boot
+        # `sd_update`) stages each whole partition in DRAM, and the SeedSigner
+        # rootfs (~88 MiB) cannot fit the ~44 MiB window on a 64 MiB Mini. This
+        # is an inherent size ceiling, not something a build can shrink away, so
+        # it must NOT be fatal: it would block every Mini build, including NAND
+        # builds that are flashed over USB (update.img / rkdeveloptool), where
+        # this staging window is never used. USB flashing is unaffected.
+        #
+        # It is a warning, not silence: shipping an sd_update.txt whose rootfs
+        # step would hang mid-write is a real footgun for anyone with a working
+        # SD slot who tries the auto-flash path. Default to loud-warn-and-
+        # continue; set SS_UBOOT_STAGE_OVERRUN=fail to restore the hard failure
+        # (e.g. when deliberately building for the SD/eMMC auto-flash path).
         echo "" >&2
-        echo "  [sdupd] An image no longer fits the U-Boot staging window on a 64 MiB board." >&2
-        echo "  [sdupd] Staging it would overwrite U-Boot's own stack/heap and hang the" >&2
-        echo "  [sdupd] microSD auto-flash mid-write, with no error on the console." >&2
-        echo "  [sdupd] Shrink the image, or flash over USB with update.img instead." >&2
-        fail "$name: staged image exceeds the U-Boot staging window"
+        echo "  [sdupd] ⚠️  $name: an image exceeds the U-Boot staging window on a 64 MiB board." >&2
+        echo "  [sdupd] ⚠️  The microSD/TFTP AUTO-FLASH path cannot flash this image (it would" >&2
+        echo "  [sdupd] ⚠️  hang mid-write). Flash over USB with update.img / rkdeveloptool" >&2
+        echo "  [sdupd] ⚠️  instead — USB flashing does not use this staging window and is fine." >&2
+        if [ "${SS_UBOOT_STAGE_OVERRUN:-warn}" = "fail" ]; then
+            fail "$name: staged image exceeds the U-Boot staging window (SS_UBOOT_STAGE_OVERRUN=fail)"
+        fi
+        echo "  [sdupd] ⚠️  Continuing (SS_UBOOT_STAGE_OVERRUN=warn); USB flashing is the path." >&2
+        continue
     fi
 
     log "✅ $name verified: $steps step(s), all within the staging window"

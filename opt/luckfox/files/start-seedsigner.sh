@@ -9,7 +9,9 @@ CAMERA_POST_SPI_DELAY=10  # seconds to wait after SPI init detection
 BOOT_WATCHDOG_TIMEOUT=120  # seconds; fall into Loader mode if the app never signals ready
 LOG_FILE="/tmp/startup.log"
 APP_LOG="/tmp/seedsigner-app.log"   # the app's own stdout/stderr (Python tracebacks)
-APP_TAIL_LINES=40                   # how much of it to copy into the logs on failure
+APP_TAIL_LINES=120                  # how much of it to copy into the logs on failure
+                                    # (must cover the watchdog's ~48-line meminfo/dmesg
+                                    # snapshot appended before the app output)
 READY_FILE="/tmp/seedsigner-ready"  # written by the app (MainMenuView) once it is up
 APP_PID=""
 CAMERA_HELPER_PID=""
@@ -298,9 +300,9 @@ init_gnupg_home() {
 # triggered by dropping an empty file named `display-probe` on the microSD card
 # or in /userdata.
 #
-# The marker is consumed on use. A probe that latched on would replace the splash
-# on every subsequent boot and delay the app each time, turning a diagnostic into
-# a permanent defect; deleting it first also means a probe that hangs and gets
+# The marker is consumed on use. A probe that latched on would run on every
+# subsequent boot and delay the app each time, turning a diagnostic into a
+# permanent defect; deleting it first also means a probe that hangs and gets
 # killed still cannot repeat. Removal is best-effort: on a read-only card the
 # probe simply runs again, which is harmless.
 DISPLAY_PROBE="/usr/bin/probe-display.py"
@@ -612,16 +614,15 @@ ensure_gpiochip_symlinks
 # Change to SeedSigner directory (Raspberry Pi SeedSigner-OS layout: app at /opt/src)
 cd /opt/src
 
-# Early splash. The panel is dark until the app finishes starting, so the device
-# looks dead for ~20s. This also splits the two failure classes on a non-dev
-# image at a glance: splash then nothing => display/SPI is fine and the app is
-# at fault; screen never lights => suspect the display chain (no
-# /dev/spidev0.0 from the configfs / device-tree overlay path).
-# The probe drives the panel itself and takes the place of the splash when
-# requested; running both would fight over the SPI bus for no benefit.
-if ! run_display_probe_if_requested; then
-    show_screen_message loading
-fi
+# Optional display probe (marker-file triggered). It drives the panel itself and
+# is the only thing that draws before the app on a normal boot: the early "loading"
+# splash was removed because it rendered colour-inverted (it opens the driver but,
+# unlike the app's Renderer, never calls set_color_inversion(), so the panel stays
+# in whatever state the previous owner left) and carried no information the user
+# did not already get — on signed builds the initramfs rootfs-verification screen
+# lights the panel within seconds of power-on and splits the same two failure
+# classes (screen lit => SPI chain fine, app at fault; dark => display chain).
+run_display_probe_if_requested || true
 
 # Boot watchdog: recover a bad boot without the BOOT button. If the app never
 # signals readiness (the app writes $READY_FILE from MainMenuView) within the
@@ -648,6 +649,27 @@ rm -f "$READY_FILE" 2>/dev/null || true
         # ready), so it probably holds /dev/spidev0.0. A second process opening
         # the panel would contend for SPI and could itself wedge the boot. The
         # persistent log records the reason instead.
+        #
+        # Capture the app's own output too: a HUNG app never reaches the crash
+        # path below (wait "$APP_PID" never returns), so without this its
+        # traceback/partial output — the only record of where it blocked — dies
+        # with /tmp on the Loader reboot. This only reads $APP_LOG; it does not
+        # touch the display, so the SPI-contention concern above does not apply.
+        #
+        # Append a kernel-side snapshot first: meminfo (is this the 64 MB Mini's
+        # chronic memory starvation — direct reclaim stalls show up as exactly
+        # submit_bio_wait) and the dmesg tail (MMC errors, OOM kills, page
+        # allocation failures). Both read in-memory structures only. The whole
+        # snapshot is backgrounded with a bounded grace sleep so that if any of
+        # it wedges on I/O it can NEVER delay the Loader failover itself — hung
+        # children simply die with the reboot.
+        ( { echo "--- watchdog meminfo ---"
+            head -n 6 /proc/meminfo 2>/dev/null
+            echo "--- watchdog dmesg tail ---"
+            dmesg 2>/dev/null | tail -n 40
+          } >> "$APP_LOG" 2>&1 ) &
+        sleep 5
+        log_app_output_tail
         rk-reboot loader
     fi
 ) &
@@ -676,9 +698,9 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
     # Give the microSD time override a second chance. /mnt/microsd mounts late
     # and conditionally here: S10mdev only registers the hotplug handler (it
     # runs no coldplug pass) and the mount itself lives in fat-fsck-hotplug, so
-    # a card present at power-on may not be mounted yet when the early
-    # init_system_clock ran. By now the boot has spent tens of seconds in the
-    # splash and camera bootstrap, so it usually is.
+# a card present at power-on may not be mounted yet when the early
+# init_system_clock ran. By now the boot has spent tens of seconds in the
+# camera bootstrap, so it usually is.
     #
     # Guarded on the file existing rather than run unconditionally: re-applying
     # rewinds the clock by the boot elapsed time, which is fine when it buys a
@@ -711,8 +733,14 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
     # the tee PID, breaking `wait "$APP_PID"` and the camera helper that keys
     # off it. Live console output is traded for a durable record; on dev images
     # use `tail -f $APP_LOG`, and the tail is echoed on failure below.
+    #
+    # `-u` (unbuffered): Python block-buffers stdout when redirected to a file,
+    # so a HUNG app would die with its entire output still in userspace buffers
+    # and $APP_LOG would be 0 bytes — indistinguishable from "printed nothing".
+    # Unbuffered makes every print land on disk immediately, so the log shows
+    # exactly how far startup got before it stalled.
     : > "$APP_LOG" 2>/dev/null || true
-    python main.py >>"$APP_LOG" 2>&1 &
+    python -u main.py >>"$APP_LOG" 2>&1 &
     APP_PID="$!"
     start_camera_service_later "$APP_PID" "$camera_post_spi_delay"
 

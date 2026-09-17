@@ -36,8 +36,12 @@ Options:
   --output DIR   - Set output directory (default: ./build-output)
   --repos-dir DIR- Bind-mount the SDK/app checkouts from DIR instead of the
                    named Docker volume 'seedsigner-repos' (used by CI)
-  --cache-dir DIR- Host directory for the Rust toolchain cache. Without it
-                   host-rust (and LLVM) is rebuilt from source every build
+  --cache-dir DIR- Host directory for the Rust toolchain cache (default: named
+                   volume 'seedsigner-rustcache'). Without it host-rust/LLVM is
+                   rebuilt from source every build -- the single longest step
+  --ccache-dir DIR Host directory for the Buildroot ccache (default: named
+                   volume 'seedsigner-ccache'). CI passes a host dir so
+                   actions/cache can persist it between runs
   --nand         - Build NAND-flashable system image artifacts
   --microsd      - Build MicroSD image artifacts
   --model TARGET - Target model: mini|max|pi|both|all (default: both)
@@ -50,22 +54,35 @@ name, so a local build can reproduce what CI ships):
   --variant V           - non-dev (hardened) | dev (serial console + adb)
                           (default: non-dev)
   --readonly-rootfs V   - auto|on|off. Read-only squashfs root with tmpfs
-                          overlays; auto = on for non-dev (default: auto)
+                           overlays; auto = on for non-dev (default: auto).
+                           Forced on for signed SD/eMMC builds: the initramfs
+                           verifier only supports immutable roots there
   --boot-log V          - on|off. Bake /etc/seedsigner-boot-log so
                           start-seedsigner.sh records every boot to /userdata
                           (default: off — the device writes nothing to flash)
   --usb-mode V          - auto|gadget|host|otg (default: auto)
   --debug-network V     - auto|on|off (default: auto)
+  --disable-uart2-console-debug V - auto|true|false. Strip the UART2 serial
+                           console (true); auto follows the variant: non-dev
+                           strips it, dev keeps it (default: auto). The console
+                           shares its UART with the SEC1210 smartcard reader,
+                           so a console-on image will not initialise the HAT —
+                           pass true for smartcard bring-up images
   --harden-adb V        - on|off. Strip the adb userspace on non-dev
                           (default: on)
   --testing-build V     - on|off. Ship /etc/seedsigner-testing-build, which
                           swaps the app's Home menu for the hardware test menu
                           (I/O Test, Test Smartcard, Flash Applet, Settings).
                           NOT for a production image (default: off)
-  --error-diagnostics V - on|off. Opt-in "Save to MicroSD" button on OS/package
-                          error screens (default: off)
-  --seedsigner-ref R    - SeedSigner app branch, RELEASE TAG or commit
-                          (default: dev). --seedsigner-branch is an alias.
+   --error-diagnostics V - on|off. Opt-in "Save to MicroSD" button on OS/package
+                           error screens (default: off)
+   --rebuild-initramfs-binaries V - on|off. With SEEDSIGNER_FIT_SIGNATURE=1,
+                           rebuild the four vendored initramfs binaries from
+                           source and overwrite the committed copies before
+                           their SHA-256 pins are checked; a non-reproducing
+                           build fails loudly (default: off)
+   --seedsigner-ref R    - SeedSigner app branch, RELEASE TAG or commit
+                           (default: dev). --seedsigner-branch is an alias.
 
 Examples:
   ./build.sh build             # Standard build (artifacts in ./build-output)
@@ -145,12 +162,15 @@ build_docker_image() {
     print_success "Docker image built: $IMAGE_NAME"
 }
 
-# Host paths for the repo tree and the build cache, set by --repos-dir /
-# --cache-dir. Empty means the historical behaviour: repos live in the Docker
-# volume 'seedsigner-repos', and there is no cache. CI sets both so that
-# actions/cache can see them on the runner filesystem.
+# Host paths for the repo tree and the build caches, set by
+# --repos-dir / --cache-dir / --ccache-dir. Empty means the local default: repos
+# and caches live in named Docker volumes. CI sets host dirs instead so
+# actions/cache can see them on the runner filesystem (a named volume does not
+# survive between CI runs). --cache-dir is the Rust/LLVM toolchain cache;
+# --ccache-dir is the Buildroot ccache.
 REPOS_DIR_HOST=""
 CACHE_DIR_HOST=""
+CCACHE_DIR_HOST=""
 
 run_build() {
     local mode="$1"
@@ -176,7 +196,11 @@ run_build() {
         repos_mount="$(realpath "$REPOS_DIR_HOST")"
         print_success "Repository directory (bind mount): $repos_mount"
     else
-        local volume_name="seedsigner-repos"
+        # Overridable so two builds can run in parallel on this machine: each
+        # gets its own SDK/app checkouts (a build resets the tree to a pinned,
+        # pristine state at start and patches it in place -- sharing one volume
+        # between concurrent builds destroys both). Caches stay shared.
+        local volume_name="${REPOS_VOLUME:-seedsigner-repos}"
         if ! docker volume ls | grep -q "$volume_name"; then
             print_success "Creating Docker volume for persistent repositories: $volume_name"
             docker volume create "$volume_name"
@@ -186,25 +210,63 @@ run_build() {
         repos_mount="$volume_name"
     fi
 
-    # Host Rust toolchain cache. Without it the container rebuilds host-rust --
-    # and therefore LLVM -- from source on every build, which is the single
-    # longest step there is. See rust-toolchain-cache.sh.
-    local cache_arg=""
-    if [[ -n "$CACHE_DIR_HOST" ]]; then
-        mkdir -p "$CACHE_DIR_HOST"
-        local abs_cache_dir
-        abs_cache_dir="$(realpath "$CACHE_DIR_HOST")"
-        cache_arg="-v $abs_cache_dir:/build/cache"
-        env_args="$env_args -e RUST_TOOLCHAIN_CACHE=/build/cache/rust-toolchain.tar.zst"
-        print_success "Build cache directory: $abs_cache_dir"
-    fi
-    
-    # Set up build environment variables
+    # Build environment variables. Declared BEFORE the cache blocks so they can
+    # append to it. (Previously env_args was (re)declared *after* the Rust-cache
+    # block, so its `-e RUST_TOOLCHAIN_CACHE=...` was clobbered and never reached
+    # the container -- the Rust/LLVM toolchain cache silently never worked.)
     local env_args="-e BUILD_MODEL=$build_model"
     if [[ -n "$build_jobs" ]]; then
-        env_args="-e BUILD_JOBS=$build_jobs -e BUILD_MODEL=$build_model"
+        env_args="$env_args -e BUILD_JOBS=$build_jobs"
         print_success "Using $build_jobs parallel build jobs"
     fi
+
+    # Persistent Buildroot ccache. Mounted at Buildroot's default cache dir
+    # ($HOME/.buildroot-ccache in the container) so BR2_CCACHE=y (set in the
+    # buildroot defconfig) reuses compiled objects across builds. ccache is
+    # determinism-safe (same preprocessed source + flags -> identical object), so
+    # this does NOT compromise reproducibility the way KEEP_SDK_CHECKOUT does.
+    # A named volume by default; overridable with a host dir via --ccache-dir.
+    # NOTE: ccache does NOT cover the Rust toolchain -- rustc isn't ccache-aware;
+    # that has its own cache below.
+    local ccache_mount
+    if [[ -n "$CCACHE_DIR_HOST" ]]; then
+        mkdir -p "$CCACHE_DIR_HOST"
+        ccache_mount="$(realpath "$CCACHE_DIR_HOST")"
+        print_success "ccache directory (bind mount): $ccache_mount"
+    else
+        local ccache_volume="seedsigner-ccache"
+        if ! docker volume ls | grep -q "$ccache_volume"; then
+            print_success "Creating Docker volume for persistent ccache: $ccache_volume"
+            docker volume create "$ccache_volume"
+        else
+            print_success "Using existing ccache volume: $ccache_volume"
+        fi
+        ccache_mount="$ccache_volume"
+    fi
+
+    # Host Rust toolchain cache. Buildroot builds host-rust (and therefore LLVM)
+    # FROM SOURCE for the uclibc Tier-3 target -- comfortably the single longest
+    # step. rust-toolchain-cache.sh restores/packages it when RUST_TOOLCHAIN_CACHE
+    # is set. A named volume by default (so it Just Works, like ccache);
+    # overridable with a host dir via --cache-dir (CI uses that so actions/cache
+    # can see it on the runner filesystem).
+    local cache_arg cache_mount
+    if [[ -n "$CACHE_DIR_HOST" ]]; then
+        mkdir -p "$CACHE_DIR_HOST"
+        cache_mount="$(realpath "$CACHE_DIR_HOST")"
+        print_success "Rust toolchain cache (bind mount): $cache_mount"
+    else
+        local rustcache_volume="seedsigner-rustcache"
+        if ! docker volume ls | grep -q "$rustcache_volume"; then
+            print_success "Creating Docker volume for persistent Rust toolchain cache: $rustcache_volume"
+            docker volume create "$rustcache_volume"
+        else
+            print_success "Using existing Rust toolchain cache volume: $rustcache_volume"
+        fi
+        cache_mount="$rustcache_volume"
+    fi
+    cache_arg="-v $cache_mount:/build/cache"
+    env_args="$env_args -e RUST_TOOLCHAIN_CACHE=/build/cache/rust-toolchain.tar.zst"
 
     # Forward the build-shaping variables into the container. Only BUILD_MODEL and
     # BUILD_JOBS used to cross the boundary, so a Docker build silently took
@@ -262,6 +324,10 @@ run_build() {
                        SEEDSIGNER_REF SEEDSIGNER_BRANCH \
                        SEEDSIGNER_BOOT_LOG SEEDSIGNER_TESTING_BUILD \
                        SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS \
+                         SEEDSIGNER_FIT_SIGNATURE SEEDSIGNER_FIT_BURN_KEY_HASH \
+                         SEEDSIGNER_ROOTFS_KEY_DIR SEEDSIGNER_ROOTFS_KEY_PASSPHRASE \
+                         SEEDSIGNER_REBUILD_INITRAMFS_BINARIES \
+                         SEEDSIGNER_KEEP_SDK_CHECKOUT \
                        DISABLE_UART2_CONSOLE_DEBUG \
                        SEEDSIGNER_OS_REPO SEEDSIGNER_OS_BRANCH \
                        SEEDSIGNER_OS_COMMIT SEEDSIGNER_OS_DATE; do
@@ -316,6 +382,7 @@ run_build() {
                        -v $repos_mount:/build/repos
                        -v $abs_output_dir:/build/output
                        -v $external_packages_dir:/build/external-packages:ro
+                       -v $ccache_mount:/root/.buildroot-ccache
                        $gen_os_release_arg
                        $cache_arg
                        $env_args"
@@ -516,6 +583,18 @@ main() {
                     exit 1
                 fi
                 ;;
+            # Host directory for the Buildroot ccache (BR2_CCACHE). Without it a
+            # named Docker volume is used, which is right locally but does not
+            # survive between CI runs -- CI passes a host dir + actions/cache.
+            --ccache-dir)
+                if [[ -n "$2" ]]; then
+                    CCACHE_DIR_HOST="$2"
+                    shift 2
+                else
+                    print_error "Missing argument for --ccache-dir"
+                    exit 1
+                fi
+                ;;
             --nand)
                 build_nand=true
                 shift
@@ -604,6 +683,25 @@ main() {
                     print_error "Invalid or missing argument for --error-diagnostics (use: on|off)"; exit 1
                 fi
                 ;;
+            # Rebuild the four vendored initramfs binaries from source at build
+            # time and overwrite the committed copies before their SHA-256 pins
+            # are checked (only with SEEDSIGNER_FIT_SIGNATURE=1). Off by default:
+            # the committed binaries ARE the reviewed, pinned artifacts. When on,
+            # a rebuild that does not reproduce the pinned bytes exactly fails
+            # loudly — the pins act as a live determinism canary. Needs network
+            # for the checksum-pinned source downloads.
+            --rebuild-initramfs-binaries)
+                if [[ -n "$2" && "$2" =~ ^(on|off)$ ]]; then
+                    if [[ "$2" == "on" ]]; then
+                        export SEEDSIGNER_REBUILD_INITRAMFS_BINARIES=1
+                    else
+                        export SEEDSIGNER_REBUILD_INITRAMFS_BINARIES=0
+                    fi
+                    shift 2
+                else
+                    print_error "Invalid or missing argument for --rebuild-initramfs-binaries (use: on|off)"; exit 1
+                fi
+                ;;
             # Strip the adb userspace on non-dev. Mirrors the CI input of the same
             # name; forwarded as SEEDSIGNER_HARDEN_ADB.
             --harden-adb)
@@ -625,6 +723,16 @@ main() {
                     export SEEDSIGNER_DEBUG_NETWORK="$2"; shift 2
                 else
                     print_error "Invalid or missing argument for --debug-network (use: auto|on|off)"; exit 1
+                fi
+                ;;
+            # UART2 serial console. Mirrors the CI input of the same name;
+            # forwarded as DISABLE_UART2_CONSOLE_DEBUG, which os-build.sh's
+            # resolve_uart2_console() normalises (auto follows the variant).
+            --disable-uart2-console-debug)
+                if [[ -n "$2" && "$2" =~ ^(auto|true|false)$ ]]; then
+                    export DISABLE_UART2_CONSOLE_DEBUG="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --disable-uart2-console-debug (use: auto|true|false)"; exit 1
                 fi
                 ;;
             # A ref is a branch, a release tag, or a commit -- `git clone -b`

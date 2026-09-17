@@ -24,6 +24,12 @@ RUN apt-get update && \
         fakeroot cmake unzip gperf autoconf \
         device-tree-compiler libncurses5-dev \
         pkg-config bc python-is-python3 passwd openssl \
+        # ccache: Buildroot's BR2_CCACHE=y invokes it to cache package
+        # compilation across builds (persisted in a Docker volume at
+        # $HOME/.buildroot-ccache). Determinism-safe -- same input, same object
+        # -- unlike SEEDSIGNER_KEEP_SDK_CHECKOUT, so clean reproducible builds
+        # can still be fast on a warm cache.
+        ccache \
         openssh-server openssh-client vim file cpio rsync \
         # rust-toolchain-cache.sh packs the host Rust toolchain with
         # `tar --zstd`, which shells out to the zstd binary. The CI runner
@@ -65,9 +71,16 @@ COPY SDK_COMMIT /build/
 # own COPY -- the `COPY *.sh` glob below only reaches top-level scripts.
 COPY mkfs-ubifs-determinism/ /build/mkfs-ubifs-determinism/
 
+# Secure-boot helpers. Only make-dev-keys.sh is used during the build (and only
+# when SEEDSIGNER_FIT_SIGNATURE=1, to lay down the dev.{key,pubkey,crt} the SDK's
+# in-build FIT signing requires); the rest are bench tools that never run in a
+# normal build. A subdirectory, so it needs its own COPY -- the `COPY *.sh` glob
+# below only reaches top-level scripts.
+COPY secure-boot/ /build/secure-boot/
+
 
 # Make scripts executable
-RUN chmod +x /build/*.sh /build/blkenvflash 2>/dev/null || true
+RUN chmod +x /build/*.sh /build/secure-boot/*.sh /build/blkenvflash 2>/dev/null || true
 
 # Set up git configuration (required for cloning repositories inside container)
 RUN git config --global user.email "build@seedsigner.luckfox" && \

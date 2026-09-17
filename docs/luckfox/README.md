@@ -49,7 +49,7 @@ opt/luckfox/build-local.sh --hardware mini --boot nand
 
 1. Clone the Rockchip **Luckfox Pico SDK** (`3rdIteration/luckfox-pico`) — brings U-Boot, the kernel, and its
    own Buildroot.
-2. Apply SDK patches (partition tables, UART2 console, HWRNG/crypto, Rust-on-uClibc) — mostly in-line
+2. Apply SDK patches (partition tables, UART2 console, HWRNG, Rust-on-uClibc) — mostly in-line
    `sed`/append fragments against the SDK's board configs, DTS and kernel defconfig.
 3. Inject SeedSigner packages: copy `opt/external-packages/*` into the SDK Buildroot's `package/` and append a
    `menu "SeedSigner"` block that `source`s each custom package's `Config.in`. **Two-place rule:** a custom
@@ -75,7 +75,14 @@ manual "Run workflow" defaults to `non-dev` (pick `dev` to override). Local buil
 `SEEDSIGNER_BUILD_VARIANT=dev|non-dev` (default `non-dev`).
 
 For the serial console specifically, the `disable_uart2_console_debug` input defaults to `auto` (follow the
-variant: non-dev strips it, dev keeps it); force it with `true`/`false`.
+variant: non-dev strips it, dev keeps it); force it with `true`/`false`. Local Docker builds take the same
+lever as `--disable-uart2-console-debug auto|true|false` on `build.sh`.
+
+**The console and the SEC1210 smartcard HAT share a UART.** A console-on image (any dev build under the
+default) will not initialise the reader: kernel log output is injected into the ccid driver's AT-command
+stream, and with only the active reader on the line early boot wedges instead. Build smartcard bring-up
+images with `disable_uart2_console_debug=true` (or `--disable-uart2-console-debug true`); non-dev images are
+unaffected because they strip the console by default.
 
 The Luckfox implementation differs from the Pi / La Frite profiles (which have parallel `-dev`/non-dev profile
 directories). Luckfox is the Rockchip SDK with a single defconfig + an SDK-provided rootfs, so **non-dev is a
@@ -177,7 +184,7 @@ There are three ways to build: `.github/workflows/build-luckfox.yml` (CI),
 | `readonly-rootfs.sh` / `assert-readonly-rootfs.sh` | squashfs root + overlay, and its verification |
 | `install-gnupg-home.sh` | stages the GnuPG agent/scdaemon config seeded into `GNUPGHOME` |
 | `install-build-time.sh` | bakes `/etc/seedsigner-build-time` from the pinned app commit; the boot clock's default |
-| `prune-whitespace-names.sh` | drops whitespace-named paths from site-packages; debugfs cannot address them, so they break every ext4 target |
+| `strip-whitespace-filenames.sh` | drops whitespace-named entries anywhere in the rootfs before ext4 packing (upstream test fixtures like setuptools' vendored `Lorem ipsum.txt`); debugfs's line-oriented command file cannot address them, so they break every ext4 target. Every removal is logged |
 | `strip-kernel-network.sh` / `assert-kernel-network.sh` | network/WiFi/coredump strip, and its verification |
 | `configure-usb-mode.sh`, `harden-nondev.sh`, `optimize-nondev.sh`, `patch-s50usbdevice.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`, `uboot-recovery-config.sh`, `compile-translations.sh` | as named |
 
@@ -444,6 +451,8 @@ Notes:
 
 ## Other reference docs in this folder
 
+- [secure-boot.md](secure-boot.md) — secure boot / OTP feasibility report (research only; nothing is enabled).
+- [../hwrng.md](../hwrng.md) — how hardware entropy reaches the app on this and the other boards.
 - [OS-build-instructions.md](OS-build-instructions.md) — detailed manual SDK build steps (original standalone layout).
 - [LUCKFOX_STARTUP_WORKFLOW.md](LUCKFOX_STARTUP_WORKFLOW.md) — on-device startup / camera sequencing.
 - [BUILD_REFERENCE.md](BUILD_REFERENCE.md), [TOOLCHAIN_ANALYSIS.md](TOOLCHAIN_ANALYSIS.md),

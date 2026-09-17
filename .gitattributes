@@ -1,0 +1,8 @@
+# Force LF line endings for all text files, in the working tree on every
+# platform. The Luckfox Docker build copies the working tree byte-for-byte into
+# the container (opt/luckfox is the build context), and several Buildroot/SDK
+# inputs are consumed as-is: a CRLF worktree (git autocrlf=true on Windows)
+# would ship \r into every script and config, breaking bash at runtime and
+# silently defeating sed patterns anchored on line ends. eol=lf overrides
+# core.autocrlf for matching files; text=auto leaves binaries alone.
+* text=auto eol=lf
