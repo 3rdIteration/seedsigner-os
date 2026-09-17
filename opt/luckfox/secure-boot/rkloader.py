@@ -36,6 +36,7 @@ does, including on-device.
   sign    <img> --key <pem> [-o <f>]  sign locally (convenience; key on this host)
   verify  <img> --pubkey <pem>        full offline PSS verification
   setkey  <img> --pubkey <pem> [-o]   re-embed a different public key
+  canonicalise <img> [-o <f>]         zero the signature + key, for rebuild diffs
 
 Exit codes: 0 ok, 1 usage/IO, 2 verification failed, 3 parse error.
 """
@@ -403,6 +404,45 @@ def cmd_setkey(a):
     return 0
 
 
+def cmd_canonicalise(a):
+    """Zero every byte a rebuild cannot reproduce: the signature and the key.
+
+    What is left is key-independent, so a release and a reproducible rebuild
+    should canonicalise to identical bytes.
+    """
+    buf = read(a.image)
+    lay = layout(buf)
+    soff, _ = lay["sig"]
+    moff, _ = lay["mod"]
+    n = read_modulus(buf, lay)
+    buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
+    buf[moff:moff + SIG_LEN] = b"\x00" * SIG_LEN
+    zeroed = 1
+    # idblock.img also carries the key big-endian in its SPL DTB, plus the
+    # derived Montgomery constants. All of them are key-dependent, so all of
+    # them have to go or two images signed with different keys will not
+    # canonicalise to the same bytes.
+    if n:
+        for blob in (n.to_bytes(SIG_LEN, "big"),
+                     pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big")):
+            at = bytes(buf).find(blob)
+            while at >= 0:
+                buf[at:at + SIG_LEN] = b"\x00" * SIG_LEN
+                zeroed += 1
+                at = bytes(buf).find(blob, at + SIG_LEN)
+        n0 = struct.pack(">I", (-pow(n, -1, 1 << 32)) % (1 << 32))
+        at = bytes(buf).find(n0)
+        if at >= 0:
+            struct.pack_into(">I", buf, at, 0)
+            zeroed += 1
+    buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
+    dst = write_out(buf, a.image, a.out)
+    print("canonicalised %s" % dst)
+    print("   zeroed the signature and %d key-dependent field(s)" % zeroed)
+    print("   sha256: %s" % hashlib.sha256(bytes(buf)).hexdigest())
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="rkloader.py", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -434,6 +474,7 @@ def main(argv=None):
     sp.add_argument("--force", action="store_true", help="sign even if the embedded key differs")
     add("verify", cmd_verify, pub=True)
     add("setkey", cmd_setkey, pub=True, out=True)
+    add("canonicalise", cmd_canonicalise, out=True)
 
     a = p.parse_args(argv)
     try:
