@@ -173,8 +173,28 @@ alters the on-device format and needs a fresh bench run.
 
 ## Running the signer on a SeedSigner
 
-The signers are stdlib-only Python, so they run on any SeedSigner OS target. The
-practical limit is not CPU — RSA-PSS is one `pow()`, and hashing is C — but
+On a Pi or La Frite image the tooling is installed by the build
+(`install_secure_boot_tools()` in [`opt/build.sh`](../../opt/build.sh)), from the
+same copies in this repo that CI signs with:
+
+| On the image | What it is |
+|---|---|
+| `/opt/secure-boot/{rkloader,fitsign,minisign}.py` | the signers as CLIs, for verifying or re-signing from a shell |
+| `/opt/src/seedsigner/helpers/luckfox_secure_boot/` | the app's copies, backing **Tools → Re-sign Release** |
+
+Both come from `opt/luckfox/secure-boot/`. The build **overwrites** the app's
+vendored copies with this repo's, so a shipped image cannot run a drifted
+version whichever app branch was cloned; a mismatch is reported during the
+build. The app repo has its own sync test for development time.
+
+So a single La Frite or Pi 02W image is both the GUI ceremony and a shell you
+can verify a release from:
+
+```sh
+/opt/secure-boot/rkloader.py verify /mnt/microsd/release/idblock.img --pubkey mine.pub
+```
+
+The practical limit is not CPU — RSA-PSS is one `pow()`, and hashing is C — but
 where a ~225 MB image bundle can be staged:
 
 - **La Frite, Pi 02W, Pi 2/4** — comfortable; can host the full
