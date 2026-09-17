@@ -25,6 +25,7 @@ Background, threat model and consequences: [`docs/luckfox/secure-boot.md`](../..
 | `sign-secure-boot.sh` | Generate/load an RSA key, sign the loader + idblock (+ uboot/boot with a build tree), verify offline, print the OTP hash a burn would write. Never flashes, never burns. `--burn` only *arms* the fuse write and refuses without an explicit confirm token. |
 | `enable-fit-signature.sh` | Turn on `CONFIG_FIT_SIGNATURE` / `CONFIG_SPL_FIT_SIGNATURE` in a **checked-out SDK's** U-Boot defconfig. Opt-in on purpose (see below). |
 | `rkloader.py` | Sign / verify / inspect / re-key `download.bin` and `idblock.img` **offline, in pure Python** — no `rk_sign_tool`, no vendor blob. `digest` + `splice` are the air-gap boundary: 32 bytes out to the signer, 256 bytes back. Tested by `tests/test_rkloader.py`. |
+| `fitsign.py` | Sign / verify / splice / canonicalise the U-Boot FIT images (`uboot.img`, `boot.img`) **offline, in pure Python** — no `mkimage`, no SDK. Re-derives exactly what mkimage signed from the `hashed-nodes` / `hashed-strings` properties the FIT already carries. Tested by `tests/test_fitsign.py`. |
 | `verify-fit-payloads.py` | Parse a FIT; list payloads and recomputed hashes, dump the signature node, or compare two images' payloads (release vs rebuild). |
 
 ## Why enforcement is not an auto-applied SDK patch

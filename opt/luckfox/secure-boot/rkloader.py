@@ -281,7 +281,8 @@ def cmd_digest(a):
     buf = read(a.image)
     d = signing_digest(buf, layout(buf))
     if a.out:
-        open(a.out, "wb").write(d)
+        with open(a.out, "wb") as f:
+            f.write(d)
         print("wrote %s (%d bytes)" % (a.out, len(d)))
     else:
         print(d.hex())
@@ -291,7 +292,8 @@ def cmd_digest(a):
 def cmd_splice(a):
     buf = read(a.image)
     lay = layout(buf)
-    sig = open(a.sig, "rb").read()
+    with open(a.sig, "rb") as f:
+        sig = f.read()
     if len(sig) in (SIG_LEN * 2, SIG_LEN * 2 + 1):
         sig = bytes.fromhex(sig.decode().strip())          # accept hex too
     if len(sig) != SIG_LEN:
