@@ -317,6 +317,57 @@ def cmd_splice(a):
     return 0
 
 
+def sign_buf(buf, lay, n, d):
+    """Sign an in-memory image. Returns the 256-byte little-endian signature.
+
+    The library entry point: callers holding a key in memory (a BIP85-derived
+    key on a SeedSigner, say) must never have to write it to disk.
+    """
+    prepare_for_signing(buf, lay)
+    sig = rsa_sign_digest(msg_digest(buf, lay), n, d)
+    off, _ = lay["sig"]
+    buf[off:off + SIG_LEN] = sig
+    if not rsa_verify_digest(msg_digest(buf, lay), int.from_bytes(sig, "little"), n):
+        raise RkError("internal error: freshly made signature does not verify")
+    return sig
+
+
+def set_pubkey(buf, lay, n):
+    """Re-embed public key `n`, clearing the now-meaningless signature.
+
+    Returns the number of locations rewritten. Also updates the big-endian copy
+    in idblock's SPL DTB and the derived Montgomery constants.
+    """
+    old = read_modulus(buf, lay)
+    off, _ = lay["mod"]
+    buf[off:off + SIG_LEN] = n.to_bytes(SIG_LEN, "little")
+    replaced = 1
+    if old:
+        old_be = old.to_bytes(SIG_LEN, "big")
+        new_be = n.to_bytes(SIG_LEN, "big")
+        at = bytes(buf).find(old_be)
+        while at >= 0:
+            buf[at:at + SIG_LEN] = new_be
+            replaced += 1
+            at = bytes(buf).find(old_be, at + SIG_LEN)
+        old_n0 = (-pow(old, -1, 1 << 32)) % (1 << 32)
+        new_n0 = (-pow(n, -1, 1 << 32)) % (1 << 32)
+        at = bytes(buf).find(struct.pack(">I", old_n0))
+        if at >= 0:
+            struct.pack_into(">I", buf, at, new_n0)
+            replaced += 1
+        old_r2 = pow(2, 2 * 2048, old).to_bytes(SIG_LEN, "big")
+        new_r2 = pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big")
+        at = bytes(buf).find(old_r2)
+        if at >= 0:
+            buf[at:at + SIG_LEN] = new_r2
+            replaced += 1
+    soff, _ = lay["sig"]
+    buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
+    buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
+    return replaced
+
+
 def cmd_sign(a):
     buf = read(a.image)
     lay = layout(buf)
@@ -332,12 +383,7 @@ def cmd_sign(a):
                       "run setkey first, or pass --force" % a.key)
     if a.force and emb != n:
         print("!! signing with a key that does not match the embedded modulus (--force)")
-    prepare_for_signing(buf, lay)
-    sig = rsa_sign_digest(msg_digest(buf, lay), n, d)
-    off, _ = lay["sig"]
-    buf[off:off + SIG_LEN] = sig
-    if not rsa_verify_digest(msg_digest(buf, lay), int.from_bytes(sig, "little"), n):
-        raise RkError("internal error: freshly made signature does not verify")
+    sign_buf(buf, lay, n, d)
     dst = write_out(buf, a.image, a.out)
     print("signed %s (verified)" % dst)
     return 0
@@ -365,37 +411,7 @@ def cmd_setkey(a):
     buf = read(a.image)
     lay = layout(buf)
     n = load_pubkey(a.pubkey)[0]
-    old = read_modulus(buf, lay)
-    off, _ = lay["mod"]
-    buf[off:off + SIG_LEN] = n.to_bytes(SIG_LEN, "little")
-    replaced = 1
-    # idblock.img also carries the SPL DTB, whose rsa,* properties are big-endian
-    # and must agree, along with the derived Montgomery constants.
-    if old:
-        old_be = old.to_bytes(SIG_LEN, "big")
-        new_be = n.to_bytes(SIG_LEN, "big")
-        at = bytes(buf).find(old_be)
-        while at >= 0:
-            buf[at:at + SIG_LEN] = new_be
-            replaced += 1
-            at = bytes(buf).find(old_be, at + SIG_LEN)
-        # rsa,n0-inverse = -n^-1 mod 2^32 ; rsa,r-squared = 2^(2*2048) mod n
-        old_n0 = (-pow(old, -1, 1 << 32)) % (1 << 32)
-        new_n0 = (-pow(n, -1, 1 << 32)) % (1 << 32)
-        at = bytes(buf).find(struct.pack(">I", old_n0))
-        if at >= 0:
-            struct.pack_into(">I", buf, at, new_n0)
-            replaced += 1
-        old_r2 = pow(2, 2 * 2048, old).to_bytes(SIG_LEN, "big")
-        new_r2 = pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big")
-        at = bytes(buf).find(old_r2)
-        if at >= 0:
-            buf[at:at + SIG_LEN] = new_r2
-            replaced += 1
-    # any existing signature is now meaningless
-    soff, _ = lay["sig"]
-    buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
-    buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
+    replaced = set_pubkey(buf, lay, n)
     dst = write_out(buf, a.image, a.out)
     print("re-embedded key in %s (%d location(s)); signature cleared - sign it next" % (dst, replaced))
     print("   new modulus sha256: %s" % hashlib.sha256(n.to_bytes(SIG_LEN, "big")).hexdigest())

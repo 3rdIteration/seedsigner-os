@@ -240,17 +240,27 @@ def _write_value(buf, sig, value):
     buf[off:off + len(value)] = value
 
 
-def cmd_sign(a):
-    buf = read(a.image)
+def sign_buf(buf, n, d):
+    """Sign an in-memory FIT. Returns the 256-byte signature value.
+
+    The library entry point: callers holding a key in memory (a BIP85-derived
+    key on a SeedSigner, say) must never have to write it to disk.
+    """
     sig = signature_node(buf)
-    _algo_check(sig, a.image)
-    n, e, d = load_privkey(a.key)
     digest = signed_digest(buf)
     em = pss_encode(digest, n.bit_length() - 1, os.urandom(max_salt_len(n)))
     value = pow(int.from_bytes(em, "big"), d, n).to_bytes(256, "big")
     _write_value(buf, sig, value)
     if not verify_buf(buf, n):
         raise FitError("internal error: freshly made signature does not verify")
+    return value
+
+
+def cmd_sign(a):
+    buf = read(a.image)
+    _algo_check(signature_node(buf), a.image)
+    n, e, d = load_privkey(a.key)
+    sign_buf(buf, n, d)
     print("signed %s (verified)" % write_out(buf, a.image, a.out))
     return 0
 
@@ -319,26 +329,70 @@ def _image_payloads(buf):
     return out
 
 
-def cmd_rehash(a):
-    """Recompute every sha256 payload hash. Needed after patching a payload."""
-    buf = read(a.image)
+def rehash_buf(buf, report=None):
+    """Recompute every sha256 payload `hash` node. Returns the number changed."""
     changed = 0
     for name, (pos, size, hashes) in sorted(_image_payloads(buf).items()):
         actual = hashlib.sha256(bytes(buf[pos:pos + size])).digest()
         for hn, (algo, off, ln) in hashes.items():
             if algo != "sha256" or ln != 32:
-                print("   %-10s %s: skipping algo=%r len=%d" % (name, hn.split("/")[-1], algo, ln))
+                if report:
+                    report("   %-10s %s: skipping algo=%r len=%d"
+                           % (name, hn.split("/")[-1], algo, ln))
                 continue
             if bytes(buf[off:off + ln]) != actual:
                 buf[off:off + ln] = actual
                 changed += 1
-                print("   %-10s %s updated -> %s" % (name, hn.split("/")[-1], actual.hex()[:16]))
+                if report:
+                    report("   %-10s %s updated -> %s"
+                           % (name, hn.split("/")[-1], actual.hex()[:16]))
+    return changed
+
+
+def cmd_rehash(a):
+    """Recompute every sha256 payload hash. Needed after patching a payload."""
+    buf = read(a.image)
+    changed = rehash_buf(buf, report=print)
     if changed:
         print("rehashed %s (%d hash node(s)); the signature is now stale - re-sign it"
               % (write_out(buf, a.image, a.out), changed))
     else:
         print("%s: all payload hashes already correct" % a.image)
     return 0
+
+
+def set_pubkey(buf, new_n, old_n):
+    """Swap the RSA public key embedded in a FIT payload. Returns hits.
+
+    Locating it needs the OLD key, because the payload is opaque here - there is
+    no node saying where the modulus sits. Callers re-keying a whole chain can
+    read the old modulus out of idblock.img with rkloader.read_modulus() before
+    re-keying that.
+
+    After this the payload has changed, so its `hash` node and the signature are
+    both stale: run rehash_buf() then sign_buf().
+    """
+    hits = 0
+    old_be, new_be = old_n.to_bytes(256, "big"), new_n.to_bytes(256, "big")
+    at = bytes(buf).find(old_be)
+    while at >= 0:
+        buf[at:at + 256] = new_be
+        hits += 1
+        at = bytes(buf).find(old_be, at + 256)
+    # the Montgomery constants U-Boot's verifier keeps alongside the modulus
+    old_n0 = (-pow(old_n, -1, 1 << 32)) % (1 << 32)
+    new_n0 = (-pow(new_n, -1, 1 << 32)) % (1 << 32)
+    at = bytes(buf).find(struct.pack(">I", old_n0))
+    if at >= 0:
+        struct.pack_into(">I", buf, at, new_n0)
+        hits += 1
+    old_r2 = pow(2, 2 * 2048, old_n).to_bytes(256, "big")
+    new_r2 = pow(2, 2 * 2048, new_n).to_bytes(256, "big")
+    at = bytes(buf).find(old_r2)
+    if at >= 0:
+        buf[at:at + 256] = new_r2
+        hits += 1
+    return hits
 
 
 def cmd_setkey(a):
@@ -353,30 +407,10 @@ def cmd_setkey(a):
     """
     buf = read(a.image)
     new = load_pubkey(a.pubkey)[0]
-    old = load_pubkey(a.old_pubkey)[0] if a.old_pubkey else None
-    if old is None:
+    if not a.old_pubkey:
         raise FitError("--old-pubkey is required: the key to replace cannot be "
                        "located in the payload otherwise")
-    hits = 0
-    old_be, new_be = old.to_bytes(256, "big"), new.to_bytes(256, "big")
-    at = bytes(buf).find(old_be)
-    while at >= 0:
-        buf[at:at + 256] = new_be
-        hits += 1
-        at = bytes(buf).find(old_be, at + 256)
-    # the Montgomery constants U-Boot's verifier keeps alongside the modulus
-    old_n0 = (-pow(old, -1, 1 << 32)) % (1 << 32)
-    new_n0 = (-pow(new, -1, 1 << 32)) % (1 << 32)
-    at = bytes(buf).find(struct.pack(">I", old_n0))
-    if at >= 0:
-        struct.pack_into(">I", buf, at, new_n0)
-        hits += 1
-    old_r2 = pow(2, 2 * 2048, old).to_bytes(256, "big")
-    new_r2 = pow(2, 2 * 2048, new).to_bytes(256, "big")
-    at = bytes(buf).find(old_r2)
-    if at >= 0:
-        buf[at:at + 256] = new_r2
-        hits += 1
+    hits = set_pubkey(buf, new, load_pubkey(a.old_pubkey)[0])
     if not hits:
         print("%s embeds no copy of that key - nothing to do" % a.image)
         return 0
