@@ -1,13 +1,20 @@
 #!/bin/sh
-# SeedSigner rootfs verification initramfs — Luckfox Pico Mini (NAND).
+# SeedSigner rootfs verification initramfs — Luckfox Pico (NAND, MicroSD, eMMC).
 #
 # Runs from RAM (packed into the signed boot.img FIT ramdisk slot) before
-# pivot_root. The kernel auto-attaches UBI (ubi.mtd=6 baked into the signed
-# DTB), so /dev/ubi0_0 exposes the rootfs volume's logical contents. This
-# script streams those bytes through minisign's pre-hashed verifier, which
-# checks them against the signature produced over the exact .ubifs/.squashfs
-# file at build time — without ever materialising the image in RAM (peak ~128
-# KiB) — and only then mounts and switches (switch_root) to the real rootfs.
+# pivot_root. It reads root= off /proc/cmdline and streams that device's bytes
+# through minisign's pre-hashed verifier, which checks them against the
+# signature produced over the exact .ubifs/.squashfs file at build time —
+# without ever materialising the image in RAM (peak ~128 KiB) — and only then
+# mounts and switches (switch_root) to the real rootfs. Per medium:
+#   NAND non-dev : squashfs on a static UBI volume, /dev/ubiblock0_0
+#                  (ubi.block=0,rootfs + ubi.mtd=6 baked into the signed DTB)
+#   NAND dev     : writable dynamic UBIFS volume, logical contents at /dev/ubi0_0
+#   MicroSD/eMMC : raw-partition squashfs, root=/dev/mmcblk1p7 (mini/max SD) or
+#                  /dev/mmcblk0p7 (pi eMMC — it is the first block device); the
+#                  SDK writes the signed file verbatim to partition offset 0 and
+#                  the rest of the partition is untrusted padding this script
+#                  never reads
 #
 # Everything here is signed (boot.img FIT) or pinned by it: a modified
 # rootfs cannot change what this script checks, because the script, the
@@ -20,11 +27,32 @@
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export HOME=/
 
-ROOTFS_UBIFS_SIZE=__ROOTFS_UBIFS_SIZE__
+# Byte size of the signed rootfs image (substituted at build time from the
+# signing hook's .size output). The volume/partition is padded beyond it, so
+# the streaming read below must stop at exactly this many bytes.
+ROOTFS_SIGNED_SIZE=__ROOTFS_SIGNED_SIZE__
 # Name of the GPIO-HAT key wired to GPIO1_C7 on this board (substituted at
 # build time): mini=KEY_DOWN, max=KEY1, pi=KEY3. See the verification-failure
 # escape hatch below.
 WAITKEY_KEY_NAME=__WAITKEY_KEY_NAME__
+# Per-board display control pins for ss-lcd (substituted at build time; match
+# io_config.json's 'display' section — DC and RST may sit on different chips).
+export SS_LCD_DC_CHIP="__LCD_DC_CHIP__"
+export SS_LCD_DC_LINE="__LCD_DC_LINE__"
+export SS_LCD_RST_CHIP="__LCD_RST_CHIP__"
+export SS_LCD_RST_LINE="__LCD_RST_LINE__"
+# Backlight (max/pi only; the Mini panel has none, so this substitutes empty):
+# the pin idles LOW at boot and ss-lcd must light it for its frames to show.
+if [ -n "__LCD_BL_CHIP__" ]; then
+    export SS_LCD_BL_CHIP="__LCD_BL_CHIP__"
+    export SS_LCD_BL_LINE="__LCD_BL_LINE__"
+fi
+# Key class of this image's two signatures (substituted at build time from the
+# ACTUAL key bytes — see embed_rootfs_verifier): "dev" = the committed PUBLIC
+# dev key, which grants no protection; anything else is a real secret key.
+# Shown on the pass screen only when verification actually ran (fused boards).
+FIT_KEY_CLASS=__FIT_KEY_CLASS__
+ROOTFS_KEY_CLASS=__ROOTFS_KEY_CLASS__
 
 log() { echo "rootfs-verify: $*"; }
 
@@ -53,10 +81,12 @@ mount -t proc proc /proc 2>/dev/null || log "WARN: mounting /proc failed"
 mount -t sysfs sysfs /sys 2>/dev/null || log "WARN: mounting /sys failed"
 
 # --- determine how the real root is presented ---------------------------------
-# non-dev (read-only): squashfs on a static UBI volume exposed as a block device
+# NAND non-dev (read-only): squashfs on a static UBI volume exposed as a block device
 #     bootargs: ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs
-# dev (writable): raw dynamic UBIFS volume
+# NAND dev (writable): raw dynamic UBIFS volume
 #     bootargs: root=ubi0:rootfs rootfstype=ubifs
+# MicroSD/eMMC (read-only): squashfs written verbatim to a plain partition
+#     bootargs: root=/dev/mmcblk{0,1}p7 rootfstype=squashfs  (eMMC=mmcblk0)
 ROOT_DEV=""
 for w in $(cat /proc/cmdline); do
     case "$w" in
@@ -81,27 +111,35 @@ case "$ROOT_DEV" in
         SRC_DEV="/dev/ubi0_0"
         MNT_CMD="mount -t ubifs $ROOT_DEV /mnt"
         ;;
+    /dev/mmcblk*)
+        # MicroSD/eMMC: the signed squashfs file starts at partition offset 0;
+        # everything after ROOTFS_SIGNED_SIZE bytes is untrusted padding.
+        SRC_DEV="$ROOT_DEV"
+        MNT_CMD="mount -t squashfs -o ro $ROOT_DEV /mnt"
+        ;;
     *)
-        fail "unsupported root= ($ROOT_DEV) — expected /dev/ubiblock* or ubi0:*"
+        fail "unsupported root= ($ROOT_DEV) — expected /dev/ubiblock*, ubi0:* or /dev/mmcblk*"
         ;;
 esac
 
 # NB: /dev/ubi0_0 is a CHARACTER device (c 10 69), not a block one — test
-# existence, never -b. (/dev/ubiblock0_0 in the non-dev case IS a block dev;
-# -e covers both.)
+# existence, never -b. (/dev/ubiblock0_0 and /dev/mmcblk* ARE block devs;
+# -e covers all of them.)
 if [ ! -d /dev/ubi_ctrl ] && [ ! -e "$SRC_DEV" ]; then
     mount -t devtmpfs devtmpfs /dev 2>/dev/null \
         || { mknod -m 660 /dev/ubi_ctrl c 10 58 2>/dev/null; log "WARN: manual /dev setup"; }
 fi
 
-# --- wait for UBI to attach --------------------------------------------------
-log "waiting for $SRC_DEV (UBI auto-attach) ..."
+# --- wait for the root device to appear ---------------------------------------
+# UBI auto-attach (NAND) and MMC probe (MicroSD/eMMC) both complete shortly
+# after boot; poll rather than assume an order.
+log "waiting for $SRC_DEV ..."
 tries=0
 while [ ! -e "$SRC_DEV" ] && [ $tries -lt 50 ]; do
     sleep 1
     tries=$((tries + 1))
 done
-[ -e "$SRC_DEV" ] || fail "no UBI volume (attach failed?)"
+[ -e "$SRC_DEV" ] || fail "root device never appeared ($SRC_DEV)"
 log "$SRC_DEV present after ${tries}s"
 
 # This SDK kernel's devtmpfs does NOT create the magic symlinks mainline has
@@ -113,49 +151,75 @@ ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null || true
 ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null || true
 
 # --- secure-boot fuse check ---------------------------------------------------
-# OTP offset 0x80 is the SoC's secure-boot enable flag — U-Boot SPL reads this
-# exact byte (OTP_SECURE_BOOT_ENABLE_ADDR, include/configs/rv1106_common.h): a
-# fully blown word reads 0xff, blank reads 0x00. When it is NOT fused, nothing
-# in the boot chain is actually verified, so say so on the panel and skip the
-# rootfs check (the same signed image must also boot unlocked devices). The
-# nvmem blob is raw binary — ash cannot capture it into a variable without
+# Two independent signals, either of which forces verification:
+#
+# 1. The kernel command line's fuse.programmed=1 — the preloader (BootROM) reads
+#    the SoC's secure-boot OTP fuses and passes its verdict to U-Boot via
+#    ATAG_PUB_KEY; full U-Boot — itself signature-verified on fused boards before
+#    any of this runs — records it as fuse.programmed=1/0 (param_parse_pubkey_
+#    fuse_programmed(), arch/arm/mach-rockchip/param.c). U-Boot emits =1 only
+#    from the ROM atag, never from env, so an attacker who can write the env
+#    partition cannot forge fusion. NOTE: this flag is only present on boot
+#    media whose preloader path passes ATAG_PUB_KEY — NAND does (verified: a
+#    fused board boots with fuse.programmed=1), MicroSD does NOT (no atag, no
+#    flag at all), so it cannot be the sole source of truth.
+#
+# 2. The secure-boot enable fuse byte itself, OTP offset 0x80 — the exact byte
+#    U-Boot SPL checks (OTP_SECURE_BOOT_ENABLE_ADDR, include/configs/
+#    rv1106_common.h): a fully blown word reads 0xff, blank reads 0x00. Read via
+#    /sys/bus/nvmem/devices/rockchip-otp0/nvmem (the rockchip-otp nvmem driver;
+#    patch-otp-size.sh extends rv1106_data.size past this byte — without it the
+#    read is empty and we fail closed). This works on every boot medium, which
+#    is what makes "SECURE BOOT not enabled" detectable on SD.
+#
+# The nvmem blob is raw binary — ash cannot capture it into a variable without
 # mangling it — so hash just that one byte with dd + sha256sum and compare
-# against two known constants. FAIL-CLOSED: an empty read (no driver, short
-# blob, read error) hashes to the empty-input constant and verifies anyway.
+# against two known constants (sha256 of 0xff, and of the empty input).
+# FAIL-CLOSED everywhere: an empty read verifies anyway; checking when unneeded
+# is safe, skipping on a locked device is not. The rootfs is signed in every
+# build, so the only thing an unfused verdict buys is skipping the check plus a
+# panel warning (the same signed image must also boot unlocked devices).
 SECURE_BOOT_FUSED=1
-otp_byte_hash=$(dd if=/sys/bus/nvmem/devices/rockchip-otp0/nvmem bs=1 skip=128 count=1 2>/dev/null | sha256sum)
-otp_byte_hash=${otp_byte_hash%% *}
-case "$otp_byte_hash" in
-    a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89) SECURE_BOOT_FUSED=1 ;;  # byte == 0xff: fused
-    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) SECURE_BOOT_FUSED=1 ;;  # empty read: fail-closed
-    *) SECURE_BOOT_FUSED=0 ;;  # not fused
+cmdline=$(cat /proc/cmdline 2>/dev/null)
+case "$cmdline" in
+    *fuse.programmed=1*) SECURE_BOOT_FUSED=1 ;;   # ROM verdict: fused -> verify (also covers an OTP read failure on a locked board)
+    *)
+        otp_byte_hash=$(dd if=/sys/bus/nvmem/devices/rockchip-otp0/nvmem bs=1 skip=128 count=1 2>/dev/null | sha256sum)
+        otp_byte_hash=${otp_byte_hash%% *}
+        case "$otp_byte_hash" in
+            a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89) SECURE_BOOT_FUSED=1 ;;  # byte == 0xff: fused
+            e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) SECURE_BOOT_FUSED=1 ;;  # empty read: fail-closed
+            *) SECURE_BOOT_FUSED=0 ;;             # blank (or not fully blown): unfused
+        esac
+        ;;
 esac
 
 # --- verify the signature ----------------------------------------------------
 if [ "$SECURE_BOOT_FUSED" = 0 ]; then
-    log "secure boot NOT fused (OTP byte 0x80 != 0xff) — skipping rootfs verification"
+    log "secure boot NOT fused (no fuse.programmed=1 on cmdline and OTP byte not 0xff) — skipping rootfs verification"
     lcd orange SHIELDSIGNER SECURE BOOT not enabled "" BOOTING
     # Hold so a human can actually read it: without this, mount + switch_root
     # take over the panel in ~2 s and the warning is invisible.
     sleep 5
 else
-# Stream exactly ROOTFS_UBIFS_SIZE bytes from the volume straight into
-# minisign, which BLAKE2b-512s its input in 64 KiB chunks (the -H/pre-hashed
-# mode is recorded inside /rootfs.sig itself — sig_alg "ED" — so no flag is
-# needed here). Peak RAM is ~128 KiB regardless of rootfs size, which is what
-# makes this work for the full 93 MiB NAND partition and would scale to a
-# multi-GB MicroSD image. Only the signed prefix is read: UBI autoresize pads
-# the volume beyond it (untrusted, irrelevant). A short/failed dd yields fewer
-# bytes -> hash mismatch -> fail-closed, same as a tampered rootfs.
+# Stream exactly ROOTFS_SIGNED_SIZE bytes from the volume/partition straight
+# into minisign, which BLAKE2b-512s its input in 64 KiB chunks (the -H/
+# pre-hashed mode is recorded inside /rootfs.sig itself — sig_alg "ED" — so no
+# flag is needed here). Peak RAM is ~128 KiB regardless of rootfs size, which
+# is what makes this work for the 93 MiB NAND volume and the multi-GB MicroSD
+# partition alike. Only the signed prefix is read: UBI autoresize pads the
+# volume (NAND) / the partition tail is zero-filled (MicroSD/eMMC), both
+# untrusted and irrelevant. A short/failed dd yields fewer bytes -> hash
+# mismatch -> fail-closed, same as a tampered rootfs.
 lcd orange SHIELDSIGNER Verifying rootfs Signature
-log "verifying minisign signature (streaming $ROOTFS_UBIFS_SIZE bytes) ..."
-# dd reads ceil(SIZE/4096) blocks — at most one block of autoresize padding
-# beyond the signed prefix — and head -c trims the stream to exactly SIZE
-# bytes. No byte-at-a-time tail read, no temp file, O(1) RAM end to end.
+log "verifying minisign signature (streaming $ROOTFS_SIGNED_SIZE bytes) ..."
+# dd reads ceil(SIZE/4096) blocks — at most one block of padding beyond the
+# signed prefix — and head -c trims the stream to exactly SIZE bytes. No
+# byte-at-a-time tail read, no temp file, O(1) RAM end to end.
 UNVERIFIED=0
-blocks=$(( (ROOTFS_UBIFS_SIZE + 4095) / 4096 ))
+blocks=$(( (ROOTFS_SIGNED_SIZE + 4095) / 4096 ))
 if ! dd if="$SRC_DEV" bs=4096 count=$blocks 2>/dev/null \
-     | head -c "$ROOTFS_UBIFS_SIZE" \
+     | head -c "$ROOTFS_SIGNED_SIZE" \
      | /bin/minisign -V -p /pubkey -x /rootfs.sig -m /dev/stdin; then
     log "FAIL: rootfs verification failed (bad signature or read error)"
     dmesg | tail -n 30
@@ -184,7 +248,15 @@ fi
 
 # --- mount and hand over -----------------------------------------------------
 if [ "$SECURE_BOOT_FUSED" = 1 ] && [ "${UNVERIFIED:-0}" = 0 ]; then
-    lcd green PASSED rootfs signature valid "" BOOTING
+    if [ "$FIT_KEY_CLASS" = "dev" ] || [ "$ROOTFS_KEY_CLASS" = "dev" ]; then
+        # Verified, but at least one signature was made with the committed
+        # PUBLIC dev key — that grants no protection, so say so on the panel
+        # (yellow instead of green) and name which signature is affected.
+        log "signature OK (FIT key: $FIT_KEY_CLASS, rootfs key: $ROOTFS_KEY_CLASS — dev key in use, NO protection)"
+        lcd yellow PASSED "FIT: $FIT_KEY_CLASS" "rootfs: $ROOTFS_KEY_CLASS" BOOTING
+    else
+        lcd green PASSED rootfs signature valid "" BOOTING
+    fi
 fi
 log "mounting rootfs ($MNT_CMD) ..."
 if ! $MNT_CMD; then

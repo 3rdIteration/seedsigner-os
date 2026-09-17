@@ -257,55 +257,86 @@ if [ -s "$cmds" ]; then
     debugfs -f "$vfile" "$dst" > "$vout" 2>/dev/null || true   # exit code is useless; the output is parsed below
     python3 - "$src" "$cmds.raw" "$vout" <<'PYEOF' || err "populate verification failed: image does not match source tree (ran out of space?)"
 import sys, os
-src, raw_path, vout_path = sys.argv[1], sys.argv[2], sys.argv[3]
+src_b = os.fsencode(sys.argv[1])
+raw_path, vout_path = sys.argv[2], sys.argv[3]
 
-# expected: dirpath ("/usr/bin", root is "/") -> {name: (type, size-or-None)}
+def unescape(b):
+    # debugfs's ls output escapes non-printable bytes as \xNN (and a literal
+    # backslash as \\) regardless of locale -- e.g. the UTF-8 name
+    # "Főtanúsítvány.pem" is displayed as "F\xc5\x91tan\xc3\xbas...". The on-disk
+    # bytes are correct; only the display is escaped, so reverse it before
+    # comparing. Everything here stays in raw bytes: no locale/encoding
+    # assumption anywhere in this check.
+    out = bytearray()
+    i, n = 0, len(b)
+    while i < n:
+        if b[i:i+1] == b'\\':
+            if b[i+1:i+2] == b'x' and i + 4 <= n:
+                try:
+                    out.append(int(b[i+2:i+4], 16))   # two ASCII hex digits -> byte value
+                    i += 4
+                    continue
+                except ValueError:
+                    pass
+            elif b[i+1:i+2] == b'\\':
+                out.append(0x5c)                 # literal backslash
+                i += 2
+                continue
+        out.append(b[i])
+        i += 1
+    return bytes(out)
+
+def show(b):                                     # for error messages only
+    return b.decode('utf-8', 'backslashreplace')
+
+# expected: dirpath (b"/usr/bin", root is b"/") -> {name-bytes: (type, size-or-None)}
 expected = {}
-with open(raw_path) as f:
+with open(raw_path, 'rb') as f:
     for line in f:
-        parts = line.rstrip('\n').split(' ', 2)
+        parts = line.rstrip(b'\n').split(b' ', 2)
         if len(parts) < 3: continue
         t, _links, path = parts
-        p = path[2:] if path.startswith('./') else path
-        if t == 'd':                             # register the dir itself (catches failed mkdir of empty dirs)
-            expected.setdefault('/' + p, {})
-        parent, name = os.path.split(p)          # 'git001' -> ('', 'git001'): top level lives in '/'
-        key = '/' + parent if parent else '/'
+        p = path[2:] if path.startswith(b'./') else path
+        if t == b'd':                            # register the dir itself (catches failed mkdir of empty dirs)
+            expected.setdefault(b'/' + p, {})
+        parent, name = os.path.split(p)          # b'git001' -> (b'', b'git001'): top level lives in b'/'
+        key = b'/' + parent if parent else b'/'
         size = None
-        if t in ('f', 'l'):                      # regular files and symlinks have a comparable size
-            try: size = os.lstat(os.path.join(src, p)).st_size
-            except OSError as e: sys.exit(f"cannot stat source entry {p}: {e}")
+        if t in (b'f', b'l'):                    # regular files and symlinks have a comparable size
+            try: size = os.lstat(os.path.join(src_b, p)).st_size
+            except OSError as e: sys.exit(f"cannot stat source entry {show(p)}: {e}")
         expected.setdefault(key, {})[name] = (t, size)
 
 # actual: each listing section starts with debugfs's own "debugfs: ls -l <dir>"
-# echo line, so sections are self-describing and order-independent.
+# echo line, so sections are self-describing and order-independent. Names (and
+# the dir path in the header) arrive escaped -- unescape both.
 actual = {}
 cur_dir = None
-with open(vout_path) as f:
+with open(vout_path, 'rb') as f:
     for line in f:
-        s = line.rstrip('\n')
-        if s.startswith('debugfs: '):
-            cur_dir = s[len('debugfs: ls -l '):].strip() if s.startswith('debugfs: ls -l ') else None
+        s = line.rstrip(b'\n')
+        if s.startswith(b'debugfs: '):
+            cur_dir = unescape(s[len(b'debugfs: ls -l '):].strip()) if s.startswith(b'debugfs: ls -l ') else None
             continue
         parts = s.split()
         # "INO MODE (LINKS) UID GID SIZE DATE TIME NAME..."
-        if cur_dir is not None and len(parts) >= 9 and parts[0].isdigit() and parts[2].startswith('('):
-            actual.setdefault(cur_dir, {})[' '.join(parts[8:])] = (parts[1], int(parts[5]))
+        if cur_dir is not None and len(parts) >= 9 and parts[0].isdigit() and parts[2].startswith(b'('):
+            actual.setdefault(cur_dir, {})[unescape(b' '.join(parts[8:]))] = (parts[1], int(parts[5]))
 
 for key in sorted(expected):
     if key not in actual:                        # dir never listed -> its mkdir failed
-        sys.exit(f"directory {key} missing from image listing")
+        sys.exit(f"directory {show(key)} missing from image listing")
     got = {n: v for n, v in actual[key].items()
-           if n not in ('.', '..') and not (key == '/' and n == 'lost+found')}   # mke2fs artifact
+            if n not in (b'.', b'..') and not (key == b'/' and n == b'lost+found')}   # mke2fs artifact
     exp = expected[key]
     missing = sorted(set(exp) - set(got))
     extra   = sorted(set(got) - set(exp))
-    badsize = [f"{n} (src={exp[n][1]} img={got[n][1]})" for n in sorted(set(exp) & set(got))
-               if exp[n][0] in ('f', 'l') and got[n][1] != exp[n][1]]
+    badsize = [f"{show(n)} (src={exp[n][1]} img={got[n][1]})" for n in sorted(set(exp) & set(got))
+                if exp[n][0] in (b'f', b'l') and got[n][1] != exp[n][1]]
     if missing or extra or badsize:
-        msg = f"directory {key}: "
-        if missing: msg += f"missing {missing[:5]}{'...' if len(missing) > 5 else ''} "
-        if extra:   msg += f"unexpected {extra[:5]} "
+        msg = f"directory {show(key)}: "
+        if missing: msg += f"missing {[show(n) for n in missing[:5]]}{'...' if len(missing) > 5 else ''} "
+        if extra:   msg += f"unexpected {[show(n) for n in extra[:5]]} "
         if badsize: msg += f"wrong size {badsize[:5]}"
         sys.exit(msg)
 print(f"  verified {sum(len(v) for v in expected.values())} entries across {len(expected)} directories")

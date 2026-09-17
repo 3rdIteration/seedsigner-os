@@ -54,7 +54,9 @@ name, so a local build can reproduce what CI ships):
   --variant V           - non-dev (hardened) | dev (serial console + adb)
                           (default: non-dev)
   --readonly-rootfs V   - auto|on|off. Read-only squashfs root with tmpfs
-                          overlays; auto = on for non-dev (default: auto)
+                           overlays; auto = on for non-dev (default: auto).
+                           Forced on for signed SD/eMMC builds: the initramfs
+                           verifier only supports immutable roots there
   --boot-log V          - on|off. Bake /etc/seedsigner-boot-log so
                           start-seedsigner.sh records every boot to /userdata
                           (default: off — the device writes nothing to flash)
@@ -66,10 +68,15 @@ name, so a local build can reproduce what CI ships):
                           swaps the app's Home menu for the hardware test menu
                           (I/O Test, Test Smartcard, Flash Applet, Settings).
                           NOT for a production image (default: off)
-  --error-diagnostics V - on|off. Opt-in "Save to MicroSD" button on OS/package
-                          error screens (default: off)
-  --seedsigner-ref R    - SeedSigner app branch, RELEASE TAG or commit
-                          (default: dev). --seedsigner-branch is an alias.
+   --error-diagnostics V - on|off. Opt-in "Save to MicroSD" button on OS/package
+                           error screens (default: off)
+   --rebuild-initramfs-binaries V - on|off. With SEEDSIGNER_FIT_SIGNATURE=1,
+                           rebuild the four vendored initramfs binaries from
+                           source and overwrite the committed copies before
+                           their SHA-256 pins are checked; a non-reproducing
+                           build fails loudly (default: off)
+   --seedsigner-ref R    - SeedSigner app branch, RELEASE TAG or commit
+                           (default: dev). --seedsigner-branch is an alias.
 
 Examples:
   ./build.sh build             # Standard build (artifacts in ./build-output)
@@ -307,9 +314,10 @@ run_build() {
                        SEEDSIGNER_REF SEEDSIGNER_BRANCH \
                        SEEDSIGNER_BOOT_LOG SEEDSIGNER_TESTING_BUILD \
                        SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS \
-                        SEEDSIGNER_FIT_SIGNATURE SEEDSIGNER_FIT_BURN_KEY_HASH \
-                        SEEDSIGNER_ROOTFS_KEY_DIR SEEDSIGNER_ROOTFS_KEY_PASSPHRASE \
-                        SEEDSIGNER_KEEP_SDK_CHECKOUT \
+                         SEEDSIGNER_FIT_SIGNATURE SEEDSIGNER_FIT_BURN_KEY_HASH \
+                         SEEDSIGNER_ROOTFS_KEY_DIR SEEDSIGNER_ROOTFS_KEY_PASSPHRASE \
+                         SEEDSIGNER_REBUILD_INITRAMFS_BINARIES \
+                         SEEDSIGNER_KEEP_SDK_CHECKOUT \
                        DISABLE_UART2_CONSOLE_DEBUG \
                        SEEDSIGNER_OS_REPO SEEDSIGNER_OS_BRANCH \
                        SEEDSIGNER_OS_COMMIT SEEDSIGNER_OS_DATE; do
@@ -663,6 +671,25 @@ main() {
                     shift 2
                 else
                     print_error "Invalid or missing argument for --error-diagnostics (use: on|off)"; exit 1
+                fi
+                ;;
+            # Rebuild the four vendored initramfs binaries from source at build
+            # time and overwrite the committed copies before their SHA-256 pins
+            # are checked (only with SEEDSIGNER_FIT_SIGNATURE=1). Off by default:
+            # the committed binaries ARE the reviewed, pinned artifacts. When on,
+            # a rebuild that does not reproduce the pinned bytes exactly fails
+            # loudly — the pins act as a live determinism canary. Needs network
+            # for the checksum-pinned source downloads.
+            --rebuild-initramfs-binaries)
+                if [[ -n "$2" && "$2" =~ ^(on|off)$ ]]; then
+                    if [[ "$2" == "on" ]]; then
+                        export SEEDSIGNER_REBUILD_INITRAMFS_BINARIES=1
+                    else
+                        export SEEDSIGNER_REBUILD_INITRAMFS_BINARIES=0
+                    fi
+                    shift 2
+                else
+                    print_error "Invalid or missing argument for --rebuild-initramfs-binaries (use: on|off)"; exit 1
                 fi
                 ;;
             # Strip the adb userspace on non-dev. Mirrors the CI input of the same

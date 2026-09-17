@@ -87,12 +87,17 @@ SHA-256 for all four: `SHA256SUMS` (pinned by `os-build.sh`).
 * Source: [`../initramfs/ss-lcd.c`](../initramfs/ss-lcd.c) in this repo, plus
   the public-domain 8x8 font `font8x8_basic.h` (Daniel Hepper / Marcel Sondaar,
   based on IBM's public-domain VGA fonts).
-* The ST7789 init sequence, SPI settings and GPIO lines are ported from the
-  SeedSigner app's own driver (`seedsigner/hardware/displays/ST7789.py` — the
-  factory in `display_driver.py` selects it for 240x240 panels; `st7789_mpy.py`
-  is only used for 320x240) + `io_config.json` FOX_22 profile. Key values that
-  differ from the mpy driver: MADCTL=0x70, COLMOD=0x05 (RGB order), and a
-  single init pass with a 150 ms post-reset wait.
+* The ST7789 init sequence and SPI settings are ported from the SeedSigner
+  app's own driver (`seedsigner/hardware/displays/ST7789.py` — the factory in
+  `display_driver.py` selects it for 240x240 panels; `st7789_mpy.py` is only
+  used for 320x240). Key values that differ from the mpy driver: MADCTL=0x70,
+  COLMOD=0x05 (RGB order), and a single init pass with a 150 ms post-reset
+  wait. The DC/RST control pins are per board (`io_config.json`): `/init`
+  exports `SS_LCD_{DC,RST}_{CHIP,LINE}` at build time for each profile — the
+  compiled-in defaults are the Mini/FOX_22 values (gpiochip1 lines 20/19);
+  max uses gpiochip2 line 8 + gpiochip1 line 24, pi uses gpiochip1 lines
+  27/24. DC and RST may sit on different gpiochips, so each is opened from its
+  own env pair.
 * Two modes: `ss-lcd <color> <title> [line x4]` draws a status screen;
   `ss-lcd waitkey <gpiochip> <line> <reg writes...>` blocks until the button
   goes LOW (the verification-failure escape hatch in `/init`). The register
@@ -101,14 +106,47 @@ SHA-256 for all four: `SHA256SUMS` (pinned by `os-build.sh`).
   before the chardev line request. Note: this SDK kernel's `linereq_create()`
   returns 0 and writes the fd into the request struct (Rockchip backport), so
   the code reads `req.fd` rather than using the ioctl return value.
+* Rebuild: `<tc>/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc -O2 -static
+  ../initramfs/ss-lcd.c -o ss-lcd`, then strip with the toolchain's
+  `arm-rockchip830-linux-uclibcgnueabihf-strip` (no libraries needed — raw
+  SPI_IOC_MESSAGE + GPIO v2 ioctls only).
 
-## Why committed binaries instead of building at build time
+## Rebuilding at build time (opt-in)
+
+`../build-initramfs-binaries.sh <SDK_TOOLCHAIN_DIR> <OUTPUT_DIR>` rebuilds all
+four binaries from source and overwrites the copies in OUTPUT_DIR. It is wired
+into both `os-build.sh` and `build-local.sh` behind
+`SEEDSIGNER_REBUILD_INITRAMFS_BINARIES=1` (or `./build.sh build ... --rebuild-initramfs-binaries on`),
+and only runs when `SEEDSIGNER_FIT_SIGNATURE=1`.
+
+Everything the rebuild needs is pinned, so its output is deterministic:
+
+* **Sources** — busybox 1.36.1, minisign @9b3a4f28 (tag 0.9), libsodium
+  1.0.22-RELEASE — downloaded by URL and verified against hardcoded SHA-256 in
+  the script (AGENTS.md: every external asset is checksum-pinned).
+* **Toolchain** — the SDK's own `arm-rockchip830-linux-uclibcgnueabihf` for the
+  three arm binaries (pinned by `SDK_COMMIT`); minisign-host uses the host gcc
+  of the Ubuntu 22.04 build environment (Docker image or CI host).
+* **Date** — `SOURCE_DATE_EPOCH=0`. busybox bakes it into its version string
+  (`BusyBox v1.36.1 (1970-01-01 00:00:00 UTC)`); minisign and libsodium embed
+  no date at all.
+
+The rebuilt files are then checked by `verify_initramfs_binaries()` against the
+committed SHA-256 pins, so a rebuild that does not reproduce the pinned bytes
+EXACTLY fails the build loudly. The pins are therefore a live determinism
+canary — do NOT auto-update them here or in the build scripts. When source
+legitimately changes (e.g. ss-lcd.c), run two flag-on builds, confirm they are
+byte-identical to each other, then update `SHA256SUMS`, both pin tables and
+the committed binaries together in one commit.
+
+## Why committed binaries instead of building at build time by default
 
 * **Reproducibility**: non-dev images must be byte-identical across builds. A
   pinned, reviewed binary in the repo is deterministic by construction; a
-  from-source build would need every toolchain version and flag pinned too.
+  from-source build would need every toolchain version and flag pinned too (the
+  opt-in rebuild above does exactly that pinning).
 * **No new build dependencies**: the Docker image does not gain Go/Zig/autotools
   just to produce three small static binaries.
-* If any of these must be rebuilt (e.g. a CVE in libsodium), rebuild with the
-  recipe above, update the file and its SHA-256 pin in `os-build.sh` together,
-  and note the reason in the commit message.
+* If any of these must be rebuilt (e.g. a CVE in libsodium), either use the
+  opt-in rebuild or follow the recipe above, update the file and its SHA-256 pin
+  in `os-build.sh` together, and note the reason in the commit message.

@@ -15,9 +15,10 @@ one) and confirm the released image wraps byte-identical payloads — the signat
 is the only thing a rebuild can't, and shouldn't, match.
 
 Note: compare against a rebuild made with the SAME signing config, not an
-unsigned build. On signed NAND the kernel DTB (`fdt`) carries baked bootargs
-(root=ubi0…, see apply_signed_nand_bootargs), so its payload legitimately differs
-from an unsigned build's. The key used does NOT affect any payload here.
+unsigned build. On signed builds the kernel DTB (`fdt`) carries baked bootargs
+(NAND: root=ubi0…/ubiblock…, MicroSD/eMMC: +rootfstype=squashfs — see
+apply_signed_nand_bootargs), so its payload legitimately differs from an
+unsigned build's. The key used does NOT affect any payload here.
 
 Not covered: the loader (download.bin / idblock.img). Its SPL DTB embeds the
 pubkey + burn-key-hash + an rk_sign_tool signature as binary inside a boot_merger

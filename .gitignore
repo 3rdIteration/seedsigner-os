@@ -3,6 +3,7 @@
 .buildroot-ccache/
 .ccache/
 opt/output/
+__pycache__/
 
 # Luckfox Pico build (opt/luckfox)
 opt/luckfox/build-output/

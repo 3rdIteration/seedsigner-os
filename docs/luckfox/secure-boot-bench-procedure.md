@@ -278,6 +278,43 @@ boots, the fuse did not take — the worst state, looking protected while not.
 
 ---
 
+## Stage 6 — rootfs verification (initramfs verifier)
+
+With `SEEDSIGNER_FIT_SIGNATURE=1`, the signed `boot.img` carries a verifier
+initramfs that minisign-checks the rootfs volume before mounting it (§6.7 in
+`secure-boot.md`). One image covers both board states — test all three:
+
+**Fused board.** LCD: orange *Verifying rootfs Signature* → pass screen. The
+pass screen's colour and text depend on which keys signed this build (see
+**Dev-key indicator** in §6.7 of `secure-boot.md`): with the committed PUBLIC
+dev keys it is yellow *PASSED / FIT: dev / rootfs: dev*; only a build signed
+with real secret keys shows green *PASSED / rootfs signature valid*. UART
+(`rootfs-verify:` prefix): `verifying minisign signature (streaming …)`, then
+`signature OK`. Takes ~15 s on the 93 MiB Mini NAND partition — that is the
+full-volume read, not a hang.
+
+**Unfused board, same image.** LCD: orange *SHIELDSIGNER / SECURE BOOT not
+enabled*, held ~5 s, then normal boot. UART: `secure boot NOT fused
+(fuse.programmed=0 on cmdline, no =1) — skipping rootfs verification`. If a
+*fused* board shows this instead, the fuse state is being misread — stop and
+investigate (see §13.3 E4 for how the first attempt failed exactly this way).
+
+**Tamper test (dev build, ADB).** Flip a few bytes in the volume, reboot:
+
+```sh
+dd if=/dev/ubi0_0 of=/tmp/v bs=4096 count=1
+printf 'X' | dd of=/tmp/v bs=1 seek=100 conv=notrunc
+dd if=/tmp/v of=/dev/ubi0_0 bs=4096 count=1
+reboot
+```
+
+Expected: red *FAILED / rootfs signature mismatch / press KEY_DOWN* and a halt.
+Pressing the HAT key (KEY_DOWN on Mini) boots an **UNVERIFIED** rootfs — the
+deliberate physical escape hatch; UART logs `WARN: … continuing with UNVERIFIED
+rootfs`. Restore by reflashing the `rootfs` partition from the build output.
+
+---
+
 ## Airgapped signing on a SeedSigner (design + status)
 
 The goal: never let the private key touch the build machine — sign on an

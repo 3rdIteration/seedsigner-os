@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Draw a static message on the SPI display, outside the SeedSigner app.
 
-Two uses, both from start-seedsigner.sh:
+  show-screen-message.py failed "<reason>"
+      The only mode start-seedsigner.sh calls: the app failed to launch
+      repeatedly and the device is about to reboot into Loader mode. Without
+      this a non-dev image is mute about why: no console, no adb, no network,
+      dark screen.
 
   show-screen-message.py loading
-      Early boot splash. The screen is otherwise dark until the app finishes
-      starting, so the device looks dead for ~20s. It also doubles as the single
-      most useful diagnostic on a non-dev image: if this appears and the app
-      never follows, the display/SPI chain is fine and the app is at fault; if
-      the screen stays dark, suspect the display chain (missing /dev/spidev0.0
-      from the configfs / device-tree overlay path) first.
-
-  show-screen-message.py failed "<reason>"
-      The app failed to launch repeatedly and the device is about to reboot into
-      Loader mode. Without this a non-dev image is mute about why: no console,
-      no adb, no network, dark screen.
+      The early boot splash. No longer called at boot — it rendered
+      colour-inverted (this script opens the driver but never calls
+      set_color_inversion(), unlike the app's Renderer) and on signed builds
+      the initramfs rootfs-verification screen already lights the panel within
+      seconds of power-on, splitting the same two failure classes. Kept for
+      manual diagnostics: `python /usr/bin/show-screen-message.py loading` is a
+      quick "is the SPI chain alive" probe from a dev shell.
 
 STRICTLY BEST-EFFORT. Every failure path here is silent and returns 0. A
 diagnostic aid must never become a second failure mode, and must never delay

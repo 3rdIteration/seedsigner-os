@@ -15,14 +15,23 @@
  *   verification. The register pairs configure IOMUX/pull-up/direction/IE,
  *   because the RV1106 pinctrl driver silently ignores gpiolib bias flags.
  *
- * The panel wiring matches the SeedSigner app's io_config.json FOX_22 profile
+ * The panel wiring matches the SeedSigner app's io_config.json profiles
  * (seedsigner/hardware/io_config.json). Every register value and timing below
  * comes from seedsigner/hardware/displays/ST7789.py — the driver the app
  * actually uses for 240x240 panels (st7789_mpy.py is only used for 320x240):
  *   SPI  /dev/spidev0.0, mode 0, 40 MHz, kernel-managed CE, 4 KiB transfers
- *   DC   gpiochip1 line 20
- *   RST  gpiochip1 line 19
- *   BL   disabled (panel backlight is always on)
+ *   DC/RST are per board and come from the environment (exported by /init at
+ *   build time for each profile; the compiled-in defaults are FOX_22/Mini):
+ *     SS_LCD_DC_CHIP / SS_LCD_DC_LINE    Mini: gpiochip1 line 20
+ *                                        Max : gpiochip2 line 8
+ *                                        Pi  : gpiochip1 line 27
+ *     SS_LCD_RST_CHIP / SS_LCD_RST_LINE  Mini: gpiochip1 line 19
+ *                                        Max/Pi: gpiochip1 line 24
+ *   BL   max/pi have a GPIO-driven backlight that idles LOW at boot (the app
+ *       turns it on at display init), so without it our frames are invisible.
+ *       /init exports SS_LCD_BL_CHIP/SS_LCD_BL_LINE for those boards; the Mini
+ *       panel has no BL pin ("disabled" in io_config.json) and the vars stay
+ *       unset, which skips backlight handling entirely.
  *
  * The initramfs runs before the app, so this program must be self-contained:
  * no Python, no PIL, no libgpiod — only raw SPI_IOC_MESSAGE and the GPIO v2
@@ -48,9 +57,12 @@
 #define PANEL_W 240
 #define PANEL_H 240
 #define SPI_DEV "/dev/spidev0.0"
-#define GPIO_CHIP "/dev/gpiochip1"
-#define DC_LINE 20
-#define RST_LINE 19
+/* Display control pins, per board (io_config.json): the defaults are the Mini
+ * (FOX_22) values; /init exports SS_LCD_* for max/pi where DC/RST live on
+ * different lines — and DC may be on a DIFFERENT gpiochip than RST. */
+#define GPIO_CHIP_DEFAULT "/dev/gpiochip1"
+#define DC_LINE_DEFAULT 20
+#define RST_LINE_DEFAULT 19
 #define SPI_SPEED_HZ 40000000u
 #define XFER_CHUNK 4096
 
@@ -73,13 +85,15 @@
 #define COLMOD_VALUE 0x05
 
 static int spi_fd = -1;
-static int gpio_chip_fd = -1;
+static int dc_chip_fd = -1;
+static int rst_chip_fd = -1;
 static int dc_line_fd = -1;
 static int rst_line_fd = -1;
+static int bl_line_fd = -1;
 
 /* ---------- GPIO v2 uAPI ---------- */
 
-static int gpio_request_output(int line, uint8_t initial_value)
+static int gpio_request_output(int chip_fd, int line, uint8_t initial_value)
 {
     struct gpio_v2_line_request req;
 
@@ -93,7 +107,7 @@ static int gpio_request_output(int line, uint8_t initial_value)
     req.config.attrs[0].attr.values = initial_value ? 1 : 0;
     req.config.attrs[0].mask = 1;
 
-    int rc = ioctl(gpio_chip_fd, GPIO_V2_GET_LINE_IOCTL, &req);
+    int rc = ioctl(chip_fd, GPIO_V2_GET_LINE_IOCTL, &req);
     if (rc < 0) {
         fprintf(stderr, "ss-lcd: gpio request failed (%s)\n", strerror(errno));
         return -1;
@@ -422,6 +436,21 @@ static uint16_t parse_color(const char *name)
 
 /* ---------- main ---------- */
 
+/* Numeric env var with a default. Unset/empty or out-of-range values fall back
+ * to the default rather than requesting an arbitrary line. */
+static long env_long(const char *name, long dflt)
+{
+    const char *v = getenv(name);
+
+    if (!v || !*v)
+        return dflt;
+    char *end;
+    long n = strtol(v, &end, 10);
+    if (*end != '\0' || n < 0 || n > 255)
+        return dflt;
+    return n;
+}
+
 int main(int argc, char **argv)
 {
     uint16_t *fb;
@@ -483,16 +512,47 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    gpio_chip_fd = open(GPIO_CHIP, O_RDWR);
-    if (gpio_chip_fd < 0) {
-        fprintf(stderr, "ss-lcd: %s not available (%s)\n", GPIO_CHIP, strerror(errno));
+    /* Per-board control pins: /init exports SS_LCD_{DC,RST}_{CHIP,LINE} for
+     * max/pi (the defaults above are the Mini's). DC and RST may live on
+     * different gpiochips, so each gets its own fd. */
+    const char *dc_path = getenv("SS_LCD_DC_CHIP");
+    if (!dc_path || !*dc_path) dc_path = GPIO_CHIP_DEFAULT;
+    const char *rst_path = getenv("SS_LCD_RST_CHIP");
+    if (!rst_path || !*rst_path) rst_path = GPIO_CHIP_DEFAULT;
+    long dc_line = env_long("SS_LCD_DC_LINE", DC_LINE_DEFAULT);
+    long rst_line = env_long("SS_LCD_RST_LINE", RST_LINE_DEFAULT);
+
+    dc_chip_fd = open(dc_path, O_RDWR);
+    if (dc_chip_fd < 0) {
+        fprintf(stderr, "ss-lcd: %s not available (%s)\n", dc_path, strerror(errno));
         return 0;
     }
-    dc_line_fd = gpio_request_output(DC_LINE, 1);
-    rst_line_fd = gpio_request_output(RST_LINE, 1);
+    rst_chip_fd = (strcmp(rst_path, dc_path) == 0) ? dc_chip_fd : open(rst_path, O_RDWR);
+    if (rst_chip_fd < 0) {
+        fprintf(stderr, "ss-lcd: %s not available (%s)\n", rst_path, strerror(errno));
+        return 0;
+    }
+    dc_line_fd = gpio_request_output(dc_chip_fd, (int)dc_line, 1);
+    rst_line_fd = gpio_request_output(rst_chip_fd, (int)rst_line, 1);
     if (dc_line_fd < 0 || rst_line_fd < 0) {
         fprintf(stderr, "ss-lcd: display GPIO request failed\n");
         return 0;
+    }
+
+    /* Backlight (max/pi only): the pin idles LOW at boot and the app turns it
+     * on at display init — light it here too or our frames are invisible. */
+    const char *bl_chip = getenv("SS_LCD_BL_CHIP");
+    long bl_line = env_long("SS_LCD_BL_LINE", -1);
+    if (bl_chip && *bl_chip && bl_line >= 0) {
+        int bl_fd = open(bl_chip, O_RDWR);
+        if (bl_fd < 0) {
+            fprintf(stderr, "ss-lcd: %s not available (%s)\n", bl_chip, strerror(errno));
+        } else {
+            bl_line_fd = gpio_request_output(bl_fd, (int)bl_line, 1);
+            close(bl_fd);
+            if (bl_line_fd < 0)
+                fprintf(stderr, "ss-lcd: backlight request failed\n");
+        }
     }
 
     hard_reset();
