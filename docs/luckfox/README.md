@@ -451,7 +451,11 @@ Notes:
 
 ## Other reference docs in this folder
 
-- [secure-boot.md](secure-boot.md) — secure boot / OTP feasibility report (research only; nothing is enabled).
+- [secure-boot.md](secure-boot.md) — secure boot design, rationale and bench results. **FIT + rootfs
+  signing is enabled and is the CI default** (`signing: on`), using the committed *public* dev keys;
+  the OTP fuse burn remains opt-in and off.
+- [secure-boot-bench-procedure.md](secure-boot-bench-procedure.md) — runnable staged procedure for
+  signing, flashing and (last, irreversibly) burning the fuse on sacrificial hardware.
 - [../hwrng.md](../hwrng.md) — how hardware entropy reaches the app on this and the other boards.
 - [OS-build-instructions.md](OS-build-instructions.md) — detailed manual SDK build steps (original standalone layout).
 - [LUCKFOX_STARTUP_WORKFLOW.md](LUCKFOX_STARTUP_WORKFLOW.md) — on-device startup / camera sequencing.
