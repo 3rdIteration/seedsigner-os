@@ -75,7 +75,14 @@ manual "Run workflow" defaults to `non-dev` (pick `dev` to override). Local buil
 `SEEDSIGNER_BUILD_VARIANT=dev|non-dev` (default `non-dev`).
 
 For the serial console specifically, the `disable_uart2_console_debug` input defaults to `auto` (follow the
-variant: non-dev strips it, dev keeps it); force it with `true`/`false`.
+variant: non-dev strips it, dev keeps it); force it with `true`/`false`. Local Docker builds take the same
+lever as `--disable-uart2-console-debug auto|true|false` on `build.sh`.
+
+**The console and the SEC1210 smartcard HAT share a UART.** A console-on image (any dev build under the
+default) will not initialise the reader: kernel log output is injected into the ccid driver's AT-command
+stream, and with only the active reader on the line early boot wedges instead. Build smartcard bring-up
+images with `disable_uart2_console_debug=true` (or `--disable-uart2-console-debug true`); non-dev images are
+unaffected because they strip the console by default.
 
 The Luckfox implementation differs from the Pi / La Frite profiles (which have parallel `-dev`/non-dev profile
 directories). Luckfox is the Rockchip SDK with a single defconfig + an SDK-provided rootfs, so **non-dev is a

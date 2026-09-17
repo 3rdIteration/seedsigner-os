@@ -62,6 +62,12 @@ name, so a local build can reproduce what CI ships):
                           (default: off — the device writes nothing to flash)
   --usb-mode V          - auto|gadget|host|otg (default: auto)
   --debug-network V     - auto|on|off (default: auto)
+  --disable-uart2-console-debug V - auto|true|false. Strip the UART2 serial
+                           console (true); auto follows the variant: non-dev
+                           strips it, dev keeps it (default: auto). The console
+                           shares its UART with the SEC1210 smartcard reader,
+                           so a console-on image will not initialise the HAT —
+                           pass true for smartcard bring-up images
   --harden-adb V        - on|off. Strip the adb userspace on non-dev
                           (default: on)
   --testing-build V     - on|off. Ship /etc/seedsigner-testing-build, which
@@ -190,7 +196,11 @@ run_build() {
         repos_mount="$(realpath "$REPOS_DIR_HOST")"
         print_success "Repository directory (bind mount): $repos_mount"
     else
-        local volume_name="seedsigner-repos"
+        # Overridable so two builds can run in parallel on this machine: each
+        # gets its own SDK/app checkouts (a build resets the tree to a pinned,
+        # pristine state at start and patches it in place -- sharing one volume
+        # between concurrent builds destroys both). Caches stay shared.
+        local volume_name="${REPOS_VOLUME:-seedsigner-repos}"
         if ! docker volume ls | grep -q "$volume_name"; then
             print_success "Creating Docker volume for persistent repositories: $volume_name"
             docker volume create "$volume_name"
@@ -713,6 +723,16 @@ main() {
                     export SEEDSIGNER_DEBUG_NETWORK="$2"; shift 2
                 else
                     print_error "Invalid or missing argument for --debug-network (use: auto|on|off)"; exit 1
+                fi
+                ;;
+            # UART2 serial console. Mirrors the CI input of the same name;
+            # forwarded as DISABLE_UART2_CONSOLE_DEBUG, which os-build.sh's
+            # resolve_uart2_console() normalises (auto follows the variant).
+            --disable-uart2-console-debug)
+                if [[ -n "$2" && "$2" =~ ^(auto|true|false)$ ]]; then
+                    export DISABLE_UART2_CONSOLE_DEBUG="$2"; shift 2
+                else
+                    print_error "Invalid or missing argument for --disable-uart2-console-debug (use: auto|true|false)"; exit 1
                 fi
                 ;;
             # A ref is a branch, a release tag, or a commit -- `git clone -b`
