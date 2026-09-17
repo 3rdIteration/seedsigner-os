@@ -165,6 +165,91 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 0)
 
 
+class Components(unittest.TestCase):
+    """The component table: sha256s inside the header covering the rest.
+
+    These need a real image, because the header's component entries point at the
+    SPL and its DTB. A synthetic container has an empty table.
+    """
+
+    def setUp(self):
+        self.src = None
+        for d in glob.glob(os.path.join(REPO, "opt", "luckfox", "build-output",
+                                        "*signed-devkey*")):
+            p = os.path.join(d, "idblock.img")
+            if os.path.isfile(p):
+                self.src = p
+                break
+        if not self.src:
+            self.skipTest("no signed build under opt/luckfox/build-output/")
+        self.tmp = tempfile.mkdtemp(prefix="rkloader-comp-")
+        self.img = os.path.join(self.tmp, "idblock.img")
+        shutil.copyfile(self.src, self.img)
+
+    def tearDown(self):
+        shutil.rmtree(getattr(self, "tmp", ""), ignore_errors=True)
+
+    def test_shipped_image_has_valid_components(self):
+        buf = rk.read(self.img)
+        table = rk.component_table(buf, rk.layout(buf))
+        self.assertEqual(len(table), 2)
+        self.assertTrue(rk.components_ok(buf, rk.layout(buf)))
+
+    def test_tampering_a_component_is_caught(self):
+        buf = rk.read(self.img)
+        a, _b, _h, _s, _act = rk.component_table(buf, rk.layout(buf))[1]
+        buf[a + 16] ^= 0xff
+        rk.write_out(buf, self.img, None)
+        self.assertEqual(rk.main(["verify", self.img, "--pubkey", DEV_PUB]), 2)
+
+    def test_setkey_then_sign_leaves_components_valid(self):
+        """Regression: set_pubkey rewrites the modulus INSIDE a hashed component.
+
+        Re-signing the header alone produced an image whose signature verified
+        and whose components did not - valid to every check here, rejected by
+        the SPL at boot.
+        """
+        n, e, d = rk.load_privkey(DEV_KEY)
+        other_n = n ^ (1 << 500)                    # a different "key"
+        buf = rk.read(self.img)
+        lay = rk.layout(buf)
+        rk.set_pubkey(buf, lay, other_n)
+        self.assertFalse(rk.components_ok(buf, lay),
+                         "set_pubkey should have invalidated a component hash")
+        rk.sign_buf(buf, lay, n, d)                 # must refresh them
+        self.assertTrue(rk.components_ok(buf, lay))
+
+    def test_setburn_arms_and_keeps_everything_valid(self):
+        buf = rk.read(self.img)
+        self.assertFalse(rk.is_burn_armed(buf))
+        self.assertEqual(rk.main(["setburn", self.img]), 1, "must refuse without --confirm")
+
+        self.assertEqual(rk.main(["setburn", self.img, "--confirm", rk.CONFIRM_TOKEN]), 0)
+        armed = rk.read(self.img)
+        self.assertTrue(rk.is_burn_armed(armed))
+        self.assertEqual(len(armed), os.path.getsize(self.src),
+                         "the file length must not change")
+        self.assertEqual(rk.main(["sign", self.img, "--key", DEV_KEY]), 0)
+        self.assertEqual(rk.main(["verify", self.img, "--pubkey", DEV_PUB]), 0)
+
+    def test_setburn_matches_a_real_burnable_build(self):
+        """The armed DTB must be byte-identical to what the SDK emits."""
+        ref = None
+        for d in glob.glob(os.path.join(REPO, "opt", "luckfox", "build-output",
+                                        "*burnable*")):
+            p = os.path.join(d, "idblock.img")
+            if os.path.isfile(p):
+                ref = p
+                break
+        if not ref:
+            self.skipTest("no SEEDSIGNER_FIT_BURN_KEY_HASH=1 build to compare against")
+        rk.main(["setburn", self.img, "--confirm", rk.CONFIRM_TOKEN])
+        mine, sdk = rk.read(self.img), rk.read(ref)
+        mo, msz = rk.find_spl_dtb(mine)
+        so, ssz = rk.find_spl_dtb(sdk)
+        self.assertEqual(bytes(mine[mo:mo + msz]), bytes(sdk[so:so + ssz]))
+
+
 class Artifacts(unittest.TestCase):
     """Verify real signed build output, when a build happens to be present."""
 
