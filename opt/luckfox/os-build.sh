@@ -1177,6 +1177,75 @@ enable_dts_node() {
 # CRYPTO_DEV_ROCKCHIP_V3 sub-option to build at all -- confirmed absent on a
 # flashed image (empty /proc/crypto, unbound crypto node). Pinning only &rng is
 # deliberate; do not re-add &crypto without also building the driver.
+# Make the MicroSD slot usable as removable storage on the NAND / eMMC profiles.
+#
+# The controller on the sdmmc0 pins IS enabled in the stock device tree, but it
+# is configured as an SDIO interface - the upstream Luckfox default for the
+# Wi-Fi board variants:
+#
+#     /mmc@ffaa0000  status = okay
+#         pinctrl-0 = sdmmc0-clk, sdmmc0-cmd, sdmmc0-det, sdmmc0-bus4
+#         supports-sdio, cap-sdio-irq, non-removable, no-mmc, no-1-8-v
+#
+# `non-removable` makes the kernel ignore the sdmmc0-det card-detect line and
+# `supports-sdio` makes it probe as an SDIO function, so no /dev/mmcblk block
+# device is ever created. That, and not /etc/luckfox.cfg, is why a NAND-booted
+# Luckfox has no MicroSD in Linux. Verified by reading the built kernel DTB out
+# of boot.img on mini and max.
+#
+# SD_CARD profiles are left alone: there the same controller already carries the
+# rootfs (root=/dev/mmcblk1p7), so it is configured as storage already and the
+# one slot is occupied anyway.
+apply_sdmmc_dts_patch() {
+    local board_profile="$1" boot_medium="$2"
+
+    case "$boot_medium" in
+        nand|emmc) ;;
+        *) return 0 ;;
+    esac
+
+    local dts_file
+    dts_file="$(resolve_dts_path_for_profile "$board_profile")"
+
+    # Find the label of the controller that owns the sdmmc0 pins, rather than
+    # assuming it. A wrong label would otherwise fail deep inside dtc.
+    local dts_dir="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/arch/arm/boot/dts"
+    local label
+    label="$(grep -rhoE '^[[:space:]]*[a-z0-9_]+:[[:space:]]*mmc@ffaa0000' "$dts_dir" 2>/dev/null \
+             | head -n1 | cut -d: -f1 | tr -d "[:space:]")"
+    if [[ -z "$label" ]]; then
+        print_error "could not find the label for mmc@ffaa0000 in $dts_dir"
+        print_error "candidates: $(grep -rhoE '[a-z0-9_]+:[[:space:]]*mmc@[0-9a-f]+' "$dts_dir" 2>/dev/null | sort -u | tr -s "[:space:]" " ")"
+        exit 1
+    fi
+
+    if grep -q "SEEDSIGNER-SDMMC-REMOVABLE" "$dts_file"; then
+        print_success "MicroSD already enabled as removable storage in: $dts_file"
+        return 0
+    fi
+
+    print_step "Enabling MicroSD as removable storage (&${label}, ${board_profile}/${boot_medium})"
+    cat >> "$dts_file" <<EOF
+
+/* SEEDSIGNER-SDMMC-REMOVABLE: the stock config drives this controller as SDIO,
+ * so the card-detect line is ignored and no block device appears. Drop the SDIO
+ * properties so a MicroSD enumerates as removable storage. */
+&${label} {
+	/delete-property/ supports-sdio;
+	/delete-property/ cap-sdio-irq;
+	/delete-property/ non-removable;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	disable-wp;
+	status = "okay";
+};
+EOF
+
+    grep -q "SEEDSIGNER-SDMMC-REMOVABLE" "$dts_file" || {
+        print_error "failed to append the sdmmc override to $dts_file"; exit 1; }
+    print_success "MicroSD override appended to: $dts_file (&${label})"
+}
+
 apply_rng_dts_patch() {
     local board_profile="$1"
 
@@ -2352,6 +2421,7 @@ build_profile_artifacts() {
     apply_spi_display_dts "$board_profile"
     apply_hwrng_kernel_patch "$board_profile" "$boot_medium"
     apply_rng_dts_patch "$board_profile"
+    apply_sdmmc_dts_patch "$board_profile" "$boot_medium"
     apply_otp_size_patch
     apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
     apply_signed_nand_bootargs "$board_profile" "$boot_medium"   # signed NAND: bake root=ubi0 into the DTB (no-op otherwise)
