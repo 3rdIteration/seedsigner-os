@@ -212,7 +212,25 @@ def _scrypt_params(opslimit, memlimit):
 
 
 def load_seckey(path, passphrase=None):
-    lines = _read_lines(path)
+    with open(path, "rb") as f:
+        return parse_seckey(f.read(), passphrase, path)
+
+
+def is_encrypted_seckey(data):
+    """True for a minisign secret key protected by a passphrase (scrypt)."""
+    try:
+        lines = data.decode("ascii").splitlines()
+        return base64.b64decode(lines[1], validate=True)[2:4] == b"Sc"
+    except Exception:
+        return False
+
+
+def parse_seckey(data, passphrase=None, path="secret key"):
+    """A minisign secret key file's bytes -> {key_id, sk, seed, pk}."""
+    try:
+        lines = [l.rstrip("\r") for l in data.decode("ascii").split("\n")]
+    except UnicodeDecodeError:
+        raise MsError("%s: not a minisign secret key" % path)
     if len(lines) < 2:
         raise MsError("%s: not a minisign secret key" % path)
     b = _b64(lines[1], path)

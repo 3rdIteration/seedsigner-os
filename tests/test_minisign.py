@@ -180,6 +180,35 @@ class Synthetic(unittest.TestCase):
                                   "-o", os.path.join(self.tmp, "x.minisig")]), 3)
 
 
+class SeckeyBytes(unittest.TestCase):
+    """parse_seckey() works on bytes, for keys read off a card rather than a path."""
+
+    def test_unencrypted_key_round_trips(self):
+        tmp = tempfile.mkdtemp(prefix="minisign-sec-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        pub, sec = os.path.join(tmp, "k.pub"), os.path.join(tmp, "k.key")
+        ms.main(["keygen", "--entropy", "11" * 32, "-p", pub, "-s", sec])
+        with open(sec, "rb") as f:
+            data = f.read()
+        self.assertFalse(ms.is_encrypted_seckey(data))
+        key = ms.parse_seckey(data)
+        self.assertEqual(key["seed"], bytes.fromhex("11" * 32))
+        self.assertEqual(key, ms.load_seckey(sec))
+        self.assertEqual(key["key_id"], ms.load_pubkey(pub)["key_id"])
+
+    def test_encrypted_key_is_recognised(self):
+        with open(DEV_SEC, "rb") as f:
+            data = f.read()
+        self.assertTrue(ms.is_encrypted_seckey(data))
+        with self.assertRaises(ms.MsError):
+            ms.parse_seckey(data)                  # no passphrase
+
+    def test_garbage_is_rejected(self):
+        self.assertFalse(ms.is_encrypted_seckey(b"\xff\x00"))
+        with self.assertRaises(ms.MsError):
+            ms.parse_seckey(b"\xff\x00 not a key")
+
+
 class Artifacts(unittest.TestCase):
     def _pairs(self):
         out = []

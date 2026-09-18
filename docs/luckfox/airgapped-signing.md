@@ -139,23 +139,21 @@ booting a board from an armed loader is the irreversible step, and if the key
 whose hash gets burned is the published dev key, the board is permanently
 fused to a key everyone has.**
 
-## The rootfs key is not yet independently swappable
+## Changing the rootfs key
 
-Today the rootfs signature and the signed size are baked **inside** the
-initramfs that lives in `boot.img`'s FIT ramdisk slot, and the rootfs public key
-is embedded there too. Consequences:
+The rootfs signature, the Ed25519 key that checks it, and the signed size all
+live **inside** the initramfs in `boot.img`'s FIT ramdisk slot; `rootfs.img`
+carries no signature. So a rootfs re-sign leaves `rootfs.img` byte-identical and
+rewrites `boot.img`: `luckfox_release.rework_initramfs()` first verifies the
+rootfs against the key `boot.img` trusts now (refusing anything that does not
+verify), signs it with the new key, replaces `/pubkey` and `/rootfs.sig`, updates
+the pass-screen key classes in `/init`, and `fitsign.replace_payload()` puts the
+new ramdisk back. `boot.img` then needs an RSA re-sign, which is why the device
+tool does both keys in one **Resign All**.
 
-- Re-signing the rootfs **with the same key** is fine — replace
-  `rootfs.img.minisig`.
-- Changing the rootfs **key** requires rebuilding the initramfs and re-signing
-  `boot.img`, which a post-build tool cannot do. It needs a build with
-  `SEEDSIGNER_ROOTFS_KEY_DIR` set.
-
-Detaching the signature from the initramfs — keeping only the public key inside
-the signed image and moving the signature to a sidecar in the partition padding
-— would make tier C fully independent of the RSA key, so routine releases would
-need only an Ed25519 signature. That change is designed but not implemented; it
-alters the on-device format and needs a fresh bench run.
+Detaching the signature from the initramfs, so routine releases need only an
+Ed25519 signature, remains possible but is not implemented; it would change the
+on-device format and need a fresh bench run.
 
 ## Smartcards
 
@@ -180,13 +178,28 @@ where a ~225 MB image bundle can be staged:
 - **La Frite, Pi 02W, Pi 2/4** — comfortable; can host the full
   bundle-in/bundle-out flow from removable media.
 - **Luckfox Pico Max / Pi** — feasible on RAM (everything streams in 64 KiB
-  chunks), but the NAND/eMMC profiles currently have no usable MicroSD in Linux:
-  the controller on the `sdmmc0` pins is configured as SDIO (`supports-sdio`,
-  `non-removable`), so no `/dev/mmcblk1` appears. Fixing that is a device-tree
-  change, not a runtime one.
+  chunks). NAND/eMMC builds get their MicroSD slot as removable storage from a
+  device-tree override (`apply_sdmmc_dts_patch`); the SDK wired it as SDIO.
 - **Luckfox Pico Mini (64 MB)** — best-effort for bulk work.
 - **Any board, any time** — the *digest signer* role needs no storage at all:
   32 bytes in, 256 bytes out over QR.
+
+### Where Resign All's keys come from
+
+The app's **Tools → Luckfox Build Tools → Resign All** first asks for a key source:
+
+- **BIP85 Derive** — from a loaded seed and two child indexes (RSA-2048, Ed25519),
+  as above. Nothing to store: the seed and indexes re-derive the keys.
+- **Load from MicroSD** — pick one file per key.
+- **Load from SeedKeeper** — pick one secret per key (any type; its contents are
+  parsed the same way as a file). The keys are held in RAM only until signing.
+
+Accepted formats: the RSA key as an unencrypted PEM or DER private key (PKCS#1 or
+PKCS#8, 2048-bit, e = 65537); the Ed25519 key as an unencrypted minisign secret
+key (`minisign -G -W`, or `minisign.py keygen -s`), a PKCS#8 PEM/DER Ed25519 key
+(`openssl genpkey -algorithm ed25519`), or the bare 32-byte seed (raw or 64 hex
+characters). Passphrase-protected minisign keys are refused on the device:
+minisign's default scrypt parameters need about 1 GiB of RAM.
 
 ## See also
 
