@@ -233,7 +233,10 @@ jobs:
   build:
     name: Build (${{ matrix.hardware }} / ${{ matrix.boot }})
     runs-on: ubuntu-22.04
-    timeout-minutes: 240  # 4 hours max
+    # Cold-cache builds routinely take 175-240 min, so a 240 min limit killed them
+    # at random (runs cancelled at 222-241 min, still compiling). 360 is the
+    # GitHub-hosted runner maximum; warm-cache builds finish in 30-66 min regardless.
+    timeout-minutes: 360
     permissions:
       contents: write
     strategy:
