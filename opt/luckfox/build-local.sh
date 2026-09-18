@@ -2209,6 +2209,8 @@ install_seedsigner_app() {
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
+    install_secure_boot_tools
+
     # Diagnostic aid (off by default): when SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=1
     # is set in the build environment, ship the marker that enables the app's
     # opt-in "Save to MicroSD" button on OS/package error screens (see
@@ -2449,6 +2451,45 @@ package_firmware() {
     debug_uart_bootargs_outputs
 
     print_success "Firmware packaged"
+}
+
+# Install the secure-boot signers as OS-provided tooling, matching what
+# opt/build.sh does for the Pi / La Frite images.
+#
+# The OS owns them and the app imports them at runtime, so there is one copy and
+# nothing can drift. Installed outside /opt because the app tree lives there and
+# is pruned above. Pure stdlib, ~55 KB, so the app imports them directly rather
+# than shelling out, and the same files double as CLIs for checking a release
+# on-device.
+#
+# A board that should not carry them opts out with a `no-secure-boot-tools` file
+# in opt/luckfox/; the app's menu entry then simply does not appear, so
+# availability is a build-time decision rather than runtime device detection.
+install_secure_boot_tools() {
+    local src="$SEEDSIGNER_LUCKFOX_DIR/secure-boot"
+    local dst="$ROOTFS_DIR/usr/lib/seedsigner/secure-boot"
+    local signers="rkloader.py fitsign.py minisign.py"
+    local f
+
+    # Clear first, so a rebuild that newly opts out leaves no stale copy.
+    rm -rf "$dst"
+
+    if [ -f "$SEEDSIGNER_LUCKFOX_DIR/no-secure-boot-tools" ]; then
+        print_info "secure-boot signers: skipped (no-secure-boot-tools)"
+        return 0
+    fi
+
+    for f in $signers; do
+        [ -f "$src/$f" ] || { print_error "secure-boot signer missing: $src/$f"; exit 1; }
+    done
+
+    mkdir -p "$dst"
+    for f in $signers; do
+        cp -f "$src/$f" "$dst/$f"
+        chmod 755 "$dst/$f"
+    done
+    find "$dst" -exec touch -d "@${SOURCE_DATE_EPOCH:-0}" {} +
+    print_success "Installed secure-boot signers to /usr/lib/seedsigner/secure-boot"
 }
 
 create_sd_image() {
