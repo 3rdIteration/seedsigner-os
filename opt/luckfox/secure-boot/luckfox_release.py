@@ -59,6 +59,9 @@ SECTOR = 0x200
 # Pro and Max share a build profile, so the Pro's 128 MiB is used. The estimates
 # are flagged in reports until confirmed from a UART log on each board.
 STAGE_BASE = 0x00100000
+# What ${ramdisk_addr_r} means in scripts the build did not restage (older
+# releases): U-Boot's compiled-in default, not set in env.img.
+SDK_STAGE_DEFAULT = 0x00E00000
 _RESERVED_BELOW_TOP = 0x04000000 - 0x02DF0000 + 0x00100000
 BOARDS = {
     "mini": dict(model="Luckfox Pico Mini", dram=64 << 20, ceiling=0x02D00000, measured=True),
@@ -416,8 +419,9 @@ def identify(folder):
     info = dict(model=None, profile=None, medium=None, rootfs=None,
                 serial_console=None, ddr=_ddr_version(folder))
     boot = os.path.join(folder, "boot.img")
-    if os.path.isfile(boot):
-        props = _kernel_dtb_props(rk.read(boot))
+    boot_buf = rk.read(boot) if os.path.isfile(boot) else None
+    if boot_buf is not None and "fdt" in fs._image_payloads(boot_buf):
+        props = _kernel_dtb_props(boot_buf)
         model = props.get("/", {}).get("model", (b"", 0))[0].rstrip(b"\0").decode("latin1")
         info["model"] = model or None
         for key, board in BOARDS.items():
@@ -519,8 +523,9 @@ def sd_update_check(folder, profile=None, fix=False, script="sd_update.txt"):
                 res["fixed"].append(name)
                 changed = True
                 length = need
-        if board and int(stage_addr, 16) + max(length, stage_len) > board["ceiling"]:
-            end = int(stage_addr, 16) + max(length, stage_len)
+        base = SDK_STAGE_DEFAULT if stage_addr == "${ramdisk_addr_r}" else int(stage_addr, 16)
+        if board and base + max(length, stage_len) > board["ceiling"]:
+            end = base + max(length, stage_len)
             res["problems"].append(
                 "%s: staged at %s it ends at 0x%08X, past the %s ceiling 0x%08X - U-Boot "
                 "would overwrite itself and die mid-flash with no output"
