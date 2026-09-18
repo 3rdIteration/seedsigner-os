@@ -282,6 +282,69 @@ download_app_repo() {
   rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.po
 }
 
+# Install the Luckfox secure-boot signers as OS-provided tooling.
+#
+# These boards are not Luckfox boards; they are the machine that SIGNS a Luckfox
+# release. A Pi 02W or La Frite has a free MicroSD slot and the RAM to stream a
+# ~225 MB bundle, which is what an on-device signing ceremony needs and what a
+# NAND-booted Luckfox cannot offer.
+#
+# The OS owns these files, not the app. That means:
+#
+#   * one copy, so nothing can drift -- the app imports them at runtime rather
+#     than carrying its own;
+#   * they are usable as CLIs on a build machine too, with or without the app;
+#   * app source is never rewritten, so the app commit recorded in
+#     /etc/seedsigner-os-release still describes the code actually on the image.
+#
+# Installed OUTSIDE /opt deliberately: download_app_repo() wipes ${rootfs_overlay}/opt/
+# before cloning, so anything under it would depend on call order.
+#
+# The app gates its menu entry on this directory existing, the same way it gates
+# Network Info on /usr/bin/network-info, so an image built without this step
+# simply does not offer the feature.
+#
+# No Buildroot package is needed: all three are pure stdlib, about 55 KB. Being
+# plain Python also means the app imports them directly rather than shelling out.
+#
+# A board that should not carry them opts out with a `no-secure-boot-tools` file
+# in its board directory (e.g. opt/pi0/no-secure-boot-tools). That keeps the
+# decision where the rest of the per-board configuration lives, and the app needs
+# no device detection: the directory is simply absent and the menu entry does not
+# appear.
+install_secure_boot_tools() {
+  local src="${cur_dir}/luckfox/secure-boot"
+  local dst="${rootfs_overlay}/usr/lib/seedsigner/secure-boot"
+  local signers="rkloader.py fitsign.py minisign.py"
+  local f
+
+  # Always clear first, so a no-clean rebuild that newly opts out does not leave
+  # a stale copy in the overlay.
+  rm -rf "${dst}"
+
+  if [ -f "${config_dir}/no-secure-boot-tools" ]; then
+    echo "secure-boot signers: skipped (${config_dir}/no-secure-boot-tools)"
+    return 0
+  fi
+
+  for f in ${signers}; do
+    if [ ! -f "${src}/${f}" ]; then
+      echo "ERROR: secure-boot signer missing at ${src}/${f}" >&2
+      exit 1
+    fi
+  done
+
+  mkdir -p "${dst}"
+  for f in ${signers}; do
+    cp -f "${src}/${f}" "${dst}/${f}"
+    chmod 755 "${dst}/${f}"
+  done
+
+  # Reproducible builds: the overlay's mtimes reach the image.
+  find "${dst}" -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
+  echo "installed secure-boot signers to /usr/lib/seedsigner/secure-boot (${signers})"
+}
+
 build_image() {
   # arguments: $1 - config name, $2 clean/no-clean - allows for, $3 skip-repo
 
@@ -311,6 +374,8 @@ build_image() {
   if [ "${3}" != "skip-repo" ]; then
     download_app_repo
   fi
+
+  install_secure_boot_tools
 
   # Setup external tree
   #make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ #2> /dev/null > /dev/null
