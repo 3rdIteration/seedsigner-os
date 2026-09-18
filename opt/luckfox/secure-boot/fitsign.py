@@ -349,6 +349,67 @@ def rehash_buf(buf, report=None):
     return changed
 
 
+PAYLOAD_ALIGN = 0x200
+
+
+def _align(n, a=PAYLOAD_ALIGN):
+    return (n + a - 1) & ~(a - 1)
+
+
+def replace_payload(buf, name, data):
+    """Swap one external payload for `data`, re-laying out everything after it.
+
+    Returns a NEW bytearray; the signature is stale afterwards, so sign it.
+
+    mkimage -E stores payloads outside the FDT at `data-position`, each aligned
+    to 0x200 (reproduced exactly: fdt 0x1000, kernel 0xa000, ramdisk 0x301200,
+    resource 0x361400 in a real boot.img). A payload that changes size shifts
+    every payload after it, so their `data-position`s move too.
+
+    Rockchip FITs also carry a root `/totalsize` = align(last payload end, 0x200)
+    plus a fixed tail (0xc00 in every image checked). U-Boot reads that many
+    bytes from storage, and `/` is a hashed node, so it must be recomputed here
+    and the image re-signed - leaving it stale would make U-Boot read the image
+    short. Bytes beyond `/totalsize` (uboot.img pads to its partition) are kept.
+    """
+    payloads = _image_payloads(buf)
+    if name not in payloads:
+        raise FitError("no external payload named %r (have: %s)"
+                       % (name, ", ".join(sorted(payloads))))
+    props = fdt_props(buf)
+    ordered = sorted(payloads.items(), key=lambda kv: kv[1][0])
+    first_pos = ordered[0][1][0]
+    old_end = max(p + s for _n, (p, s, _h) in ordered)
+
+    root = props.get("/", {})
+    if "totalsize" in root:
+        old_total = struct.unpack(">I", root["totalsize"][0])[0]
+        tail = old_total - _align(old_end)
+    else:
+        old_total, tail = len(buf), len(buf) - old_end
+    beyond = bytes(buf[old_total:]) if old_total < len(buf) else b""
+
+    out = bytearray(buf[:first_pos])           # the FDT and its padding
+    for i, (pname, (pos, size, _h)) in enumerate(ordered):
+        body = bytes(data) if pname == name else bytes(buf[pos:pos + size])
+        # The first payload stays where it was; each later one follows the
+        # previous at the next 0x200 boundary, which is mkimage's own layout.
+        new_pos = pos if i == 0 else _align(len(out))
+        if len(out) < new_pos:
+            out += b"\x00" * (new_pos - len(out))
+        struct.pack_into(">I", out, props["/images/" + pname]["data-position"][1], new_pos)
+        struct.pack_into(">I", out, props["/images/" + pname]["data-size"][1], len(body))
+        out += body
+
+    new_total = _align(len(out)) + tail
+    out += b"\x00" * (new_total - len(out))
+    if "totalsize" in root:
+        struct.pack_into(">I", out, root["totalsize"][1], new_total)
+    out += beyond
+    rehash_buf(out)
+    return out
+
+
 def cmd_rehash(a):
     """Recompute every sha256 payload hash. Needed after patching a payload."""
     buf = read(a.image)

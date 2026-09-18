@@ -45,12 +45,19 @@ expect. The two published dev keys — **which give no protection** — are:
 
 | Key | SHA-256 |
 |---|---|
-| FIT/loader RSA modulus | `c8b597b50bbb94c7c700011c2aefc43eb97d3b391da28bc130936d8d9f530f17` |
+| FIT/loader RSA modulus (as `rkloader.py inspect` prints it: SHA-256 of the 256-byte big-endian modulus) | `07c0c507c9223a035b3e1b3b0d557fb50b6d0a857f61de3118363afa5348ddd8` |
 | rootfs minisign `dev.pubkey` (file hash) | `324f4a638edc35c3e709d1569ad8ec3a5cced2ca5995d088eae703f7434a6878` |
+| rootfs minisign key id | `FB935B80871B6C36` |
+
+`python3 $SB/luckfox_release.py check <folder>` does all of this in one go: every
+signature, which keys were used (flagging the dev keys), whether the rootfs
+verifies against the key boot.img carries, and whether the MicroSD auto-flash
+script would write each image in full.
 
 A device also tells you at boot: the verifier screen shows **yellow** instead of
 green when either key is a published dev key, and orange *SECURE BOOT not
-enabled* on an unfused board.
+enabled* on an unfused board (or, if the release forces the rootfs check on
+unfused boards, an orange *PASSED … SECURE BOOT not enabled*).
 
 ### What each signature actually covers
 

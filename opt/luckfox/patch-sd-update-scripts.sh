@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# patch-sd-update-scripts.sh <LUCKFOX_PICO_DIR>
+# patch-sd-update-scripts.sh <LUCKFOX_PICO_DIR> [mini|max|pi]
 #
 # Repoint the SDK-generated U-Boot flashing scripts (output/image/sd_update.txt
 # and tftp_update.txt) at a staging address that the whole rootfs actually fits
@@ -47,9 +47,18 @@
 # executed lives in the heap up at ~0x02E00000+, above any staging buffer we
 # choose. Staging at 0x00100000 turns a ~31 MiB window into ~44 MiB.
 #
-# The ceiling below is deliberately the Mini's. Max (128 MiB) and Pi (256 MiB)
-# have more DRAM, so a lower base and a lower ceiling are always safe there —
-# and one number that is right everywhere beats three that drift apart.
+# The ceiling follows the board (2nd argument). The Mini's is measured; Max
+# (Pro and Max share a profile, so the Pro's 128 MiB) and Pi (256 MiB) assume the
+# same reservation below their top of RAM - estimates until a UART log confirms
+# them. Without a board, the Mini's is used: lower is always safe, but it
+# false-alarms on the bigger boards. Keep in step with BOARDS in
+# secure-boot/luckfox_release.py.
+#
+# WRITE LENGTHS. The SDK computes each step's length before the rootfs verifier
+# is embedded in boot.img and before it is signed, both of which grow it; a short
+# `mtd write` silently truncates the image and the board fails its FIT hash check
+# after an SD auto-flash. So lengths are recomputed here from the final images,
+# by secure-boot/luckfox_release.py (the same code the device-side tools use).
 #
 # NOT DONE ON PURPOSE, twice bitten:
 #
@@ -67,13 +76,22 @@
 set -eu
 
 LUCKFOX_DIR="${1:-}"
+BOARD="${2:-}"
 
 # Where partition images are staged in DRAM before `mtd write`. See above.
 STAGE_BASE="${SS_UBOOT_STAGE_BASE:-0x00100000}"
-# Highest address a staged image may reach. 0x02DF0000 is where the running
-# loader's reserved region was observed to start; 0x02D00000 keeps 1 MiB of
-# slack under it, because the stack grows DOWN from there during the flash.
-STAGE_CEILING="${SS_UBOOT_STAGE_CEILING:-0x02D00000}"
+# Highest address a staged image may reach. 0x02DF0000 is where the Mini's
+# running loader's reserved region was observed to start; 0x02D00000 keeps 1 MiB
+# of slack under it, because the stack grows DOWN from there during the flash.
+# The bigger boards keep the same 0x01310000 (reservation + slack) below their
+# top of RAM.
+case "$BOARD" in
+    max) default_ceiling=0x06CF0000 ;;    # 128 MiB - 0x01310000 (estimate)
+    pi)  default_ceiling=0x0ECF0000 ;;    # 256 MiB - 0x01310000 (estimate)
+    *)   default_ceiling=0x02D00000 ;;    # Mini, measured; also the safe default
+esac
+STAGE_CEILING="${SS_UBOOT_STAGE_CEILING:-$default_ceiling}"
+RELEASE_TOOL="$(cd "$(dirname "$0")" && pwd)/secure-boot/luckfox_release.py"
 
 log()  { echo "  [sdupd] $*"; }
 fail() { echo "  [sdupd] ❌ $*" >&2; exit 1; }
@@ -129,6 +147,13 @@ for name in sd_update.txt tftp_update.txt; do
         continue
     fi
 
+    # Write lengths that cover each whole image (see WRITE LENGTHS above).
+    # Exit 2 means an image outgrew its partition, which no length can fix.
+    rc=0
+    fix_out="$(python3 "$RELEASE_TOOL" sd-update --fix --lengths-only --script "$name" "$IMAGE_DIR" 2>&1)" || rc=$?
+    [ -z "$fix_out" ] || printf '%s\n' "$fix_out" | sed 's/^/  [sdupd] /'
+    [ "$rc" -eq 0 ] || fail "$name: write lengths cannot be made to cover every image (see above)"
+
     # Size guard. Each step declares the bytes it will stage as the mw.b fill
     # length, so that is the number to check — not the file on disk, which is
     # what the SDK derived it from anyway. Today's rootfs clears the ceiling by
@@ -180,7 +205,7 @@ for name in sd_update.txt tftp_update.txt; do
         # continue; set SS_UBOOT_STAGE_OVERRUN=fail to restore the hard failure
         # (e.g. when deliberately building for the SD/eMMC auto-flash path).
         echo "" >&2
-        echo "  [sdupd] ⚠️  $name: an image exceeds the U-Boot staging window on a 64 MiB board." >&2
+        echo "  [sdupd] ⚠️  $name: an image exceeds the U-Boot staging window on this board (${BOARD:-mini})." >&2
         echo "  [sdupd] ⚠️  The microSD/TFTP AUTO-FLASH path cannot flash this image (it would" >&2
         echo "  [sdupd] ⚠️  hang mid-write). Flash over USB with update.img / rkdeveloptool" >&2
         echo "  [sdupd] ⚠️  instead — USB flashing does not use this staging window and is fine." >&2

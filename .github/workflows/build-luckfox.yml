@@ -113,6 +113,14 @@ on:
           - 'on'
           - 'off'
         default: 'on'
+      rootfs_verify_unfused:
+        description: 'Verify the rootfs even on boards whose secure-boot fuse is NOT burned (needs signing on). Harmless, but no real protection without the fuse; off = unfused boards skip the check.'
+        required: false
+        type: choice
+        options:
+          - 'off'
+          - 'on'
+        default: 'off'
       luckfox_repo_url:
         description: 'LuckFox Pico SDK Repository URL'
         required: false
@@ -194,6 +202,10 @@ on:
         required: false
         type: string
         default: 'on'
+      rootfs_verify_unfused:
+        required: false
+        type: string
+        default: 'off'
       luckfox_repo_url:
         required: false
         type: string
@@ -386,6 +398,9 @@ jobs:
         # passthrough forwards it to os-build.sh, which gates every signing step
         # on SEEDSIGNER_FIT_SIGNATURE=1; "0" keeps unsigned builds byte-identical.
         SEEDSIGNER_FIT_SIGNATURE: ${{ (inputs.signing || 'on') == 'on' && '1' || '0' }}
+        # Opt-in: /init verifies the rootfs even when secure boot is not fused
+        # (adds /force-rootfs-verify to the initramfs). Off by default.
+        SEEDSIGNER_ROOTFS_VERIFY_UNFUSED: ${{ inputs.rootfs_verify_unfused == 'on' && '1' || '0' }}
         # This input was declared but never forwarded to the build -- wiring it
         # now. build.sh's passthrough hands it to os-build.sh, where
         # resolve_uart2_console() normalises auto against the variant (non-dev

@@ -315,7 +315,7 @@ download_app_repo() {
 install_secure_boot_tools() {
   local src="${cur_dir}/luckfox/secure-boot"
   local dst="${rootfs_overlay}/usr/lib/seedsigner/secure-boot"
-  local signers="rkloader.py fitsign.py minisign.py"
+  local signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
   local f
 
   # Always clear first, so a no-clean rebuild that newly opts out does not leave

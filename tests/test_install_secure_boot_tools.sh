@@ -16,7 +16,7 @@ set -o errexit -o pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 src_dir="${repo_dir}/opt/luckfox/secure-boot"
 rel="usr/lib/seedsigner/secure-boot"
-signers="rkloader.py fitsign.py minisign.py"
+signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
 fails=0
 
 work="$(mktemp -d)"
@@ -88,6 +88,8 @@ if python3 "${a}/${rel}/fitsign.py" --help >/dev/null 2>&1; then ok "fitsign.py 
 else fail "fitsign.py cannot import rkloader from the install dir"; fi
 if python3 "${a}/${rel}/minisign.py" --help >/dev/null 2>&1; then ok "minisign.py runs"
 else fail "minisign.py does not run"; fi
+if python3 "${a}/${rel}/luckfox_release.py" --help >/dev/null 2>&1; then ok "luckfox_release.py runs (finds all three signers beside it)"
+else fail "luckfox_release.py cannot import the signers from the install dir"; fi
 
 echo
 if [ "${fails}" -eq 0 ]; then

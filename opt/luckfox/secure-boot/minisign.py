@@ -245,11 +245,25 @@ def load_seckey(path, passphrase=None):
     return {"key_id": key_id, "sk": sk, "seed": sk[:32], "pk": sk[32:]}
 
 
-def write_pubkey(path, key_id, pk, comment=None):
+def key_id_for(pk):
+    """Deterministic key id (minisign -G randomises it; ours must re-derive)."""
+    return hashlib.blake2b(pk, digest_size=8).digest()
+
+
+def format_key_id(key_id):
+    """The key id as minisign prints it."""
+    return key_id[::-1].hex().upper()
+
+
+def format_pubkey(key_id, pk, comment=None):
     body = base64.b64encode(ALG_PURE + key_id + pk).decode()
-    c = comment or "minisign public key %s" % key_id[::-1].hex().upper()
-    with open(path, "w", newline="\n") as f:
-        f.write("untrusted comment: %s\n%s\n" % (c, body))
+    c = comment or "minisign public key %s" % format_key_id(key_id)
+    return ("untrusted comment: %s\n%s\n" % (c, body)).encode()
+
+
+def write_pubkey(path, key_id, pk, comment=None):
+    with open(path, "wb") as f:
+        f.write(format_pubkey(key_id, pk, comment))
 
 
 def write_seckey(path, key_id, sk, comment=None):
@@ -277,13 +291,16 @@ def load_sig(path):
             "global_sig": _b64(lines[3], path)}
 
 
-def write_sig(path, alg, key_id, sig, trusted_comment, global_sig, comment=None):
+def format_sig(alg, key_id, sig, trusted_comment, global_sig, comment=None):
     c = comment or "signature from minisign secret key"
-    with open(path, "w", newline="\n") as f:
-        f.write("untrusted comment: %s\n" % c)
-        f.write("%s\n" % base64.b64encode(alg + key_id + sig).decode())
-        f.write("trusted comment: %s\n" % trusted_comment)
-        f.write("%s\n" % base64.b64encode(global_sig).decode())
+    return ("untrusted comment: %s\n%s\ntrusted comment: %s\n%s\n" % (
+        c, base64.b64encode(alg + key_id + sig).decode(), trusted_comment,
+        base64.b64encode(global_sig).decode())).encode()
+
+
+def write_sig(path, alg, key_id, sig, trusted_comment, global_sig, comment=None):
+    with open(path, "wb") as f:
+        f.write(format_sig(alg, key_id, sig, trusted_comment, global_sig, comment))
 
 
 # --- hashing ----------------------------------------------------------------
@@ -339,7 +356,7 @@ def cmd_keygen(a):
     sk = seed + pk
     # Deterministic key_id, so the same BIP85 entropy always rebuilds the same
     # keypair. minisign -G randomises it; ours must be reproducible.
-    key_id = hashlib.blake2b(pk, digest_size=8).digest()
+    key_id = key_id_for(pk)
     write_pubkey(a.pub, key_id, pk, a.comment)
     if a.sec:
         write_seckey(a.sec, key_id, sk, a.comment)

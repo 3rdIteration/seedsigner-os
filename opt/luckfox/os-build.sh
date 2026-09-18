@@ -2162,6 +2162,14 @@ embed_rootfs_verifier() {
     chmod 755 "$stage/init"
     cp "$keydir/dev.pubkey" "$stage/pubkey"
     cp "$sig"               "$stage/rootfs.sig"
+    # Opt-in: verify the rootfs even on an UNFUSED board (/init looks for this
+    # marker). Harmless, but gives no real protection without the fuse -- see
+    # the comment above FORCED_VERIFY in initramfs/init. The SeedSigner
+    # "Luckfox Build Tools" can set or clear the same marker after the build.
+    if [ "${SEEDSIGNER_ROOTFS_VERIFY_UNFUSED:-0}" = "1" ]; then
+        : > "$stage/force-rootfs-verify"
+        print_info "SEEDSIGNER_ROOTFS_VERIFY_UNFUSED=1: rootfs is verified even when secure boot is not fused"
+    fi
 
     # --- deterministic cpio.gz ------------------------------------------------
     # newc headers carry inode + device numbers, which vary with the host's
@@ -2332,7 +2340,7 @@ export_fit_sign_tree() {
 install_secure_boot_tools() {
     local src="$SEEDSIGNER_LUCKFOX_DIR/secure-boot"
     local dst="$ROOTFS_DIR/usr/lib/seedsigner/secure-boot"
-    local signers="rkloader.py fitsign.py minisign.py"
+    local signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
     local f
 
     # Clear first, so a rebuild that newly opts out leaves no stale copy.
@@ -2988,7 +2996,7 @@ s/^endef\nendif/endef\nendif\nendif/
     # there: mw.b overwrote the running loader and the microSD auto-flash hung
     # mid-write with no console output. Restage low and hard-fail if any image
     # ever outgrows the window again. Shared with build-local.sh.
-    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-sd-update-scripts.sh" "$LUCKFOX_SDK_DIR"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-sd-update-scripts.sh" "$LUCKFOX_SDK_DIR" "$board_profile"
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.

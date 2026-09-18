@@ -917,6 +917,18 @@ when unneeded costs ~15 s of boot; skipping on a locked device defeats the featu
 board `/init` shows an orange `SHIELDSIGNER / SECURE BOOT not enabled` screen held for 5 s, then
 boots without verifying — the panel tells the user this board has no rootfs-integrity protection.
 
+**Forced verification on unfused boards (opt-in).** If the initramfs contains `/force-rootfs-verify`,
+an unfused board verifies the rootfs anyway. The build adds it with
+`SEEDSIGNER_ROOTFS_VERIFY_UNFUSED=1` (workflow input `rootfs_verify_unfused`, default off); the
+SeedSigner app's *Luckfox Build Tools → Force Rootfs Check* adds or removes it on an existing release
+and re-signs `boot.img`. A pass shows an **orange** `PASSED / rootfs valid / SECURE BOOT / not enabled`
+panel (held 5 s), never the green one; a failure is the usual red screen with its escape key. It is
+harmless but gives **no real protection**: without the fuse nothing checks the initramfs either, so
+anyone who can rewrite the rootfs can rewrite the checker. What it does give is proof the flashed
+image is intact, and a way to exercise the verifier before a board is ever fused. A marker file
+rather than a baked-in value, so a tool can set it without editing `/init`; releases whose `/init`
+predates it do not mention the path, and the tools refuse to set it there. (Not yet bench-run.)
+
 Why not read the fuse directly? The kernel's `rockchip-otp` nvmem driver exposes a **non-secure view**
 of OTP that does not contain the secure-boot enable flag: SPL reads it through a different hardware
 path (the `rv1106_spl_rockchip_otp_start/stop` register sequence in `drivers/misc/rv1106-secure-otp.S`).
