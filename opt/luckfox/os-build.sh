@@ -2338,6 +2338,7 @@ export_fit_sign_tree() {
 # in opt/luckfox/; the app's menu entry then simply does not appear, so
 # availability is a build-time decision rather than runtime device detection.
 install_secure_boot_tools() {
+    local board="${1:-}"
     local src="$SEEDSIGNER_LUCKFOX_DIR/secure-boot"
     local dst="$ROOTFS_DIR/usr/lib/seedsigner/secure-boot"
     local signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
@@ -2348,6 +2349,13 @@ install_secure_boot_tools() {
 
     if [ -f "$SEEDSIGNER_LUCKFOX_DIR/no-secure-boot-tools" ]; then
         print_info "secure-boot signers: skipped (no-secure-boot-tools)"
+        return 0
+    fi
+    # The Pico Mini (RV1103, 64 MB) crashes running the app's Luckfox Build
+    # Tools, so its image does not carry them; the app then hides the menu and
+    # refuses the setting there with an explanation.
+    if [ "$board" = "mini" ]; then
+        print_info "secure-boot signers: skipped (not supported on the Pico Mini)"
         return 0
     fi
 
@@ -2770,7 +2778,7 @@ s/^endef\nendif/endef\nendif\nendif/
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
-    install_secure_boot_tools
+    install_secure_boot_tools "$board_profile"
 
     # Mini hardware_config (FOX_22 vs FOX_40).
     #

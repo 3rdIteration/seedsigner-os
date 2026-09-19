@@ -91,6 +91,34 @@ else fail "minisign.py does not run"; fi
 if python3 "${a}/${rel}/luckfox_release.py" --help >/dev/null 2>&1; then ok "luckfox_release.py runs (finds all three signers beside it)"
 else fail "luckfox_release.py cannot import the signers from the install dir"; fi
 
+# The Luckfox builds have their own copy (os-build.sh, kept in lockstep with
+# build-local.sh), which also skips the Pico Mini: the tools crash there.
+# $1 = rootfs dir, $2 = board profile
+run_luckfox_install() {
+  (
+    set -o errexit -o pipefail
+    export SOURCE_DATE_EPOCH=0
+    SEEDSIGNER_LUCKFOX_DIR="${repo_dir}/opt/luckfox"
+    ROOTFS_DIR="$1"
+    print_info() { :; }; print_success() { :; }; print_error() { echo "$*" >&2; }
+    eval "$(sed -n '/^install_secure_boot_tools() {/,/^}/p' "${repo_dir}/opt/luckfox/os-build.sh")"
+    install_secure_boot_tools "$2"
+  )
+}
+
+echo "== Luckfox: the Pico Mini does not carry the tooling"
+for board in max pi mini; do
+  r="${work}/luckfox-${board}"; mkdir -p "${r}"
+  run_luckfox_install "${r}" "${board}"
+  if [ "${board}" = "mini" ]; then
+    if [ ! -e "${r}/${rel}" ]; then ok "${board}: not installed"
+    else fail "${board}: installed, but the tools crash on the Pico Mini"; fi
+  else
+    if [ -x "${r}/${rel}/luckfox_release.py" ]; then ok "${board}: installed"
+    else fail "${board}: not installed"; fi
+  fi
+done
+
 echo
 if [ "${fails}" -eq 0 ]; then
   echo "PASS"
