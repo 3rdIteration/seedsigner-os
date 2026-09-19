@@ -463,10 +463,26 @@ _STEP = re.compile(
 
 
 def _image_end(path):
-    """Bytes that must reach flash: a FIT's real extent, else the file size."""
+    """Bytes that must reach flash: a FIT's real extent, else the file size.
+
+    Reads only the FDT metadata (struct + strings blocks), never the payloads:
+    sd_update_check calls this for every image in the script - including the
+    ~90 MiB rootfs - and a full-file read here OOM-killed the app on-device
+    (64-128 MB DRAM boards) during Check Release and re-signing.
+    """
     size = os.path.getsize(path)
     try:
-        buf = rk.read(path)
+        with open(path, "rb") as f:
+            head = f.read(40)
+        if len(head) < 40 or struct.unpack_from(">I", head, 0)[0] != fs.FDT_MAGIC:
+            return size                      # not a FIT (raw image): the file is the extent
+        _magic, totalsize, off_struct, off_strings, _memrsv, _ver, \
+            _lastcomp, _bootcpu, size_strings, size_struct = struct.unpack_from(">10I", head, 0)
+        meta = max(off_struct + size_struct, off_strings + size_strings)
+        if meta > size or meta > (16 << 20): # corrupt header: fall back to the file size
+            return size
+        with open(path, "rb") as f:
+            buf = f.read(meta)
         root = fs.fdt_props(buf).get("/", {})
         if "totalsize" in root:
             return struct.unpack(">I", root["totalsize"][0])[0]

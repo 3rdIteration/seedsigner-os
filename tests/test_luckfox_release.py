@@ -482,6 +482,50 @@ class SdUpdate(Base):
         self.assertFalse(lr.sd_update_check(self.tmp, "max")["supported"])
 
 
+class ImageEnd(Base):
+    """_image_end must not read whole files: sd_update_check calls it for every image
+    in the script - including the ~90 MiB rootfs - and a full-file read OOM-killed the
+    app on-device (64-128 MB DRAM boards) during Check Release and re-signing."""
+
+    def test_fit_extent_unchanged(self):
+        make_release(self.tmp)
+        path = os.path.join(self.tmp, "boot.img")
+        buf = rk.read(path)
+        root = fs.fdt_props(buf).get("/", {})
+        if "totalsize" in root:
+            want = struct.unpack(">I", root["totalsize"][0])[0]
+        else:
+            payloads = fs._image_payloads(buf)
+            want = max(p + s for p, s, _ in payloads.values())
+        self.assertEqual(lr._image_end(path), want)
+
+    def test_non_fit_is_the_file_size(self):
+        make_release(self.tmp)
+        path = os.path.join(self.tmp, "rootfs.img")
+        self.assertEqual(lr._image_end(path), os.path.getsize(path))
+
+    def test_large_non_fit_does_not_enter_ram(self):
+        import tracemalloc
+        big = os.path.join(self.tmp, "big.img")
+        with open(big, "wb") as f:
+            f.seek(128 << 20)
+            f.write(b"\x00")                      # sparse: 128 MiB on disk, nothing to read
+        tracemalloc.start()
+        self.assertEqual(lr._image_end(big), os.path.getsize(big))
+        _cur, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        self.assertLess(peak, 1 << 20)
+
+    def test_corrupt_fit_header_falls_back_to_size(self):
+        bad = os.path.join(self.tmp, "bad.img")
+        with open(bad, "wb") as f:
+            # valid FDT magic, but the strings block is claimed to be past EOF
+            f.write(struct.pack(">10I", fs.FDT_MAGIC, 0, 0x100, 0x200, 0,
+                                2, 1, 0, 0xFFFFFFFF, 0))
+            f.write(b"\x00" * 0x300)
+        self.assertEqual(lr._image_end(bad), os.path.getsize(bad))
+
+
 class CheckRelease(Base):
     def test_report_on_a_boot_only_folder(self):
         """No loaders here, so the chain is reported missing - but the rootfs and the
