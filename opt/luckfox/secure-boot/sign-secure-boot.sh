@@ -4,10 +4,10 @@
 # Rockchip secure boot, verify the result offline, and show the OTP hash a burn
 # would write.
 #
-# THIS IS A BENCH TOOL, NOT PART OF THE IMAGE BUILD. It is never called by
-# os-build.sh / build-local.sh / CI. Nothing in a normal SeedSigner build is
-# signed. See docs/luckfox/secure-boot-bench-procedure.md for the full process
-# and docs/luckfox/secure-boot.md for the rationale and the consequences.
+# THIS SCRIPT IS A BENCH TOOL: it is not called by os-build.sh / build-local.sh
+# / CI. Builds DO sign themselves (SEEDSIGNER_FIT_SIGNATURE=1, the CI default),
+# in-build and with the committed public dev keys; this is for signing by hand
+# with a real key. See docs/luckfox/secure-boot-bench-procedure.md.
 #
 # It does NOT flash and it does NOT burn a fuse. Signing and verifying are fully
 # reversible; the only irreversible step (the OTP burn) happens later, on-device,

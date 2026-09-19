@@ -415,8 +415,12 @@ binary).
 > `hard_sign_pss` (and under `new_crypto` / `new_idb`). An external signer must therefore produce a
 > **PSS** signature over the extracted digest. Signing these digests with
 > `openssl pkeyutl -pkeyopt rsa_padding_mode:pkcs1` produces a well-formed 256-byte blob that the
-> tool then rejects — the injection step was not completed here, and the exact file name/location it
-> expects for signed data still needs establishing (see §10).
+> tool then rejects.
+>
+> **This whole extract/inject route is now optional.** The container format was recovered directly
+> (§10 Q16) — PSS with **saltLen 32**, signature stored **little-endian** — so
+> [`rkloader.py`](../../opt/luckfox/secure-boot/rkloader.py) does the digest/splice itself and
+> `rk_sign_tool` is no longer needed for this tier at all.
 
 **Two operational gotchas, both discovered the hard way:**
 
@@ -913,6 +917,18 @@ when unneeded costs ~15 s of boot; skipping on a locked device defeats the featu
 board `/init` shows an orange `SHIELDSIGNER / SECURE BOOT not enabled` screen held for 5 s, then
 boots without verifying — the panel tells the user this board has no rootfs-integrity protection.
 
+**Forced verification on unfused boards (opt-in).** If the initramfs contains `/force-rootfs-verify`,
+an unfused board verifies the rootfs anyway. The build adds it with
+`SEEDSIGNER_ROOTFS_VERIFY_UNFUSED=1` (workflow input `rootfs_verify_unfused`, default off); the
+SeedSigner app's *Luckfox Build Tools → Force Rootfs Check* adds or removes it on an existing release
+and re-signs `boot.img`. A pass shows an **orange** `PASSED / rootfs valid / SECURE BOOT / not enabled`
+panel (held 5 s), never the green one; a failure is the usual red screen with its escape key. It is
+harmless but gives **no real protection**: without the fuse nothing checks the initramfs either, so
+anyone who can rewrite the rootfs can rewrite the checker. What it does give is proof the flashed
+image is intact, and a way to exercise the verifier before a board is ever fused. A marker file
+rather than a baked-in value, so a tool can set it without editing `/init`; releases whose `/init`
+predates it do not mention the path, and the tools refuse to set it there. (Not yet bench-run.)
+
 Why not read the fuse directly? The kernel's `rockchip-otp` nvmem driver exposes a **non-secure view**
 of OTP that does not contain the secure-boot enable flag: SPL reads it through a different hardware
 path (the `rv1106_spl_rockchip_otp_start/stop` register sequence in `drivers/misc/rv1106-secure-otp.S`).
@@ -1256,17 +1272,39 @@ Checked against a built image:
     device secret ([§8.4](#84-where-the-device-secret-lives))? This is only relevant if OP-TEE is
     dropped. None of the documents reviewed has the RV1106 OTP map; the only known allocation is
     the rollback counter at `0xe0` (`OTP_UBOOT_ROLLBACK_OFFSET`, 8 bytes).
-16. **Finish the air-gapped `.sign.rsa` encoding.** `rk_sign_tool`'s extract/inject flow is wired and
-    validated (it emits bare 32-byte SHA-256 digests and reads a `<digest>.sign.rsa` back), but
-    externally-produced signatures are still rejected as invalid. Evidence: the loader stores the
-    pubkey N **little-endian** (offset 0x3bc), so the signature is almost certainly little-endian too,
-    plus an unconfirmed PSS salt length. Cracking it enables signing on an **air-gapped SeedSigner**
-    with a BIP85 key — see the bench doc's airgapped-signing section.
+16. ~~Finish the air-gapped `.sign.rsa` encoding.~~ **Answered (2026-09-17) — and it makes
+    `rk_sign_tool` unnecessary for this tier.** The loader/idblock signature format was recovered
+    directly from the shipped artifacts, without the vendor tool: scan a signed image for a 256-byte
+    window that RSA-verifies (under the committed dev pubkey) to a *structurally valid* PSS block —
+    trailer `0xbc`, and after MGF1 unmasking a DB of the form `0x00...0x01 || salt`. Exactly one
+    window matches per file, which then yields the salt, and solving `H = sha256(0x00^8 || mHash ||
+    salt)` for `mHash` gives the hashed region.
+
+    | Artifact | Signed message | Signature at | Encoding |
+    |---|---|---|---|
+    | `idblock.img` | `[0x000 : 0x600]` | `0x600` | RSA-PSS, SHA-256, MGF1-SHA256, **saltLen 32**, **little-endian** |
+    | `download.bin` | `[0x1bc : 0x7bc]` | `0x7bc` | identical |
+
+    Both are a 0x600-byte header followed immediately by its signature. The modulus is embedded
+    little-endian at **header+0x200** (so `0x3bc` in `download.bin`, as observed earlier), and
+    `idblock.img` carries a big-endian copy in the SPL DTB. The magic inside the signed header goes
+    `RKNS` -> `RKSS` (and the u32 at header+0x0c gains `0x10`) **before** the digest is taken — the
+    header is signed in its final, already-marked form.
+
+    Verified on all four locally built profiles (mini/max NAND, mini production, pi eMMC).
+    Implemented in [`secure-boot/rkloader.py`](../../opt/luckfox/secure-boot/rkloader.py) (pure
+    stdlib: no openssl, no `rk_sign_tool`, no vendor blob), tested by
+    [`tests/test_rkloader.py`](../../tests/test_rkloader.py). Re-signing a shipped image with the
+    same key changes **only** the 256 signature bytes. This is what enables signing on an air-gapped
+    SeedSigner with a BIP85 key: 32 bytes out, 256 bytes back.
+
+    Still unknown: the header fields *other* than the modulus, which `rkloader.py setkey` rewrites
+    when changing keys. Test that on a sacrificial, unfused board.
 17. ~~Does the RV1106 BootROM accept RSA-4096 for the loader, or is it 2048-only in silicon?~~ **Answered (2026-09-12): moot — the chain is 2048-only in software.** The SPL verify path rejects any non-2048 key with `-EINVAL` before the BootROM link is ever reached, so a fused-board test would only measure mask-ROM support for an image that cannot boot anyway ([§13.2](#132-rsa-4096-probe-2026-09-12-unfused-board)).
 
-Questions 1–3, 5, 7, 8, 9, 11, 12, 17 and (partly) 13 are now answered — see the strikethroughs above and
+Questions 1–3, 5, 7, 8, 9, 11, 12, 16, 17 and (partly) 13 are now answered — see the strikethroughs above and
 [§13](#13-bench-test-results-rv1103-pico-mini). The open ones that gate a **production** deployment
-are: a real (non-public) signing key and its custody (6, 8b, 10, 16), rollback without OP-TEE (14),
+are: a real (non-public) signing key and its custody (6, 8b, 10), rollback without OP-TEE (14),
 and — the big one — a **signed rootfs** ([§6](#6-extending-the-chain-to-the-rootfs)), which is designed but unimplemented.
 
 ---
@@ -1301,13 +1339,24 @@ bootargs in the kernel DTB are part of the deterministic payload; the *key* is n
 `verify-fit-payloads.py compare <release-image> <rebuilt-image>` must report every payload MATCH.
 Authenticity (the 256-byte value) is checked separately against the published pubkey.
 
-Two limits: the **loader** (`download.bin` / `idblock.img`) is not a plain FIT — its SPL DTB embeds
-the pubkey + `burn-key-hash` + an `rk_sign_tool` signature as binary in a `boot_merger` blob
-(pubkey N little-endian near `0x3bc`, §10 Q16), so stripping/comparing it needs the encoding that
-question tracks. And **swapping** a FIT signature offline (re-sign the reproducible payload with a
-different key, without a rebuild) is feasible for `uboot.img`/`boot.img` — recompute the data-to-sign
-from the `hashed-nodes`/`hashed-strings` properties, RSA-PSS sign, splice `value` — but is not
-implemented here, and the loader half is blocked on the same Q16 encoding.
+The **loader half is now implemented.** `download.bin` / `idblock.img` are not plain FITs, but their
+format is fully characterised (§10 Q16) and
+[`secure-boot/rkloader.py`](../../opt/luckfox/secure-boot/rkloader.py) signs, verifies, inspects and
+re-keys them offline with no vendor tool. Re-signing a shipped image with the same key changes only
+the 256 signature bytes, so a canonical (signature-zeroed) loader is directly comparable between a
+release and a rebuild.
+
+The **FIT half is not yet implemented**: swapping a `uboot.img` / `boot.img` signature offline means
+recomputing the data-to-sign from the `hashed-nodes` / `hashed-strings` properties, RSA-PSS signing
+it and splicing `value`. Those properties are present in the shipped images, and the committed dev
+key plus a signed image form an exact oracle for the reimplementation, but the region walk
+(U-Boot's `fdt_find_regions`) has still to be written.
+
+One further caveat for reproducibility, unrelated to keys: `/configurations/conf/signature` carries a
+**live wall-clock `timestamp`** written by mkimage 2017.09 (observed two values ~19 minutes apart
+within a single build), so two builds of identical source do not produce byte-identical signed FITs.
+It sits *outside* the signed region — `hashed-nodes` does not list the signature node — so it can be
+normalised without invalidating anything, and a canonical form must zero it alongside `value`.
 
 ---
 

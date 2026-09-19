@@ -835,6 +835,75 @@ enable_dts_node() {
 # CRYPTO_DEV_ROCKCHIP_V3 sub-option to build at all -- confirmed absent on a
 # flashed image (empty /proc/crypto, unbound crypto node). Pinning only &rng is
 # deliberate; do not re-add &crypto without also building the driver.
+# Make the MicroSD slot usable as removable storage on the NAND / eMMC profiles.
+#
+# The controller on the sdmmc0 pins IS enabled in the stock device tree, but it
+# is configured as an SDIO interface - the upstream Luckfox default for the
+# Wi-Fi board variants:
+#
+#     /mmc@ffaa0000  status = okay
+#         pinctrl-0 = sdmmc0-clk, sdmmc0-cmd, sdmmc0-det, sdmmc0-bus4
+#         supports-sdio, cap-sdio-irq, non-removable, no-mmc, no-1-8-v
+#
+# `non-removable` makes the kernel ignore the sdmmc0-det card-detect line and
+# `supports-sdio` makes it probe as an SDIO function, so no /dev/mmcblk block
+# device is ever created. That, and not /etc/luckfox.cfg, is why a NAND-booted
+# Luckfox has no MicroSD in Linux. Verified by reading the built kernel DTB out
+# of boot.img on mini and max.
+#
+# SD_CARD profiles are left alone: there the same controller already carries the
+# rootfs (root=/dev/mmcblk1p7), so it is configured as storage already and the
+# one slot is occupied anyway.
+apply_sdmmc_dts_patch() {
+    local board_profile="$1" boot_medium="$2"
+
+    case "$boot_medium" in
+        nand|emmc) ;;
+        *) return 0 ;;
+    esac
+
+    local dts_file
+    dts_file="$(resolve_dts_path_for_profile "$board_profile")"
+
+    # Find the label of the controller that owns the sdmmc0 pins, rather than
+    # assuming it. A wrong label would otherwise fail deep inside dtc.
+    local dts_dir="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/arch/arm/boot/dts"
+    local label
+    label="$(grep -rhoE '^[[:space:]]*[a-z0-9_]+:[[:space:]]*mmc@ffaa0000' "$dts_dir" 2>/dev/null \
+             | head -n1 | cut -d: -f1 | tr -d "[:space:]")"
+    if [[ -z "$label" ]]; then
+        print_error "could not find the label for mmc@ffaa0000 in $dts_dir"
+        print_error "candidates: $(grep -rhoE '[a-z0-9_]+:[[:space:]]*mmc@[0-9a-f]+' "$dts_dir" 2>/dev/null | sort -u | tr -s "[:space:]" " ")"
+        exit 1
+    fi
+
+    if grep -q "SEEDSIGNER-SDMMC-REMOVABLE" "$dts_file"; then
+        print_success "MicroSD already enabled as removable storage in: $dts_file"
+        return 0
+    fi
+
+    print_step "Enabling MicroSD as removable storage (&${label}, ${board_profile}/${boot_medium})"
+    cat >> "$dts_file" <<EOF
+
+/* SEEDSIGNER-SDMMC-REMOVABLE: the stock config drives this controller as SDIO,
+ * so the card-detect line is ignored and no block device appears. Drop the SDIO
+ * properties so a MicroSD enumerates as removable storage. */
+&${label} {
+	/delete-property/ supports-sdio;
+	/delete-property/ cap-sdio-irq;
+	/delete-property/ non-removable;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	disable-wp;
+	status = "okay";
+};
+EOF
+
+    grep -q "SEEDSIGNER-SDMMC-REMOVABLE" "$dts_file" || {
+        print_error "failed to append the sdmmc override to $dts_file"; exit 1; }
+    print_success "MicroSD override appended to: $dts_file (&${label})"
+}
+
 apply_rng_dts_patch() {
     local hardware="$1"
 
@@ -1536,6 +1605,14 @@ embed_rootfs_verifier() {
     chmod 755 "$stage/init"
     cp "$keydir/dev.pubkey" "$stage/pubkey"
     cp "$sig"               "$stage/rootfs.sig"
+    # Opt-in: verify the rootfs even on an UNFUSED board (/init looks for this
+    # marker). Harmless, but gives no real protection without the fuse -- see
+    # the comment above FORCED_VERIFY in initramfs/init. The SeedSigner
+    # "Luckfox Build Tools" can set or clear the same marker after the build.
+    if [ "${SEEDSIGNER_ROOTFS_VERIFY_UNFUSED:-0}" = "1" ]; then
+        : > "$stage/force-rootfs-verify"
+        print_info "SEEDSIGNER_ROOTFS_VERIFY_UNFUSED=1: rootfs is verified even when secure boot is not fused"
+    fi
 
     # --- deterministic cpio.gz ------------------------------------------------
     # newc headers carry inode + device numbers, which vary with the host's
@@ -2209,6 +2286,8 @@ install_seedsigner_app() {
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
+    install_secure_boot_tools "$hardware"
+
     # Diagnostic aid (off by default): when SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=1
     # is set in the build environment, ship the marker that enables the app's
     # opt-in "Save to MicroSD" button on OS/package error screens (see
@@ -2437,7 +2516,7 @@ package_firmware() {
     # ever outgrows the window again. Shared with os-build.sh.
     # update.img is packed from the partition images and does not contain these
     # text scripts, so this runs after the pack step without changing any hash.
-    bash "$SCRIPT_DIR/patch-sd-update-scripts.sh" "$WORK_DIR/luckfox-pico"
+    bash "$SCRIPT_DIR/patch-sd-update-scripts.sh" "$WORK_DIR/luckfox-pico" "$hardware"
 
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
@@ -2449,6 +2528,53 @@ package_firmware() {
     debug_uart_bootargs_outputs
 
     print_success "Firmware packaged"
+}
+
+# Install the secure-boot signers as OS-provided tooling, matching what
+# opt/build.sh does for the Pi / La Frite images.
+#
+# The OS owns them and the app imports them at runtime, so there is one copy and
+# nothing can drift. Installed outside /opt because the app tree lives there and
+# is pruned above. Pure stdlib, ~55 KB, so the app imports them directly rather
+# than shelling out, and the same files double as CLIs for checking a release
+# on-device.
+#
+# A board that should not carry them opts out with a `no-secure-boot-tools` file
+# in opt/luckfox/; the app's menu entry then simply does not appear, so
+# availability is a build-time decision rather than runtime device detection.
+install_secure_boot_tools() {
+    local board="${1:-}"
+    local src="$SEEDSIGNER_LUCKFOX_DIR/secure-boot"
+    local dst="$ROOTFS_DIR/usr/lib/seedsigner/secure-boot"
+    local signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
+    local f
+
+    # Clear first, so a rebuild that newly opts out leaves no stale copy.
+    rm -rf "$dst"
+
+    if [ -f "$SEEDSIGNER_LUCKFOX_DIR/no-secure-boot-tools" ]; then
+        print_info "secure-boot signers: skipped (no-secure-boot-tools)"
+        return 0
+    fi
+    # The Pico Mini (RV1103, 64 MB) crashes running the app's Luckfox Build
+    # Tools, so its image does not carry them; the app then hides the menu and
+    # refuses the setting there with an explanation.
+    if [ "$board" = "mini" ]; then
+        print_info "secure-boot signers: skipped (not supported on the Pico Mini)"
+        return 0
+    fi
+
+    for f in $signers; do
+        [ -f "$src/$f" ] || { print_error "secure-boot signer missing: $src/$f"; exit 1; }
+    done
+
+    mkdir -p "$dst"
+    for f in $signers; do
+        cp -f "$src/$f" "$dst/$f"
+        chmod 755 "$dst/$f"
+    done
+    find "$dst" -exec touch -d "@${SOURCE_DATE_EPOCH:-0}" {} +
+    print_success "Installed secure-boot signers to /usr/lib/seedsigner/secure-boot"
 }
 
 create_sd_image() {
@@ -2794,6 +2920,7 @@ main() {
     apply_uart2_fiq_kernel_patch "$hardware" "$boot_medium"
     apply_hwrng_kernel_patch "$hardware" "$boot_medium"
     apply_rng_dts_patch "$hardware"
+    apply_sdmmc_dts_patch "$hardware" "$boot_medium"
     apply_otp_size_patch
     apply_kernel_network_strip "$hardware" "$boot_medium"
     apply_readonly_rootfs "$hardware" "$boot_medium"
