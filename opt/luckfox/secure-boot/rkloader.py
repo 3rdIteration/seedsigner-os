@@ -23,6 +23,14 @@ byte-identical on mini/max NAND, mini production and pi eMMC builds):
   * the RSA modulus is embedded LITTLE-ENDIAN at hdr+0x200; idblock.img also
     carries a big-endian copy in the SPL DTB's `rsa,modulus`.
 
+download.bin additionally has an integrity field OUTSIDE the header: its last
+4 bytes are CRC-32 over everything before them (boot_merger.c's gTable_Crc32 -
+MSB-first table-driven, init 0, no final XOR, polynomial 0x04C10DB7; NOT the
+standard 0x04C11DB7). Rockchip's flashing tools verify it when they load the
+file, so every mutation must be followed by refresh_ldr_trailer() - a re-signed
+download.bin with a stale trailer is rejected by SoCtoolkit before anything is
+sent to the board. idblock.img has no such field.
+
 Only RSA-2048 is supported, which is not a limitation of this script: the SPL
 verify path rejects any other key length with -EINVAL before the BootROM is
 reached.
@@ -155,6 +163,69 @@ def rehash_components(buf, lay):
 
 def components_ok(buf, lay):
     return all(stored == actual for _a, _b, _h, stored, actual in component_table(buf, lay))
+
+
+# --- the LDR trailer ----------------------------------------------------------
+#
+# download.bin is a boot_merger "LDR " container: rk_boot_header at 0x0 (tag[4],
+# size u16 @4, version u32 @6, mergerVersion u32 @10, releaseTime @14..20, ...),
+# the RKNS/RKSS header at 0x1bc, and - unlike idblock.img - a trailer: CRC-32
+# over every byte before it, in its last 4 bytes. boot_merger.c's CRC_32() is
+# MSB-first table-driven with init 0 and no final XOR, polynomial 0x04C10DB7
+# (its gTable_Crc32; the standard 0x04C11DB7 does NOT match - verified against
+# real images). Rockchip's flashing tools check it on load.
+
+LDR_TAG = b"LDR "
+
+_LDR_CRC_TABLE = None
+
+
+def _ldr_crc_table():
+    global _LDR_CRC_TABLE
+    if _LDR_CRC_TABLE is None:
+        table = []
+        for i in range(256):
+            crc = i << 24
+            for _ in range(8):
+                crc = ((crc << 1) ^ 0x04C10DB7) & 0xFFFFFFFF \
+                    if crc & 0x80000000 else (crc << 1) & 0xFFFFFFFF
+            table.append(crc)
+        _LDR_CRC_TABLE = table
+    return _LDR_CRC_TABLE
+
+
+def ldr_crc32(data):
+    """boot_merger's CRC-32 over `data`."""
+    table = _ldr_crc_table()
+    acc = 0
+    for b in data:
+        acc = ((acc << 8) & 0xFFFFFFFF) ^ table[((acc >> 24) ^ b) & 0xFF]
+    return acc
+
+
+def is_ldr(buf):
+    """True if `buf` is a boot_merger 'LDR ' container (download.bin)."""
+    return len(buf) >= 8 and bytes(buf[:4]) == LDR_TAG
+
+
+def ldr_trailer_ok(buf):
+    """None when not an LDR image, else whether its trailer CRC matches."""
+    if not is_ldr(buf):
+        return None
+    return struct.unpack_from("<I", bytes(buf), len(buf) - 4)[0] == ldr_crc32(bytes(buf[:-4]))
+
+
+def refresh_ldr_trailer(buf):
+    """Recompute an LDR image's trailer CRC over everything before it.
+
+    Returns True when a trailer was written, False for non-LDR images (which
+    have none). Call after any mutation: the flashing tools reject a file whose
+    trailer does not cover its current bytes.
+    """
+    if not is_ldr(buf):
+        return False
+    struct.pack_into("<I", buf, len(buf) - 4, ldr_crc32(bytes(buf[:-4])))
+    return True
 
 
 # --- DER / PEM (stdlib only) ------------------------------------------------
@@ -376,6 +447,7 @@ def cmd_splice(a):
     if not rsa_verify_digest(msg_digest(buf, lay), int.from_bytes(sig, "little"), n):
         raise RkError("spliced signature does NOT verify against the embedded key - "
                       "wrong key, wrong endianness (try --big-endian), or wrong digest")
+    refresh_ldr_trailer(buf)
     dst = write_out(buf, a.image, a.out)
     print("spliced signature into %s (verified against the embedded key)" % dst)
     return 0
@@ -401,6 +473,9 @@ def sign_buf(buf, lay, n, d):
         raise RkError("internal error: freshly made signature does not verify")
     if not components_ok(buf, lay):
         raise RkError("internal error: component hashes stale after signing")
+    # The LDR trailer covers the whole file, signature included - it is the last
+    # thing that can be right.
+    refresh_ldr_trailer(buf)
     return sig
 
 
@@ -437,6 +512,7 @@ def set_pubkey(buf, lay, n):
     soff, _ = lay["sig"]
     buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
     buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
+    refresh_ldr_trailer(buf)
     return replaced
 
 
@@ -663,6 +739,7 @@ def cmd_setburn(a):
     print("   the signature is now cleared - sign it before flashing")
     soff, _ = lay["sig"]
     buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
+    refresh_ldr_trailer(buf)
     write_out(buf, dst, None)
     return 0
 
@@ -699,6 +776,9 @@ def cmd_canonicalise(a):
             struct.pack_into(">I", buf, at, 0)
             zeroed += 1
     buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
+    # The trailer covers the zeroed key bytes too; refreshing keeps canonical
+    # output independent of which key signed it.
+    refresh_ldr_trailer(buf)
     dst = write_out(buf, a.image, a.out)
     print("canonicalised %s" % dst)
     print("   zeroed the signature and %d key-dependent field(s)" % zeroed)

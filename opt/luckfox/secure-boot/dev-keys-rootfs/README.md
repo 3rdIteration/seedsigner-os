@@ -5,6 +5,19 @@ minisign keypair. The private key is committed to this repo on purpose (it is
 encrypted with the passphrase `seedsigner-dev`, which is also public — see
 below). **It is not secret and must never be used as a real rootfs-signing key.**
 
+`dev-plain.key` is the same key written **unencrypted** (minisign KDF 0x0000),
+so tools that cannot run scrypt can consume it directly — in particular the
+SeedSigner app's "Load from MicroSD" re-sign path, which refuses encrypted keys
+(decrypting one needs ~1 GiB of RAM). It adds no exposure: `dev.key` is already
+decryptable by anyone with this repo and the public passphrase. Regenerate it
+with
+
+```sh
+python3 ../minisign.py keyid dev-plain.key    # must print FB935B80871B6C36
+```
+
+if you ever touch either file.
+
 ## Why it exists
 
 With `SEEDSIGNER_FIT_SIGNATURE=1`, `os-build.sh` signs the rootfs volume's

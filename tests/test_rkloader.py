@@ -26,13 +26,21 @@ rk = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rk)
 
 
-def make_container(modulus, hdr_off=0x0, filler=b"\xa5"):
-    """A minimal RKNS container with `modulus` embedded where the real one sits."""
+def make_container(modulus, hdr_off=0x0, filler=b"\xa5", ldr=False):
+    """A minimal RKNS container with `modulus` embedded where the real one sits.
+
+    With ldr=True it is shaped like download.bin: an 'LDR ' tag at 0x0 and a
+    valid trailer CRC over everything before its last 4 bytes.
+    """
     buf = bytearray(filler * (hdr_off + rk.HDR_LEN + rk.SIG_LEN + 0x40))
+    if ldr:
+        buf[0:4] = rk.LDR_TAG
     buf[hdr_off:hdr_off + 4] = rk.MAGIC_UNSIGNED
     struct.pack_into("<I", buf, hdr_off + 0x0c, 0x01)
     buf[hdr_off + rk.MOD_OFF:hdr_off + rk.MOD_OFF + rk.SIG_LEN] = modulus.to_bytes(rk.SIG_LEN, "little")
     buf[hdr_off + rk.HDR_LEN:hdr_off + rk.HDR_LEN + rk.SIG_LEN] = b"\x00" * rk.SIG_LEN
+    if ldr:
+        rk.refresh_ldr_trailer(buf)
     return buf
 
 
@@ -165,12 +173,80 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 0)
 
 
+class LdrTrailer(unittest.TestCase):
+    """download.bin's trailer CRC: boot_merger writes it, the flashing tools check it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.n, cls.e, cls.d = rk.load_privkey(DEV_KEY)
+        cls.tmp = tempfile.mkdtemp(prefix="rkloader-ldr-")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def path(self, name, ldr=True):
+        p = os.path.join(self.tmp, name)
+        with open(p, "wb") as f:
+            f.write(make_container(self.n, hdr_off=0x1bc, ldr=ldr))
+        return p
+
+    def test_crc_matches_boot_merger_on_a_real_image(self):
+        """The polynomial is 0x04C10DB7, not the standard one - prove it against a
+        shipped download.bin, whose trailer boot_merger itself wrote."""
+        real = None
+        for d in glob.glob(os.path.join(REPO, "opt", "luckfox", "build-output", "*")):
+            p = os.path.join(d, "download.bin")
+            if os.path.isfile(p):
+                real = p
+                break
+        if not real:
+            self.skipTest("no signed build under opt/luckfox/build-output/")
+        buf = rk.read(real)
+        self.assertTrue(rk.is_ldr(buf))
+        stored = struct.unpack_from("<I", bytes(buf), len(buf) - 4)[0]
+        self.assertEqual(stored, rk.ldr_crc32(bytes(buf[:-4])))
+        import zlib
+        self.assertNotEqual(stored, zlib.crc32(bytes(buf[:-4])) & 0xFFFFFFFF,
+                            "standard CRC-32 must NOT match - wrong polynomial")
+
+    def test_sign_refreshes_the_trailer(self):
+        p = self.path("sign.bin")
+        rk.main(["sign", p, "--key", DEV_KEY])
+        buf = rk.read(p)
+        self.assertTrue(rk.ldr_trailer_ok(buf))
+
+    def test_setkey_and_splice_refresh_the_trailer(self):
+        p = self.path("splice.bin")
+        dpath = os.path.join(self.tmp, "d.bin")
+        spath = os.path.join(self.tmp, "s.bin")
+        rk.main(["digest", p, "-o", dpath])
+        rk.write_out(rk.rsa_sign_digest(bytes(rk.read(dpath)), self.n, self.d), spath, None)
+        rk.main(["splice", p, "--sig", spath])
+        self.assertTrue(rk.ldr_trailer_ok(rk.read(p)))
+
+    def test_tampered_body_is_detected(self):
+        p = self.path("tamper.bin")
+        rk.main(["sign", p, "--key", DEV_KEY])
+        buf = rk.read(p)
+        buf[0x10] ^= 0xff                       # inside the LDR wrapper, outside the header
+        self.assertFalse(rk.ldr_trailer_ok(buf))
+
+    def test_non_ldr_images_have_no_trailer(self):
+        p = self.path("raw.bin", ldr=False)
+        buf = rk.read(p)
+        before = bytes(buf)
+        self.assertIsNone(rk.ldr_trailer_ok(buf))
+        self.assertFalse(rk.refresh_ldr_trailer(buf), "must not touch a non-LDR image")
+        self.assertEqual(bytes(buf), before)
+
+
 class Components(unittest.TestCase):
     """The component table: sha256s inside the header covering the rest.
 
-    These need a real image, because the header's component entries point at the
-    SPL and its DTB. A synthetic container has an empty table.
-    """
+These need a real image, because the header's component entries point at the
+SPL and its DTB. A synthetic container has an empty table.
+"""
 
     def setUp(self):
         self.src = None
@@ -266,6 +342,48 @@ class Artifacts(unittest.TestCase):
         for p in images:
             with self.subTest(image=os.path.relpath(p, REPO)):
                 self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 0)
+
+    def test_ldr_trailers_are_valid_as_shipped(self):
+        pat = os.path.join(REPO, "opt", "luckfox", "build-output", "*signed-devkey*")
+        images = [os.path.join(d, "download.bin") for d in glob.glob(pat)]
+        images = [p for p in images if os.path.isfile(p)]
+        if not images:
+            self.skipTest("no signed build under opt/luckfox/build-output/ (gitignored)")
+        for p in images:
+            with self.subTest(image=os.path.relpath(p, REPO)):
+                buf = rk.read(p)
+                self.assertTrue(rk.is_ldr(buf))
+                self.assertTrue(rk.ldr_trailer_ok(buf), "stale trailer as shipped")
+
+    def test_full_key_swap_keeps_the_ldr_trailer_valid(self):
+        """Regression: re-keying + signing a download.bin used to leave its LDR
+        trailer CRC stale - cryptographically valid, rejected by SoCtoolkit on
+        load. A full key swap must end with a file the flashing tools accept."""
+        try:
+            from Cryptodome.PublicKey import RSA
+        except ImportError:
+            self.skipTest("Cryptodome not available (needed for a second test key)")
+        pat = os.path.join(REPO, "opt", "luckfox", "build-output", "*signed-devkey*")
+        images = [os.path.join(d, "download.bin") for d in glob.glob(pat)]
+        images = [p for p in images if os.path.isfile(p)]
+        if not images:
+            self.skipTest("no signed build under opt/luckfox/build-output/ (gitignored)")
+        n0, _e, d0 = rk.load_privkey(DEV_KEY)
+        other = RSA.generate(2048)
+        n1, d1 = int(other.n), int(other.d)
+        for p in images:
+            with self.subTest(image=os.path.relpath(p, REPO)), \
+                    tempfile.TemporaryDirectory(prefix="rkloader-resign-") as tmp:
+                dst = os.path.join(tmp, "download.bin")
+                shutil.copyfile(p, dst)
+                buf = rk.read(dst)
+                lay = rk.layout(buf)
+                rk.set_pubkey(buf, lay, n1)
+                rk.sign_buf(buf, lay, n1, d1)
+                self.assertTrue(rk.ldr_trailer_ok(buf), "stale trailer after re-sign")
+                self.assertEqual(rk.read_modulus(buf, lay), n1)
+                self.assertTrue(rk.rsa_verify_digest(
+                    rk.msg_digest(buf, lay), rk.read_sig(buf, lay), n1))
 
 
 if __name__ == "__main__":

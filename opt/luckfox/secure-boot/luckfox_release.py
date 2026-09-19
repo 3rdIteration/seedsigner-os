@@ -339,13 +339,21 @@ def _set_key_classes(init, fit=None, rootfs=None):
     return _KEY_CLASS.sub(sub, init)
 
 
-def ed25519_key(seed):
-    """{seed, pk, key_id} for a 32-byte Ed25519 seed (e.g. BIP85-derived)."""
+def ed25519_key(seed, key_id=None):
+    """{seed, pk, key_id} for a 32-byte Ed25519 seed (e.g. BIP85-derived).
+
+    `key_id` is the minisign key id to use. None derives it from the public key
+    - right for keys this tooling generates (`keygen --entropy`, BIP85), but a
+    third-party minisign secret key carries its OWN stored id (minisign -G
+    randomises it) and signatures must carry that one, or host-side verification
+    against the original public key file fails on the id mismatch.
+    """
     pk = ms.ed25519_public(seed)
-    return dict(seed=bytes(seed), pk=pk, key_id=ms.key_id_for(pk))
+    return dict(seed=bytes(seed), pk=pk, key_id=key_id if key_id is not None else ms.key_id_for(pk))
 
 
-def rework_initramfs(boot_buf, folder=None, rootfs_seed=None, rsa_n=None, force=None):
+def rework_initramfs(boot_buf, folder=None, rootfs_seed=None, rsa_n=None, force=None,
+                     rootfs_key_id=None):
     """Return (new boot.img, [what changed]) with the verifier initramfs updated.
 
     rootfs_seed  re-sign the rootfs with this Ed25519 seed: new /pubkey and
@@ -354,6 +362,8 @@ def rework_initramfs(boot_buf, folder=None, rootfs_seed=None, rsa_n=None, force=
                  refused - a re-sign must never launder a modified rootfs.
     rsa_n        the RSA key boot.img is about to be signed with (sets FIT_KEY_CLASS).
     force        True / False sets / clears /force-rootfs-verify; None leaves it.
+    rootfs_key_id  minisign key id for the new signature, when the seed came from a
+                 third-party secret key whose stored id is not derivable from it.
 
     The returned image is UNSIGNED whenever anything changed: FIT-sign it next.
     """
@@ -369,7 +379,7 @@ def rework_initramfs(boot_buf, folder=None, rootfs_seed=None, rsa_n=None, force=
         if not ok:
             raise ReleaseError("the rootfs does not verify against the key boot.img "
                                "trusts now (%s) - refusing to re-sign it" % detail)
-        key = ed25519_key(rootfs_seed)
+        key = ed25519_key(rootfs_seed, rootfs_key_id)
         digest = rootfs_prehash(folder, signed_size(members))
         sig = ms.ed25519_sign(key["seed"], digest)
         gsig = ms.ed25519_sign(key["seed"], sig + ms.TRUSTED_COMMENT.encode())
@@ -579,9 +589,14 @@ def check_release(folder, profile=None):
             n = key
         sig = rk.rsa_verify_digest(rk.msg_digest(buf, lay), rk.read_sig(buf, lay), key)
         comp = rk.components_ok(buf, lay)
+        # download.bin's LDR trailer CRC covers the whole file; Rockchip's
+        # flashing tools verify it on load and reject a stale one.
+        trail = rk.ldr_trailer_ok(buf)
         detail = "signature %s, components %s" % ("ok" if sig else "BAD", "ok" if comp else "STALE")
         if key != n:
             rep.add(name, False, "embeds a DIFFERENT key from idblock.img")
+        elif trail is False:
+            rep.add(name, False, detail + ", trailer CRC STALE - flashing tools will reject this file")
         else:
             rep.add(name, sig and comp, detail)
         if name == "idblock.img":

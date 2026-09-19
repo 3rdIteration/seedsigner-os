@@ -369,6 +369,29 @@ class Rework(Base):
         self.assertEqual(lr.key_classes(lr.initramfs_members(new)),
                          {"FIT": "dev", "ROOTFS": "prod"})
 
+    def test_third_party_key_id_travels_with_the_signature(self):
+        """A minisign -G key carries a random id that is not derivable from the
+        seed; re-signing with it must tag /pubkey and /rootfs.sig with THAT id,
+        or host-side verification against the original public key fails."""
+        make_release(self.tmp)
+        foreign = b"\x01" * 8
+        self.assertNotEqual(foreign, lr.ed25519_key(NEW_SEED)["key_id"])
+        new, done = lr.rework_initramfs(self.boot(), self.tmp, rootfs_seed=NEW_SEED,
+                                        rsa_n=N, rootfs_key_id=foreign)
+        m = lr.initramfs_members(new)
+        ok, detail = lr.verify_rootfs(self.tmp, m)
+        self.assertTrue(ok, detail)
+        self.assertEqual(lr.parse_pubkey_bytes(m["pubkey"])["key_id"], foreign)
+        self.assertEqual(lr.parse_sig_bytes(m["rootfs.sig"])["key_id"], foreign)
+        # an unknown id is a prod key, whatever the seed would derive
+        self.assertEqual(lr.rootfs_key_class(foreign), "prod")
+
+    def test_ed25519_key_defaults_to_the_derived_id(self):
+        k = lr.ed25519_key(NEW_SEED)
+        self.assertEqual(k["key_id"], ms.key_id_for(ms.ed25519_public(NEW_SEED)))
+        explicit = b"\x02" * 8
+        self.assertEqual(lr.ed25519_key(NEW_SEED, explicit)["key_id"], explicit)
+
     def test_refuses_to_resign_a_rootfs_that_does_not_verify(self):
         make_release(self.tmp, "squashfs")
         with open(os.path.join(self.tmp, "rootfs.img"), "r+b") as f:
@@ -473,6 +496,40 @@ class CheckRelease(Base):
                          ms.format_key_id(lr.ed25519_key(ROOTFS_SEED)["key_id"]))
         self.assertFalse(rep.force_rootfs)
         self.assertIn("RESULT: INVALID", lr.format_report(rep))
+
+    def _add_ldr_download(self, stale_trailer=False):
+        """A signed LDR download.bin (dev key), optionally with a stale trailer -
+        the state a re-sign used to leave it in."""
+        off = 0x1bc
+        buf = bytearray(b"\xa5" * (off + rk.HDR_LEN + rk.SIG_LEN + 0x40))
+        buf[0:4] = rk.LDR_TAG
+        buf[off:off + 4] = rk.MAGIC_UNSIGNED
+        struct.pack_into("<I", buf, off + 0x0c, 0x01)
+        buf[off + rk.MOD_OFF:off + rk.MOD_OFF + rk.SIG_LEN] = N.to_bytes(rk.SIG_LEN, "little")
+        lay = rk.layout(buf)
+        rk.sign_buf(buf, lay, N, D)
+        if stale_trailer:
+            buf[0x10] ^= 0xff                     # mutate outside the header, no refresh
+        with open(os.path.join(self.tmp, "download.bin"), "wb") as f:
+            f.write(bytes(buf))
+
+    def test_ldr_download_with_a_valid_trailer_passes(self):
+        make_release(self.tmp)
+        self._add_ldr_download()
+        rep = lr.check_release(self.tmp)
+        items = {name: (ok, detail) for name, ok, detail in rep.items}
+        self.assertTrue(items["download.bin"][0], items["download.bin"][1])
+
+    def test_stale_ldr_trailer_fails_the_check(self):
+        """Regression: a re-signed download.bin whose trailer CRC no longer covers
+        its bytes is rejected by SoCtoolkit on load; Check Release must say so."""
+        make_release(self.tmp)
+        self._add_ldr_download(stale_trailer=True)
+        rep = lr.check_release(self.tmp)
+        items = {name: (ok, detail) for name, ok, detail in rep.items}
+        ok, detail = items["download.bin"]
+        self.assertFalse(ok)
+        self.assertIn("trailer", detail)
 
 
 # --- artifacts ------------------------------------------------------------------
