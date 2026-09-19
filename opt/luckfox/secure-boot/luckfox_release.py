@@ -623,7 +623,7 @@ def check_release(folder, profile=None):
             if wrong:
                 rep.warnings.append(
                     "the boot screen will call the %s key(s) %s, but they are %s - "
-                    "re-sign with Resign All to correct it"
+                    "re-sign with Resign Release to correct it"
                     % ("/".join(wrong), "/".join(baked[k] for k in wrong),
                        "/".join(actual[k] for k in wrong)))
         except (ReleaseError, KeyError) as e:

@@ -149,7 +149,7 @@ rootfs against the key `boot.img` trusts now (refusing anything that does not
 verify), signs it with the new key, replaces `/pubkey` and `/rootfs.sig`, updates
 the pass-screen key classes in `/init`, and `fitsign.replace_payload()` puts the
 new ramdisk back. `boot.img` then needs an RSA re-sign, which is why the device
-tool does both keys in one **Resign All**.
+tool does both keys in one **Resign Release**.
 
 Detaching the signature from the initramfs, so routine releases need only an
 Ed25519 signature, remains possible but is not implemented; it would change the
@@ -184,9 +184,9 @@ where a ~225 MB image bundle can be staged:
 - **Any board, any time** — the *digest signer* role needs no storage at all:
   32 bytes in, 256 bytes out over QR.
 
-### Where Resign All's keys come from
+### Where Resign Release's keys come from
 
-The app's **Tools → Luckfox Build Tools → Resign All** first asks for a key source:
+The app's **Tools → Luckfox Build Tools → Resign Release** first asks for a key source:
 
 - **BIP85 Derive** — from a loaded seed and two child indexes (RSA-2048, Ed25519),
   as above. Nothing to store: the seed and indexes re-derive the keys.
