@@ -115,6 +115,86 @@ component, so the component hash has to be refreshed before the header is
 signed. `sign_buf()` does that for you; the ordering only matters if you drive
 the pieces by hand.
 
+### What `setkey` rewrites besides the modulus
+
+The key node (`/signature/key-dev`) in the SPL DTB and in `uboot.img`'s fdt
+payload carries more than the modulus, and **two of those fields are derived
+from it**. Missing either one produces an image that every *software* verifier
+accepts but the board rejects:
+
+| Field | Size / encoding | Derived as | Consumed by |
+|---|---|---|---|
+| `rsa,modulus` | 256 B big-endian | — (the key) | everything |
+| `rsa,n0-inverse` | u32 BE | `-n⁻¹ mod 2³²` | the SW Montgomery path (`rsa_mod_exp_sw`) |
+| `rsa,r-squared` | 256 B BE (or zeroed to a single u32 by the build's minimisation) | `2^(2·bits) mod n` | the SW path only |
+| `rsa,np` | 256 B BE, value ≈133 bits | `⌊2^(bitlen(n)+132) / n⌋` | **the SKE engine** (`CONFIG_SPL_FIT_HW_CRYPTO=y`, non-V1 — the Luckfox build) |
+| `hash@np/value` | 32 B (sha256) | see below | `rsa_burn_key_hash()` before an OTP burn |
+
+Why `rsa,np` is the dangerous one: with HW crypto enabled, SPL verifies
+`uboot.img` through the SKE engine, which does **not** recompute its reduction
+constant from the modulus. It loads `rsa,np` verbatim (`RK_PKA_SET_NP`, no
+validation) and exponentiates with it. A stale value — i.e. one still holding
+the *old* key's constant after a re-key — makes the modular exponentiation come
+out wrong, so PSS padding fails on-device with
+
+```
+padding_pss_verify: invalid pss padding (0xbc is missing)
+Failed to verify required signature 'key-dev'
+fit verify configure failed, ret=-1
+```
+
+while `rkloader.py verify`, `fitsign.py verify` and Rockchip's own host tool
+all pass, because the software path never reads this field. That exact symptom
+is what a BIP85 re-sign did until `set_pubkey()` learned to rewrite it.
+
+The constant itself is what `rk_pka_calcNp_and_initmodop()` computes when the
+engine has no stored value (`RK_PKA_CREATE_NP`): it divides `2^sizeN · 2¹³²` by
+`n` (the shift-and-divide loop runs with `s = 132`, operand `2^sizeN`). The
+formula above was verified byte-for-byte against the value Rockchip's mkimage
+writes for the committed dev key, and `tests/test_rkloader.py` pins both it and
+the burn hash as regression vectors.
+
+**The burn pin.** `hash@np/value` is sha256 over the key material exactly as
+`rsa_burn_key_hash()` lays it out in a calloc'd buffer — little-endian, with
+the field sizes from rv1106's Kconfig (`CONFIG_RSA_N_SIZE=0x200`,
+`E=0x10`, `C=0x20`; the N field zero-pads past the 256-byte modulus):
+
+```python
+def pka_barrett_np(n):                      # -> rsa,np value (int)
+    return (1 << (n.bit_length() + 132)) // n
+
+BURN_N_SIZE, BURN_E_SIZE, BURN_C_SIZE = 0x200, 0x10, 0x20   # rv1106 Kconfig
+
+def burn_key_hash(n_be, e=65537):           # -> hash@np/value (32 bytes)
+    np_be = pka_barrett_np(int.from_bytes(n_be, "big")).to_bytes(256, "big")
+    data = (n_be[::-1].ljust(BURN_N_SIZE, b"\x00")          # n, LE, zero-padded
+            + e.to_bytes(BURN_E_SIZE, "little")             # low 16 bytes of e, LE
+            + np_be[::-1][:BURN_C_SIZE])                    # low 32 bytes of np, LE
+    return hashlib.sha256(data).digest()
+```
+
+It is only consulted when `burn-key-hash = <1>` — but a mismatch there does not
+skip the burn: SPL compares its freshly computed digest against the stored one
+and **fails FIT verification**, rejecting boot. So a re-key must refresh it too,
+or any later arm-burn on that image bricks the boot instead of burning.
+
+Both fields are pure functions of the modulus (the exponent is 65537 in every
+Rockchip key), so `rkloader.swap_pka_constants()` — called from both
+`set_pubkey()` implementations — byte-searches the old derived values and
+splices in the new ones, exactly like the modulus/n0/r² swaps. On builds where
+the fields are absent or zeroed (SW-only, or `CONFIG_ROCKCHIP_CRYPTO_V1`, which
+uses `rsa,c` instead) nothing matches and it is a no-op.
+
+**Sources.** The on-device behaviour lives in the SDK's U-Boot:
+`lib/rsa/rsa-verify.c` (`rsa_mod_exp_hw()`, `rsa_get_key_prop()`,
+`rsa_burn_key_hash()`), `drivers/crypto/rockchip/crypto_v2_pka.c`
+(`rk_exptmod_np()`, `rk_calcNp_and_initmodop()`, `RK_PKA_BARRETT_IN_WORDS=5`)
+and `common/image-sig.c` (`fit_config_check_sig()` → the burn call). The host
+side is Rockchip's rkbin tooling: `mkimage -k <keydir> -K <dtb>` writes all of
+these properties when it signs, and `fit-sign.sh` minimises them afterwards
+(zeroing `rsa,c`/`hash@c` for non-V1 HW builds — note it leaves `rsa,np` in
+place). The Kconfig sizes come from the SDK's `configs/rv1106_defconfig`.
+
 ## Arming the OTP burn
 
 A loader whose SPL DTB carries `burn-key-hash = <1>` writes the public-key hash
@@ -138,6 +218,10 @@ it refuses without the confirmation token. **Arm only what you intend to fuse:
 booting a board from an armed loader is the irreversible step, and if the key
 whose hash gets burned is the published dev key, the board is permanently
 fused to a key everyone has.**
+
+Arming works on re-signed images too: `set_pubkey()` refreshes `hash@np` for
+the new modulus (see above), so an armed BIP85 loader burns *your* key hash —
+not the dev key's, and not a mismatch that would reject boot.
 
 ## Changing the rootfs key
 

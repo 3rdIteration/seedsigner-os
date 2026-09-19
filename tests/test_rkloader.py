@@ -25,6 +25,13 @@ _spec = importlib.util.spec_from_file_location("rkloader", os.path.join(SB, "rkl
 rk = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rk)
 
+# fitsign imports rkloader by name from its own directory; loading it here gives
+# the tests a second (independent) instance, which is fine for fdt_props.
+_fspec = importlib.util.spec_from_file_location("fitsign", os.path.join(SB, "fitsign.py"))
+fs = importlib.util.module_from_spec(_fspec)
+sys.modules["rkloader"] = rk                      # let fitsign reuse THIS instance
+_fspec.loader.exec_module(fs)
+
 
 def make_container(modulus, hdr_off=0x0, filler=b"\xa5", ldr=False):
     """A minimal RKNS container with `modulus` embedded where the real one sits.
@@ -171,6 +178,94 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(rk.read_sig(buf, rk.layout(buf)), 0, "old signature not cleared")
         self.assertEqual(rk.main(["sign", p, "--key", DEV_KEY]), 0)
         self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 0)
+
+
+def make_key_dtb(n):
+    """A minimal Rockchip-style FDT whose /signature/key-dev carries rsa,np and a
+    hash@np subnode for modulus n - shaped like the SPL DTB's key node, so
+    swap_pka_constants can be exercised without a real image."""
+    np_be = rk.pka_barrett_np(n).to_bytes(rk.SIG_LEN, "big")
+    hval = rk.burn_key_hash(n.to_bytes(rk.SIG_LEN, "big"))
+
+    strings = bytearray(b"\x00")                    # index 0: the empty root name
+    def s(name):
+        off = len(strings)
+        strings.extend(name.encode() + b"\x00")
+        return off
+    np_off, value_off, algo_off = s("rsa,np"), s("value"), s("sha256")
+
+    sb = bytearray()
+    def begin(name):                                 # FDT_BEGIN_NODE: inline name
+        sb.extend(struct.pack(">I", 1) + name.encode() + b"\x00")
+        while len(sb) & 3:
+            sb.append(0)
+    def end():                                       # FDT_END_NODE
+        sb.extend(struct.pack(">I", 2))
+    def prop(off, data):                             # FDT_PROP: token, len, nameoff
+        sb.extend(struct.pack(">III", 3, len(data), off) + data)
+        while len(sb) & 3:
+            sb.append(0)
+
+    begin("")
+    begin("signature")
+    begin("key-dev")
+    prop(np_off, np_be)
+    begin("hash@np")
+    prop(value_off, hval)
+    prop(algo_off, b"sha256\x00")
+    end()                                            # hash@np
+    end()                                            # key-dev
+    end()                                            # signature
+    end()                                            # root
+    sb.extend(struct.pack(">I", 9))                  # FDT_END
+
+    off_struct = 48                                  # after the 40-byte header + memrsv terminator
+    off_strings = (off_struct + len(sb) + 7) & ~7
+    out = bytearray(b"\x00" * off_strings)
+    out[off_struct:off_struct + len(sb)] = bytes(sb)
+    out[off_strings:off_strings + len(strings)] = bytes(strings)
+    totalsize = (off_strings + len(strings) + 7) & ~7
+    out += b"\x00" * (totalsize - len(out))
+    struct.pack_into(">10I", out, 0, 0xd00dfeed, totalsize, off_struct, off_strings,
+                     40, 17, 2, 0, len(strings), len(sb))
+    return bytes(out)
+
+
+class PkaConstants(unittest.TestCase):
+    """The SKE engine's Barrett constant (rsa,np) and the OTP burn pin (hash@np).
+
+    Both derive from the modulus; a re-key that misses them boots nothing on an
+    HW-crypto build. The vectors below are the values Rockchip's mkimage wrote
+    for the committed dev key, read out of a real signed bundle.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.n, cls.e, cls.d = rk.load_privkey(DEV_KEY)
+
+    def test_pka_barrett_np_dev_vector(self):
+        self.assertEqual(rk.pka_barrett_np(self.n), 0x16b191f2eef44b9feb56150865d210487b)
+
+    def test_burn_key_hash_dev_vector(self):
+        self.assertEqual(
+            rk.burn_key_hash(self.n.to_bytes(rk.SIG_LEN, "big")).hex(),
+            "64e4b04fb827d85edc5dee2c6510f104af65e4be5fdab257b3ecc43968449b3c")
+
+    def test_swap_pka_constants_roundtrip(self):
+        other_n = self.n ^ (1 << 500)                # a different "key"
+        buf = bytearray(make_key_dtb(self.n))
+        hits = rk.swap_pka_constants(buf, self.n, other_n)
+        self.assertEqual(hits, 2, "np and hash@np must both be rewritten")
+
+        props = fs.fdt_props(bytearray(buf))
+        k = props["/signature/key-dev"]
+        self.assertEqual(k["rsa,np"][0], rk.pka_barrett_np(other_n).to_bytes(rk.SIG_LEN, "big"))
+        self.assertEqual(props["/signature/key-dev/hash@np"]["value"][0],
+                         rk.burn_key_hash(other_n.to_bytes(rk.SIG_LEN, "big")))
+
+    def test_swap_pka_constants_is_a_noop_without_the_fields(self):
+        buf = bytearray(b"\xa5" * 1024)
+        self.assertEqual(rk.swap_pka_constants(buf, self.n, self.n ^ (1 << 500)), 0)
 
 
 class LdrTrailer(unittest.TestCase):
@@ -324,6 +419,31 @@ SPL and its DTB. A synthetic container has an empty table.
         mo, msz = rk.find_spl_dtb(mine)
         so, ssz = rk.find_spl_dtb(sdk)
         self.assertEqual(bytes(mine[mo:mo + msz]), bytes(sdk[so:so + ssz]))
+
+    def test_shipped_spl_dtb_carries_matching_pka_constants(self):
+        """The SPL DTB's rsa,np / hash@np must match the embedded modulus.
+
+        This pins pka_barrett_np() and burn_key_hash() against what Rockchip's
+        mkimage actually writes: if either formula drifts, re-keyed loaders will
+        fail on-device with "invalid pss padding (0xbc is missing)" or refuse to
+        burn the key hash.
+        """
+        buf = rk.read(self.img)
+        loc = rk.find_spl_dtb(buf)
+        self.assertIsNotNone(loc, "no SPL DTB in the shipped idblock")
+        off, size = loc
+        props = fs.fdt_props(bytearray(bytes(buf[off:off + size])))
+        keys = [p for p in props if p.startswith("/signature/key-")]
+        self.assertTrue(keys)
+        k = props[keys[0]]
+        n_be = k["rsa,modulus"][0]
+        n = int.from_bytes(n_be, "big")
+        self.assertEqual(k["rsa,np"][0], rk.pka_barrett_np(n).to_bytes(rk.SIG_LEN, "big"),
+                         "rsa,np does not match pka_barrett_np(modulus)")
+        hash_nodes = [p for p in props if p.startswith(keys[0] + "/hash@")]
+        if hash_nodes:
+            self.assertEqual(props[hash_nodes[0]]["value"][0],
+                             rk.burn_key_hash(n_be), "hash@np does not match burn_key_hash()")
 
 
 class Artifacts(unittest.TestCase):

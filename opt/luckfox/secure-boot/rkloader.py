@@ -479,11 +479,87 @@ def sign_buf(buf, lay, n, d):
     return sig
 
 
+# --- PKA Barrett constant + OTP burn pin ------------------------------------
+#
+# With CONFIG_SPL_FIT_HW_CRYPTO=y and !CONFIG_ROCKCHIP_CRYPTO_V1 (the Luckfox
+# Pico build), SPL verifies uboot.img with the SKE engine instead of in
+# software. The engine does not recompute its reduction constant from the
+# modulus: it loads one from the SPL DTB's key node, unvalidated
+# (rsa_mod_exp_hw() -> rk_exptmod_np(), RK_PKA_SET_NP; SDK sources
+# lib/rsa/rsa-verify.c and drivers/crypto/rockchip/crypto_v2_pka.c):
+#
+#   * `rsa,np` - a precomputed Barrett constant, floor(2^(bitlen(n)+132)/n).
+#     rk_pka_calcNp_and_initmodop() divides 2^sizeN by n with s=132; the value
+#     is verified byte-for-byte against what Rockchip's mkimage writes for the
+#     committed dev key. A stale one makes the engine exponentiate with the
+#     OLD key's constant: PSS padding then fails on-device with "invalid pss
+#     padding (0xbc is missing)" while every software verifier passes, because
+#     the SW path never reads this field.
+#   * `hash@np` - sha256 over LE-packed (n || e || np), compared by
+#     rsa_burn_key_hash() before it burns the public-key hash into OTP. The
+#     buffer layout follows rv1106's Kconfig (CONFIG_RSA_N_SIZE=0x200,
+#     E=0x10, C=0x20) and is calloc'd, so N_SIZE zero-pads past the 256-byte
+#     modulus. Only consulted when burn-key-hash=<1> - but a mismatch there
+#     does not skip the burn, it fails FIT verification and rejects boot.
+#
+# Both derive from the modulus alone, so re-embedding a new key must rewrite
+# both or the image is unbootable (np) or unburnable-with-a-boot-brick (hash).
+
+def pka_barrett_np(n):
+    """The `rsa,np` value for modulus n: floor(2^(bitlen(n)+132)/n)."""
+    return (1 << (n.bit_length() + 132)) // n
+
+
+# rv1106 Kconfig sizes of rsa_burn_key_hash()'s digest buffer.
+BURN_N_SIZE, BURN_E_SIZE, BURN_C_SIZE = 0x200, 0x10, 0x20
+
+
+def burn_key_hash(n_be, e=65537):
+    """The `hash@np` value for a big-endian modulus (and exponent).
+
+    sha256 over the key material exactly as rsa_burn_key_hash() lays it out:
+    n little-endian zero-padded to BURN_N_SIZE, then the low E/C bytes of e and
+    np in little-endian. Verified against the dev bundle's stored value.
+    """
+    np_be = pka_barrett_np(int.from_bytes(n_be, "big")).to_bytes(SIG_LEN, "big")
+    data = (n_be[::-1].ljust(BURN_N_SIZE, b"\x00")
+            + e.to_bytes(BURN_E_SIZE, "little")
+            + np_be[::-1][:BURN_C_SIZE])
+    return hashlib.sha256(data).digest()
+
+
+def swap_pka_constants(buf, old_n, new_n):
+    """Rewrite `rsa,np` and `hash@np` after a modulus change. Returns hits.
+
+    Byte-searched like the other derived constants: the 256-byte np pattern is
+    unique in practice, and on any build where these fields are absent or
+    zeroed (SW-only or CRYPTO_V1) nothing matches and this is a no-op.
+    """
+    hits = 0
+    old_np = pka_barrett_np(old_n).to_bytes(SIG_LEN, "big")
+    new_np = pka_barrett_np(new_n).to_bytes(SIG_LEN, "big")
+    at = bytes(buf).find(old_np)
+    while at >= 0:
+        buf[at:at + SIG_LEN] = new_np
+        hits += 1
+        at = bytes(buf).find(old_np, at + SIG_LEN)
+    old_hash, new_hash = burn_key_hash(old_n.to_bytes(SIG_LEN, "big")), \
+                         burn_key_hash(new_n.to_bytes(SIG_LEN, "big"))
+    if old_hash != new_hash:
+        at = bytes(buf).find(old_hash)
+        while at >= 0:
+            buf[at:at + len(old_hash)] = new_hash
+            hits += 1
+            at = bytes(buf).find(old_hash, at + len(old_hash))
+    return hits
+
+
 def set_pubkey(buf, lay, n):
     """Re-embed public key `n`, clearing the now-meaningless signature.
 
     Returns the number of locations rewritten. Also updates the big-endian copy
-    in idblock's SPL DTB and the derived Montgomery constants.
+    in idblock's SPL DTB and the derived Montgomery/PKA constants (see
+    swap_pka_constants).
     """
     old = read_modulus(buf, lay)
     off, _ = lay["mod"]
@@ -509,6 +585,10 @@ def set_pubkey(buf, lay, n):
         if at >= 0:
             buf[at:at + SIG_LEN] = new_r2
             replaced += 1
+        # The SKE engine's Barrett constant and the OTP-burn pin derive from the
+        # modulus too; without these a re-keyed loader fails on-device with
+        # "invalid pss padding (0xbc is missing)" while software verifiers pass.
+        replaced += swap_pka_constants(buf, old, n)
     soff, _ = lay["sig"]
     buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
     buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
@@ -764,7 +844,8 @@ def cmd_canonicalise(a):
     # canonicalise to the same bytes.
     if n:
         for blob in (n.to_bytes(SIG_LEN, "big"),
-                     pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big")):
+                     pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big"),
+                     pka_barrett_np(n).to_bytes(SIG_LEN, "big")):
             at = bytes(buf).find(blob)
             while at >= 0:
                 buf[at:at + SIG_LEN] = b"\x00" * SIG_LEN
@@ -775,6 +856,13 @@ def cmd_canonicalise(a):
         if at >= 0:
             struct.pack_into(">I", buf, at, 0)
             zeroed += 1
+        # the OTP burn pin is a sha256 over the key material - key-dependent too
+        bh = burn_key_hash(n.to_bytes(SIG_LEN, "big"))
+        at = bytes(buf).find(bh)
+        while at >= 0:
+            buf[at:at + len(bh)] = b"\x00" * len(bh)
+            zeroed += 1
+            at = bytes(buf).find(bh, at + len(bh))
     buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
     # The trailer covers the zeroed key bytes too; refreshing keeps canonical
     # output independent of which key signed it.

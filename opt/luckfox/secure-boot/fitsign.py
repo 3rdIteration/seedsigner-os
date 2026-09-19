@@ -65,7 +65,8 @@ import sys, os, struct, hashlib, argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rkloader import (RkError, load_pubkey, load_privkey, _mgf1,      # noqa: E402
-                      pss_encode, pss_verify, read, write_out)
+                      pss_encode, pss_verify, read, swap_pka_constants,
+                      write_out)
 
 FDT_BEGIN_NODE, FDT_END_NODE, FDT_PROP, FDT_NOP, FDT_END = 1, 2, 3, 4, 9
 FDT_MAGIC = 0xd00dfeed
@@ -453,6 +454,11 @@ def set_pubkey(buf, new_n, old_n):
     if at >= 0:
         buf[at:at + 256] = new_r2
         hits += 1
+    # The SKE engine's Barrett constant (rsa,np) derives from the modulus too;
+    # U-Boot proper verifies boot.img with it when FIT_HW_CRYPTO is on. The burn
+    # pin (hash@np) rides along where present - fit-sign.sh removes it from this
+    # DTB in some builds, and swap_pka_constants no-ops on a missing field.
+    hits += swap_pka_constants(buf, old_n, new_n)
     return hits
 
 
