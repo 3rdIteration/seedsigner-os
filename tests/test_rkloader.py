@@ -400,6 +400,136 @@ class LdrTrailer(unittest.TestCase):
         self.assertEqual(bytes(buf), before)
 
 
+def make_flashhead_container(modulus, inner_size=0x800):
+    """A download.bin-shaped buffer: LDR tag, outer RKNS header at 0x1bc whose
+    second component entry ends where the RC4-obfuscated region begins, and an
+    encrypted inner image (RKSS header + zeroed signature) in that region.
+
+    The inner image has empty component entries, so components_ok() passes on
+    it without needing real SPL/DTB content. inner_size must be a multiple of
+    the 512-byte RC4 chunk size or flashhead_region() refuses to find it.
+    """
+    hdr = 0x1bc
+    # outer comp2 entry: sectors 4..(4+inner_size//512) -> region starts at
+    # hdr + (4 + inner_size//512)*512
+    start_s, count_s = 4, inner_size // rk.FLASHHEAD_CHUNK
+    region_start = hdr + (start_s + count_s) * rk.SECTOR
+    total = region_start + inner_size + 4
+    buf = bytearray(b"\xa5" * total)
+    buf[0:4] = rk.LDR_TAG
+    buf[hdr:hdr + 4] = rk.MAGIC_UNSIGNED
+    struct.pack_into("<I", buf, hdr + 0x0c, 0x01)
+    struct.pack_into("<HH", buf, hdr + 0x0d0, start_s, count_s)
+    buf[hdr + rk.MOD_OFF:hdr + rk.MOD_OFF + rk.SIG_LEN] = modulus.to_bytes(rk.SIG_LEN, "little")
+
+    inner = bytearray(b"\xa5" * inner_size)
+    inner[0:4] = rk.MAGIC_SIGNED
+    struct.pack_into("<I", inner, 0x0c, 0x11)
+    inner[rk.MOD_OFF:rk.MOD_OFF + rk.SIG_LEN] = modulus.to_bytes(rk.SIG_LEN, "little")
+    buf[region_start:region_start + inner_size] = rk._flashhead_xor(bytes(inner))
+    rk.refresh_ldr_trailer(buf)
+    return buf
+
+
+class Flashhead(unittest.TestCase):
+    """The RC4-obfuscated embedded loader image inside download.bin.
+
+    rk_sign_tool signs its inner header with a random PSS salt on every build;
+    resign_flashhead() re-signs it with the digest-derived salt so two builds
+    of the same commit are byte-identical end to end.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.n, cls.e, cls.d = rk.load_privkey(DEV_KEY)
+        cls.tmp = tempfile.mkdtemp(prefix="rkloader-fh-")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def path(self, name, buf=None):
+        p = os.path.join(self.tmp, name)
+        with open(p, "wb") as f:
+            f.write(buf if buf is not None else make_flashhead_container(self.n))
+        return p
+
+    def test_rc4_keystream_pinned_vector(self):
+        """Any change to the key or the per-chunk scheme shifts these bytes."""
+        ks = rk.rc4_keystream(rk.FLASHHEAD_KEY, 512)
+        self.assertEqual(ks[:32].hex(),
+                         "6e262cf3be9f9d51ea3034ce20511f98"
+                         "ff0cf2360550c8bb3fecddbd0685fab7")
+        self.assertEqual(ks[-16:].hex(), "4458d1d5ea04c36b918d6f931c282745")
+
+    def test_xor_roundtrip_and_chunk_reinit(self):
+        data = bytes(range(256)) * 4                      # 1 KiB, two chunks
+        self.assertEqual(rk._flashhead_xor(rk._flashhead_xor(data)), data)
+        ks = rk.rc4_keystream(rk.FLASHHEAD_KEY, rk.FLASHHEAD_CHUNK)
+        pt = bytes(c ^ k for c, k in zip(data[:16], ks))
+        self.assertEqual(rk._flashhead_xor(pt + b"\x00" * 512)[:16], data[:16])
+
+    def test_region_is_derived_from_the_component_table(self):
+        buf = make_flashhead_container(self.n)
+        reg = rk.flashhead_region(buf)
+        self.assertIsNotNone(reg)
+        start, size = reg
+        lay = rk.layout(buf)
+        s, c = struct.unpack_from("<HH", bytes(buf), lay["hdr"] + 0x0d0)
+        self.assertEqual(start, lay["hdr"] + (s + c) * rk.SECTOR)
+        self.assertEqual(size, len(buf) - 4 - start)
+
+    def test_no_flashhead_in_plain_idblock(self):
+        buf = make_container(self.n)                      # no LDR tag, no comp2
+        self.assertIsNone(rk.flashhead_region(bytearray(buf)))
+        self.assertFalse(rk.resign_flashhead(bytearray(buf), self.n, self.d))
+
+    def test_sign_resigns_the_inner_header_deterministically(self):
+        p = self.path("fh-det.bin")
+        self.assertEqual(rk.main(["sign", p, "--key", DEV_KEY]), 0)
+        first = bytes(rk.read(p))
+        self.assertEqual(rk.main(["sign", p, "--key", DEV_KEY]), 0)
+        self.assertEqual(bytes(rk.read(p)), first, "re-signing must be byte-identical")
+
+    def test_verify_checks_the_inner_signature(self):
+        p = self.path("fh-verify.bin")
+        self.assertEqual(rk.main(["sign", p, "--key", DEV_KEY]), 0)
+        self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 0)
+        buf = rk.read(p)
+        reg = rk.flashhead_region(buf)
+        pt = bytearray(rk._flashhead_xor(bytes(buf[reg[0]:reg[0] + reg[1]])))
+        pt[0x100] ^= 0xff                                 # inside the inner signed header
+        buf[reg[0]:reg[0] + reg[1]] = rk._flashhead_xor(bytes(pt))
+        rk.refresh_ldr_trailer(buf)                       # isolate: only the inner sig may fail
+        rk.write_out(buf, p, None)
+        self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 2)
+
+    def test_setkey_updates_the_inner_modulus(self):
+        """Regression: the inner header embeds its own copy of the modulus,
+        RC4-obfuscated beyond the byte searches - a re-key that misses it
+        verifies here and fails on device."""
+        p = self.path("fh-setkey.bin")
+        rk.main(["sign", p, "--key", DEV_KEY])
+        other_n = self.n ^ (1 << 500)
+        buf = rk.read(p)
+        lay = rk.layout(buf)
+        rk.set_pubkey(buf, lay, other_n)
+        reg = rk.flashhead_region(buf)
+        pt = bytearray(rk._flashhead_xor(bytes(buf[reg[0]:reg[0] + reg[1]])))
+        self.assertEqual(int.from_bytes(pt[rk.MOD_OFF:rk.MOD_OFF + rk.SIG_LEN], "little"), other_n,
+                         "inner modulus was not re-keyed")
+
+    def test_canonicalise_zeroes_the_inner_key_fields(self):
+        p = self.path("fh-canon.bin")
+        rk.main(["sign", p, "--key", DEV_KEY])
+        self.assertEqual(rk.main(["canonicalise", p]), 0)
+        buf = rk.read(p)
+        reg = rk.flashhead_region(buf)
+        pt = bytearray(rk._flashhead_xor(bytes(buf[reg[0]:reg[0] + reg[1]])))
+        self.assertEqual(pt[rk.HDR_LEN:rk.HDR_LEN + rk.SIG_LEN], b"\x00" * rk.SIG_LEN)
+        self.assertEqual(pt[rk.MOD_OFF:rk.MOD_OFF + rk.SIG_LEN], b"\x00" * rk.SIG_LEN)
+
+
 class Components(unittest.TestCase):
     """The component table: sha256s inside the header covering the rest.
 
@@ -568,6 +698,83 @@ class Artifacts(unittest.TestCase):
                 self.assertEqual(rk.read_modulus(buf, lay), n1)
                 self.assertTrue(rk.rsa_verify_digest(
                     rk.msg_digest(buf, lay), rk.read_sig(buf, lay), n1))
+
+    def _signed_download_bins(self):
+        pat = os.path.join(REPO, "opt", "luckfox", "build-output", "*signed-devkey*")
+        images = [os.path.join(d, "download.bin") for d in glob.glob(pat)]
+        return [p for p in images if os.path.isfile(p)]
+
+    def test_flashhead_inner_signature_verifies(self):
+        """Every shipped download.bin embeds an RC4-obfuscated loader image whose
+        inner header signature must verify against the embedded key - whether it
+        was signed by rk_sign_tool (random salt) or by us (digest-derived)."""
+        images = self._signed_download_bins()
+        if not images:
+            self.skipTest("no signed build under opt/luckfox/build-output/ (gitignored)")
+        n, _e, _d = rk.load_privkey(DEV_KEY)
+        for p in images:
+            with self.subTest(image=os.path.relpath(p, REPO)):
+                buf = rk.read(p)
+                reg = rk.flashhead_region(buf)
+                self.assertIsNotNone(reg, "no flashhead region found")
+                start, size = reg
+                self.assertEqual(size % rk.FLASHHEAD_CHUNK, 0)
+                pt = bytearray(rk._flashhead_xor(bytes(buf[start:start + size])))
+                self.assertIn(bytes(pt[:4]), (rk.MAGIC_SIGNED, rk.MAGIC_UNSIGNED))
+                self.assertTrue(rk.flashhead_sig_ok(buf, n), "inner signature invalid")
+
+    def test_resign_is_idempotent_on_real_images(self):
+        images = self._signed_download_bins()
+        if not images:
+            self.skipTest("no signed build under opt/luckfox/build-output/ (gitignored)")
+        for p in images:
+            with self.subTest(image=os.path.relpath(p, REPO)), \
+                    tempfile.TemporaryDirectory(prefix="rkloader-fh-") as tmp:
+                dst = os.path.join(tmp, "download.bin")
+                shutil.copyfile(p, dst)
+                self.assertEqual(rk.main(["sign", dst, "--key", DEV_KEY]), 0)
+                first = bytes(rk.read(dst))
+                self.assertEqual(rk.main(["sign", dst, "--key", DEV_KEY]), 0)
+                self.assertEqual(bytes(rk.read(dst)), first, "re-signing must be byte-identical")
+                self.assertTrue(rk.ldr_trailer_ok(first), "stale trailer after re-sign")
+
+    def test_flashhead_matches_standalone_idblock(self):
+        """The decrypted flashhead is a copy of the loader image: its header and
+        body must equal idblock.img's, and both signatures must verify. Pins the
+        RC4 key, chunking and region derivation against real vendor output.
+
+        The signature bytes themselves may still differ when idblock.img was
+        signed by rk_sign_tool (random salt) rather than by us (digest-derived);
+        once both carry our signatures they are byte-identical end to end."""
+        pat = os.path.join(REPO, "opt", "luckfox", "build-output", "*signed-devkey*")
+        pairs = []
+        for d in glob.glob(pat):
+            dl, ib = os.path.join(d, "download.bin"), os.path.join(d, "idblock.img")
+            if os.path.isfile(dl) and os.path.isfile(ib):
+                pairs.append((dl, ib))
+        if not pairs:
+            self.skipTest("no signed build with both images (gitignored)")
+        n, _e, _d = rk.load_privkey(DEV_KEY)
+        for dl, ib in pairs:
+            with self.subTest(image=os.path.relpath(dl, REPO)), \
+                    tempfile.TemporaryDirectory(prefix="rkloader-fh-") as tmp:
+                dst = os.path.join(tmp, "download.bin")
+                shutil.copyfile(dl, dst)
+                self.assertEqual(rk.main(["sign", dst, "--key", DEV_KEY]), 0)
+                buf = rk.read(dst)
+                start, size = rk.flashhead_region(buf)
+                pt = bytes(rk._flashhead_xor(bytes(buf[start:start + size])))
+                ref = open(ib, "rb").read()
+                self.assertEqual(len(pt), len(ref))
+                self.assertEqual(pt[:rk.HDR_LEN], ref[:rk.HDR_LEN],
+                                 "embedded image header differs from idblock.img")
+                self.assertEqual(pt[rk.HDR_LEN + rk.SIG_LEN:],
+                                 ref[rk.HDR_LEN + rk.SIG_LEN:],
+                                 "embedded image body differs from idblock.img")
+                inner = {"hdr": 0, "msg": (0, rk.HDR_LEN), "sig": (rk.HDR_LEN, rk.SIG_LEN)}
+                self.assertTrue(rk.rsa_verify_digest(
+                    rk.msg_digest(bytearray(pt), inner),
+                    int.from_bytes(pt[rk.HDR_LEN:rk.HDR_LEN + rk.SIG_LEN], "little"), n))
 
 
 if __name__ == "__main__":

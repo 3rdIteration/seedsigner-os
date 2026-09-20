@@ -30,21 +30,37 @@
 #   * idblock.img / download.bin - rk_sign_tool, a PREBUILT binary we cannot
 #     patch; its salt behaviour is whatever the blob does.
 #
-# KNOWN EXCEPTION (vendor-encrypted, not fixable here): download.bin's tail
-# (the 196 KiB after the two hashed components) is an AES-ECB-encrypted vendor
-# "flashhead" loader - 220 repeated 16-byte ciphertext blocks give it away.
-# sign_tool signs its internal head with a random salt on every build, and the
-# resulting 256 bytes of CIPHERTEXT (tail+0x600..0x700) therefore differ per
-# build; we cannot re-sign inside it without the vendor's AES key. It does not
-# affect the SD card image (download.bin is a USB-flash package, never written
-# to the card - see sd_update.txt), only download.bin/update.img in the bundle.
+# download.bin's tail (the 196 KiB after the two hashed components) used to be
+# the one unfixable leak: an RC4-obfuscated vendor "flashhead" loader whose
+# internal head rk_sign_tool signs with a random salt on every build, so 256
+# bytes of CIPHERTEXT (tail+0x600..0x700) differed per build. The cipher is RC4
+# with a hardcoded 16-byte key inside rk_sign_tool, re-initialised per 512-byte
+# chunk; the plaintext is an idblock-style image whose own header signature we
+# can now replace (rkloader.py resign_flashhead: decrypt, re-sign with the
+# digest-derived salt, re-encrypt, refresh the LDR trailer). PSS verification
+# recovers any salt from the block, so on-device checking is unaffected. It does
+# not affect the SD card image either way (download.bin is a USB-flash package,
+# never written to the card - see sd_update.txt); it only ever touched
+# download.bin/update.img in the bundle.
 #
-# Neither can be made deterministic without patching vendor C source in the
-# pinned SDK (fragile across SDK bumps) or replacing an unpatchable binary. So
-# instead we let the SDK sign (it creates the signature-node structure and
-# embeds the pubkey), then OVERWRITE every signature with our own tools:
-#   * rkloader.py  - loader tier; rehashes components + refreshes the LDR
-#                    trailer internally, signs with a digest-derived salt.
+# IF THIS WERE WRONG: an incorrect RC4 key or region would corrupt the embedded
+# copy of the loader inside download.bin - the bundle's only second, obfuscated
+# copy of it. Any on-device consumer that verifies it (the USB flash/recovery
+# path on fused boards, whose BootROM checks the loader) would then reject a
+# perfectly signed image; SD-card boot is unaffected either way, since the card
+# image never contains download.bin. The key and region are pinned against real
+# vendor output by tests/test_rkloader.py (the decrypted flashhead must equal
+# idblock.img byte for byte outside its signature), so a wrong patch fails the
+# suite before it can ship; on-device USB flashing of a fused board with a
+# re-signed download.bin remains the one check only hardware can give.
+#
+# The vendor signers themselves cannot be made deterministic without patching C
+# source in the pinned SDK (fragile across SDK bumps) or replacing an unpatchable
+# binary. So instead we let the SDK sign (it creates the signature-node structure
+# and embeds the pubkey), then OVERWRITE every signature with our own tools:
+#   * rkloader.py  - loader tier; rehashes components, re-signs the embedded
+#                    flashhead, refreshes the LDR trailer internally, signs
+#                    with a digest-derived salt.
 #   * fitsign.py   - FIT tier; same deterministic salt at mkimage's max length,
 #                    and zeroes the wall-clock timestamp (outside the signed
 #                    region, so nothing on-device changes).

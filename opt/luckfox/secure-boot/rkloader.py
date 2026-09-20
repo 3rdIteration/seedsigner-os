@@ -37,6 +37,15 @@ file, so every mutation must be followed by refresh_ldr_trailer() - a re-signed
 download.bin with a stale trailer is rejected by SoCtoolkit before anything is
 sent to the board. idblock.img has no such field.
 
+And download.bin carries a THIRD structure: an RC4-obfuscated copy of the whole
+loader image (the "flashhead"), from the end of the header's second component
+to the trailer - [0x139bc..0x439bc) in every current build. The cipher is RC4
+with a hardcoded 16-byte key inside rk_sign_tool, re-initialised per 512-byte
+chunk (see FLASHHEAD_KEY and the section below it). Its plaintext is an
+idblock-style image with its own header signature at +0x600; rk_sign_tool signs
+it with a random salt on every build. sign_buf() re-signs it deterministically
+(resign_flashhead), verify checks it, setkey re-keys it, canonicalise zeroes it.
+
 Only RSA-2048 is supported, which is not a limitation of this script: the SPL
 verify path rejects any other key length with -EINVAL before the BootROM is
 reached.
@@ -234,6 +243,134 @@ def refresh_ldr_trailer(buf):
     return True
 
 
+# --- the flashhead (RC4-obfuscated embedded loader image) -------------------
+#
+# download.bin carries a SECOND copy of the whole loader image, RC4-obfuscated
+# for USB transfer. Recovered by decompiling rk_sign_tool's prebuilt binary:
+#
+#   * region - from the end of the outer header's second component to the LDR
+#     trailer; 0x30000 bytes in every current build (mini/max NAND, pico-pi
+#     eMMC), located at [0x139bc..0x439bc). flashhead_region() derives it from
+#     the component table rather than hardcoding it.
+#   * cipher - RC4 with a hardcoded 16-byte key (the movabs pair in rk_sign_tool's
+#     obfuscation function, .text+0x2b62/0x2b6c). The stream is RE-INITIALISED
+#     for every 512-byte chunk - which is why the ciphertext shows identical
+#     16-byte blocks repeating at offsets congruent mod 512 (it looks like ECB;
+#     it is not). XOR, so encrypt == decrypt.
+#   * plaintext - a full idblock-style image: RKSS header at +0, signature at
+#     +0x600, the same component layout as standalone idblock.img and in fact
+#     byte-identical to it EXCEPT the signature. rk_sign_tool signs that inner
+#     header with a random PSS salt on every build, so those 256 ciphertext
+#     bytes (region+0x600..0x700) were the last non-reproducible field in
+#     download.bin - and cascaded into update.img.
+#   * fix - decrypt, re-sign with our digest-derived salt over sha256 of the
+#     inner 0x600 header (the same message idblock.img signs), re-encrypt.
+#     On-device verification is unaffected: PSS recovers any salt from the
+#     block, and the inner modulus is the same key the outer one embeds.
+
+FLASHHEAD_KEY = bytes.fromhex("7c4e0304550509072d2c7b38170d1711")
+FLASHHEAD_CHUNK = 512
+
+
+def rc4_keystream(key, n):
+    """n bytes of RC4 keystream for `key` (pure stdlib)."""
+    S = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + S[i] + key[i % len(key)]) & 0xff
+        S[i], S[j] = S[j], S[i]
+    i = j = 0
+    out = bytearray()
+    for _ in range(n):
+        i = (i + 1) & 0xff
+        j = (j + S[i]) & 0xff
+        S[i], S[j] = S[j], S[i]
+        out.append(S[(S[i] + S[j]) & 0xff])
+    return bytes(out)
+
+
+def _flashhead_xor(data):
+    """XOR `data` with the per-512B-chunk RC4 keystream (encrypt == decrypt)."""
+    ks = rc4_keystream(FLASHHEAD_KEY, FLASHHEAD_CHUNK)
+    out = bytearray()
+    for off in range(0, len(data), FLASHHEAD_CHUNK):
+        chunk = data[off:off + FLASHHEAD_CHUNK]
+        out += bytes(c ^ k for c, k in zip(chunk, ks[:len(chunk)]))
+    return bytes(out)
+
+
+def flashhead_region(buf):
+    """(start, size) of the RC4-obfuscated region inside an LDR image.
+
+    Derived from the outer header's component table (the end of its second
+    entry), not hardcoded: if the SDK ever moves it, this follows. None for
+    non-LDR images or when no plausible region exists.
+    """
+    if not is_ldr(buf):
+        return None
+    lay = layout(buf)
+    hdr = lay["hdr"]
+    start_s, count_s = struct.unpack_from("<HH", bytes(buf), hdr + 0x0d0)
+    if count_s == 0:
+        return None
+    end = hdr + (start_s + count_s) * SECTOR
+    size = len(buf) - 4 - end                       # up to the trailer CRC
+    if size <= 0 or size % FLASHHEAD_CHUNK != 0:
+        return None
+    return end, size
+
+
+def flashhead_plaintext(buf):
+    """The decrypted embedded image (RKSS header at +0)."""
+    reg = flashhead_region(buf)
+    if reg is None:
+        raise RkError("no flashhead region in this image")
+    start, size = reg
+    return _flashhead_xor(bytes(buf[start:start + size]))
+
+
+def resign_flashhead(buf, n, d):
+    """Re-sign the embedded flashhead with a digest-derived salt.
+
+    Decrypts the region, replaces its 256-byte signature (at plaintext+0x600)
+    with one over sha256 of the inner 0x600 header using `n`/`d`, re-encrypts,
+    and refreshes the LDR trailer. Returns True when a flashhead was present
+    and re-signed, False for images without one (idblock.img). The inner
+    component hashes are left as-is: they cover the plaintext, which this
+    function does not otherwise touch - but if they were stale the new
+    signature would vouch for them, so refuse rather than sign garbage.
+    """
+    reg = flashhead_region(buf)
+    if reg is None:
+        return False
+    start, size = reg
+    pt = bytearray(_flashhead_xor(bytes(buf[start:start + size])))
+    if bytes(pt[:4]) not in (MAGIC_UNSIGNED, MAGIC_SIGNED):
+        raise RkError("flashhead does not decrypt to an RKNS/RKSS header - "
+                      "wrong key or unexpected layout")
+    inner = {"hdr": 0, "msg": (0, HDR_LEN), "sig": (HDR_LEN, SIG_LEN)}
+    if not components_ok(pt, inner):
+        raise RkError("flashhead component hashes are stale; refusing to sign over them")
+    sig = rsa_sign_digest(msg_digest(pt, inner), n, d)
+    pt[HDR_LEN:HDR_LEN + SIG_LEN] = sig
+    if not rsa_verify_digest(msg_digest(pt, inner), int.from_bytes(sig, "little"), n):
+        raise RkError("internal error: flashhead signature does not verify")
+    buf[start:start + size] = _flashhead_xor(bytes(pt))
+    refresh_ldr_trailer(buf)
+    return True
+
+
+def flashhead_sig_ok(buf, n):
+    """None when the image has no flashhead, else whether its inner signature
+    verifies against `n`."""
+    reg = flashhead_region(buf)
+    if reg is None:
+        return None
+    pt = bytearray(flashhead_plaintext(buf))
+    inner = {"hdr": 0, "msg": (0, HDR_LEN), "sig": (HDR_LEN, SIG_LEN)}
+    return rsa_verify_digest(msg_digest(pt, inner), read_sig(pt, inner), n)
+
+
 # --- DER / PEM (stdlib only) ------------------------------------------------
 
 def _der_ints(der):
@@ -426,12 +563,18 @@ def cmd_inspect(a):
         ok = rsa_verify_digest(msg_digest(buf, lay), read_sig(buf, lay), n)
         print("   self-check     : %s" % ("VALID (signed by the embedded key)" if ok
                                           else "no valid signature for the embedded key"))
+    else:
+        print("   embedded key   : none (all-zero modulus)")
     table = component_table(buf, lay)
     for a_, b_, _h, stored, actual in table:
         print("   component      : [0x%x:0x%x] %s"
               % (a_, b_, "OK" if stored == actual else "STALE HASH - would be rejected at boot"))
-    else:
-        print("   embedded key   : none (all-zero modulus)")
+    reg = flashhead_region(buf)
+    if reg is not None and n:
+        fh_ok = flashhead_sig_ok(buf, n)
+        print("   flashhead      : [0x%x:0x%x] RC4-obfuscated, inner signature %s"
+              % (reg[0], reg[0] + reg[1],
+                 "VALID for the embedded key" if fh_ok else "INVALID for the embedded key"))
     return 0
 
 
@@ -495,6 +638,10 @@ def sign_buf(buf, lay, n, d):
         raise RkError("internal error: freshly made signature does not verify")
     if not components_ok(buf, lay):
         raise RkError("internal error: component hashes stale after signing")
+    # download.bin also embeds a second, RC4-obfuscated copy of the loader image
+    # (the flashhead) whose inner header rk_sign_tool signed with a random salt.
+    # Re-sign it too, or two builds of the same commit still differ in 256 bytes.
+    resign_flashhead(buf, n, d)
     # The LDR trailer covers the whole file, signature included - it is the last
     # thing that can be right.
     refresh_ldr_trailer(buf)
@@ -611,6 +758,17 @@ def set_pubkey(buf, lay, n):
         # modulus too; without these a re-keyed loader fails on-device with
         # "invalid pss padding (0xbc is missing)" while software verifiers pass.
         replaced += swap_pka_constants(buf, old, n)
+    # The embedded flashhead carries its own little-endian copy of the modulus,
+    # RC4-obfuscated so the byte searches above cannot reach it. Rewrite it in
+    # plaintext space or a re-keyed download.bin would verify here and fail on
+    # device (the inner header vouches for the OLD key).
+    reg = flashhead_region(buf)
+    if reg is not None:
+        start, size = reg
+        pt = bytearray(_flashhead_xor(bytes(buf[start:start + size])))
+        pt[MOD_OFF:MOD_OFF + SIG_LEN] = n.to_bytes(SIG_LEN, "little")
+        buf[start:start + size] = _flashhead_xor(bytes(pt))
+        replaced += 1
     soff, _ = lay["sig"]
     buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
     buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
@@ -652,19 +810,28 @@ def cmd_verify(a):
     sig_ok = rsa_verify_digest(msg_digest(buf, lay), read_sig(buf, lay), n)
     table = component_table(buf, lay)
     bad = [(a_, b_) for a_, b_, _h, stored, actual in table if stored != actual]
+    fh_ok = flashhead_sig_ok(buf, n)          # None when the image has no flashhead
     if not sig_ok:
         print("FAIL: %s does not verify" % a.image)
         return 2
     if bad:
         # The signature covers the header, which contains these hashes - so a
-        # stale component hash is a perfectly signed image the SPL will reject.
+        # stale component hash is a perfectly signed image the SPL would reject.
         print("FAIL: %s has a valid signature but %d of %d component hash(es) are "
               "stale; the SPL would reject it" % (a.image, len(bad), len(table)))
         for a_, b_ in bad:
             print("   component [0x%x:0x%x] does not match its recorded sha256" % (a_, b_))
         return 2
-    print("OK: %s verifies (RSA-PSS header signature + %d component hash(es))"
-          % (a.image, len(table)))
+    if fh_ok is False:
+        # The outer signature verifies but the embedded flashhead's inner one
+        # does not - e.g. a vendor-signed download.bin that was never re-signed,
+        # or one signed with a different key than `n`.
+        print("FAIL: %s verifies but its embedded flashhead signature is invalid "
+              "for this key" % a.image)
+        return 2
+    extra = "" if fh_ok is None else " + flashhead signature"
+    print("OK: %s verifies (RSA-PSS header signature%s + %d component hash(es))"
+          % (a.image, extra, len(table)))
     return 0
 
 
@@ -886,6 +1053,17 @@ def cmd_canonicalise(a):
             zeroed += 1
             at = bytes(buf).find(bh, at + len(bh))
     buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
+    # The embedded flashhead carries its own copy of the signature and modulus,
+    # RC4-obfuscated - zero those too or two images signed with different keys
+    # canonicalise to different ciphertext.
+    reg = flashhead_region(buf)
+    if reg is not None:
+        start, size = reg
+        pt = bytearray(_flashhead_xor(bytes(buf[start:start + size])))
+        pt[HDR_LEN:HDR_LEN + SIG_LEN] = b"\x00" * SIG_LEN
+        pt[MOD_OFF:MOD_OFF + SIG_LEN] = b"\x00" * SIG_LEN
+        buf[start:start + size] = _flashhead_xor(bytes(pt))
+        zeroed += 2
     # The trailer covers the zeroed key bytes too; refreshing keeps canonical
     # output independent of which key signed it.
     refresh_ldr_trailer(buf)
