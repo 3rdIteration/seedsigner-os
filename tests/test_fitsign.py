@@ -224,6 +224,49 @@ class Synthetic(unittest.TestCase):
         end = (off + len(raw) + 3) & ~3
         self.assertEqual(bytes(buf[off + len(raw):end]), b"\x00" * (end - off - len(raw)))
 
+    def _garbage_memrsv(self, path, seed):
+        """Plant pointer-residue-style garbage in the memreserve region - what
+        mkimage's libfdt leaves at offset 0x28 of uboot.img/boot.img (a u64 of
+        uninitialised heap, different on every build)."""
+        buf = fs.read(path)
+        h = fs.fdt_header(buf)
+        start = max(28, h["off_memrsv"]) if h["off_memrsv"] else 0x1c
+        region = buf[start:h["off_struct"]]
+        self.assertGreater(len(region), 0, "test FIT needs a memreserve region")
+        for i in range(len(region)):
+            region[i] = (seed + i) & 0xff
+        fs.write_out(buf, path, None)
+
+    def test_sign_zeroes_uninitialised_memreserve(self):
+        p = self.fit()
+        self._garbage_memrsv(p, 0x7f)
+        self.assertEqual(fs.main(["sign", p, "--key", DEV_KEY]), 0)
+        buf = fs.read(p)
+        h = fs.fdt_header(buf)
+        start = max(28, h["off_memrsv"]) if h["off_memrsv"] else 0x1c
+        self.assertEqual(bytes(buf[start:h["off_struct"]]), b"\x00" * (h["off_struct"] - start))
+        self.assertEqual(fs.main(["verify", p, "--pubkey", DEV_PUB]), 0)
+
+    def test_signing_is_byte_reproducible_despite_memrsv_garbage(self):
+        """Two builds of the same FIT differ only in mkimage's memreserve heap
+        garbage; signing must canonicalise them to identical bytes."""
+        a, b = self.fit("mg-a.img"), self.fit("mg-b.img")
+        self._garbage_memrsv(a, 0x51)
+        self._garbage_memrsv(b, 0x5d)
+        fs.main(["sign", a, "--key", DEV_KEY])
+        fs.main(["sign", b, "--key", DEV_KEY])
+        self.assertEqual(bytes(fs.read(a)), bytes(fs.read(b)))
+
+    def test_canonicalise_zeroes_memreserve(self):
+        p = self.fit()
+        fs.main(["sign", p, "--key", DEV_KEY])
+        self._garbage_memrsv(p, 0x9e)           # re-plant it post-signing
+        self.assertEqual(fs.main(["canonicalise", p]), 0)
+        buf = bytes(fs.read(p))
+        h = fs.fdt_header(buf)
+        start = max(28, h["off_memrsv"]) if h["off_memrsv"] else 0x1c
+        self.assertEqual(bytes(buf[start:h["off_struct"]]), b"\x00" * (h["off_struct"] - start))
+
     def test_uses_max_salt_length_like_mkimage(self):
         from rkloader import load_pubkey, _mgf1
         p = self.fit()

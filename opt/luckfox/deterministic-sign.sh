@@ -19,12 +19,14 @@
 #     draws its PSS salt at random. Two builds of the same commit therefore
 #     differ in exactly those bytes - verified against shipped CI images, whose
 #     timestamps were 1789823100 / 1789826498 (the build window), not 0. It
-#     also leaves UNINITIALISED HEAP BYTES in the FDT alignment padding: when
-#     libfdt grows the structure block to append the signature node it copies
-#     into a fresh malloc(), so the pad after whatever property triggered the
-#     grow is random (observed: 3 bytes after `hashed-nodes` in uboot.img).
-#     fitsign.zero_fdt_padding clears all of it - FDT pads are undefined and no
-#     parser reads them, and hashed-node pads are already zero at creation.
+#     also leaves UNINITIALISED HEAP BYTES in two places: the FDT alignment
+#     padding (when libfdt grows the structure block to append the signature
+#     node it copies into a fresh malloc(), so the pad after whatever property
+#     triggered the grow is random - observed 3 bytes after `hashed-nodes` in
+#     uboot.img) and the memreserve region (a u64 of pointer residue at offset
+#     0x28 of both uboot.img and boot.img). fitsign.zero_fdt_padding clears all
+#     of it - FDT pads are undefined, no FIT boot path reads memreserve, and
+#     hashed-node pads are already zero at creation.
 #   * idblock.img / download.bin - rk_sign_tool, a PREBUILT binary we cannot
 #     patch; its salt behaviour is whatever the blob does.
 #

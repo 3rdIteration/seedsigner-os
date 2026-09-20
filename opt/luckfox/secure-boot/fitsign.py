@@ -182,23 +182,41 @@ def signed_regions(buf):
 
 
 def zero_fdt_padding(buf):
-    """Zero every alignment byte of the struct block. That is FDT_NOP tokens and
-    the pad after node names / property values - bytes the FDT spec leaves
-    undefined and no parser reads.
+    """Zero every byte of the FDT that a rebuild cannot be expected to reproduce:
+    the memreserve region (between the header and the structure block) and every
+    alignment byte of the struct block - FDT_NOP tokens and the pad after node
+    names / property values. Bytes the FDT spec leaves undefined, or that no FIT
+    boot path reads.
 
     Why this exists: mkimage builds the signature node by appending properties
     to an already-full FDT; when libfdt grows the structure block it copies into
     a fresh malloc() buffer, so the pad of whatever property triggered the grow
     holds uninitialised heap memory (observed in shipped CI images: 3 random
-    bytes after `hashed-nodes` in uboot.img, different on every build). The FDT
-    spec leaves those bytes undefined and no parser reads them - but they desync
-    two builds of the same commit.
+    bytes after `hashed-nodes` in uboot.img, different on every build). The same
+    heap leak reaches the memreserve region: a u64 at offset 0x28 of both
+    uboot.img and boot.img carries pointer residue (0x00007fXX...) that differs
+    on every build - which bytes happen to collide between two builds varies, so
+    one round of images can look clean while the next desyncs.
 
-    Safe for verification: pads of hashed nodes are deterministically zero at
-    creation (libfdt zero-initialises), so this is a no-op there; pads of the
-    signature node sit outside every signed region. Returns the number of bytes
-    changed."""
-    changed = 0
+    Safe for verification: the signed regions are struct-block tokens plus the
+    hashed strings only (see signed_regions) - the memreserve region and all
+    pads sit outside them, and hashed-node pads are deterministically zero at
+    creation (libfdt zero-initialises), so this changes no hashed byte. Returns
+    the number of bytes changed."""
+    h = fdt_header(buf)
+    # The FDT spec header is 28 bytes and the memreserve region starts at 0x1c;
+    # these U-Boot FITs carry an extra field at 0x10 (pointing at 0x28, where
+    # their memreserve region begins) plus size_strings/size_struct trailing
+    # fields. Detect which layout by the version field's position, then zero
+    # from the end of the header to the structure block - uninitialised heap in
+    # practice (see above).
+    if struct.unpack_from(">I", buf, 0x10)[0] in (16, 17):
+        start = 0x1c                                   # standard layout
+    else:
+        start = max(28, h.get("off_memrsv") or 0)       # extended U-Boot header
+    region = bytes(buf[start:h["off_struct"]])
+    changed = len(region) - region.count(0)
+    buf[start:h["off_struct"]] = b"\x00" * (h["off_struct"] - start)
     for kind, path, name, s, e in fdt_tokens(buf):
         if kind == "begin":
             end = bytes(buf).index(b"\x00", s + 4) + 1   # name incl. NUL
