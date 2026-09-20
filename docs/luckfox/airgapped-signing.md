@@ -32,6 +32,8 @@ Tiny in every tier, which is what makes QR transfer practical:
 | B | 32 bytes (SHA-256) | 256 bytes |
 | C | 64 bytes (BLAKE2b-512) | a ~200-byte `.minisig` |
 
+The one-command form is `tools/airgap-sign.py` (below); the raw commands are:
+
 ```bash
 SB=opt/luckfox/secure-boot
 
@@ -39,8 +41,8 @@ SB=opt/luckfox/secure-boot
 python3 $SB/rkloader.py digest download.bin -o out/download.digest
 python3 $SB/rkloader.py digest idblock.img  -o out/idblock.digest
 python3 $SB/fitsign.py  digest uboot.img    -o out/uboot.digest
-python3 $SB/fitsign.py  digest boot.img     -o out/boot.digest
-python3 $SB/minisign.py digest rootfs.img   -o out/rootfs.digest   # reads rootfs.img.size
+# boot.img's digest comes LAST: on a re-key it depends on the tier-C injection below
+python3 $SB/minisign.py digest rootfs.img   -o out/rootfs.digest   # SD/squashfs bundles only!
 
 # ... transfer out/ to the signer, sign, bring signatures back ...
 
@@ -48,13 +50,53 @@ python3 $SB/minisign.py digest rootfs.img   -o out/rootfs.digest   # reads rootf
 python3 $SB/rkloader.py splice download.bin --sig sigs/download.sig
 python3 $SB/rkloader.py splice idblock.img  --sig sigs/idblock.sig
 python3 $SB/fitsign.py  splice uboot.img    --sig sigs/uboot.sig --pubkey release.pub
-python3 $SB/fitsign.py  splice boot.img     --sig sigs/boot.sig  --pubkey release.pub
-cp sigs/rootfs.minisig rootfs.img.minisig
+# tier C: inject the returned .minisig into boot.img's initramfs, then seal it
+python3 $SB/luckfox_release.py inject <bundle> --minisig sigs/rootfs.minisig \
+        --pubkey release-rootfs.pub [--fit-pubkey release-rsa.pub]
+# (boot.digest was emitted AFTER the injection; splice its signature back)
+python3 $SB/fitsign.py  splice boot.img     --sig sigs/boot.sig   --pubkey release-rsa.pub
+cp sigs/rootfs.minisig rootfs.img.minisig    # sidecar for host-side verification
 ```
 
+Two things the raw commands get wrong if you are not careful:
+
+* **NAND bundles.** What tier C signs is the *logical UBI volume*, not the bytes
+  of `rootfs.img` (UBI rewrites erase counters, so the raw image is not stable).
+  `minisign.py digest rootfs.img` hashes the file and is only correct for
+  SD/squashfs bundles; on NAND use `luckfox_release.rootfs_prehash()` — which
+  streams volume 0's data LEBs in logical order, exactly what the device reads
+  from `/dev/ubi0_0`. The signed size comes from `ROOTFS_SIGNED_SIZE` in
+  boot.img's `/init`, not a `.size` sidecar. `tools/airgap-sign.py` does this
+  automatically per bundle type.
+* **Ordering on a re-key.** `boot.img`'s digest covers its ramdisk, and the
+  tier-C signature lives *in* that ramdisk — so inject first, then emit
+  `boot.digest`. The rootfs digest itself depends on nothing, which is what lets
+  a low-memory signer do it in a first round-trip.
+
 `rkloader.py splice` refuses a signature that does not verify against the key
-embedded in the image, so a wrong key, wrong endianness or stale digest fails
-loudly rather than producing an unbootable image.
+embedded in the image, and `luckfox_release.py inject` refuses a `.minisig`
+that does not cover exactly this folder's rootfs — so a wrong key, wrong
+endianness or stale digest fails loudly rather than producing an unbootable
+image.
+
+### tools/airgap-sign.py
+
+The PC half of the device **Sign Digest** flow (and of the raw commands above),
+in one command per direction:
+
+```bash
+# prepare the card for the signer (writes <card>/seedsigner-release-sign/)
+python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard
+
+# after the device has written the signatures back: splice everything, verify
+python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
+        [--rsa-pubkey release-rsa.pub] [--rootfs-pubkey release-rootfs.pub]
+```
+
+`digests` writes `manifest.txt` plus one `.digest` per artifact (UBI-aware for
+NAND bundles). `splice` performs the tier-A/B splices, the tier-C injection and
+re-seal, fixes any sd_update.txt write lengths the rework changed, and finishes
+with a full `check_release` — it exits non-zero if anything does not verify.
 
 ## Deriving the keys from a BIP85 seed
 
@@ -264,9 +306,13 @@ where a ~225 MB image bundle can be staged:
 - **Luckfox Pico Max / Pi** — feasible on RAM (everything streams in 64 KiB
   chunks). NAND/eMMC builds get their MicroSD slot as removable storage from a
   device-tree override (`apply_sdmmc_dts_patch`); the SDK wired it as SDIO.
-- **Luckfox Pico Mini (64 MB)** — best-effort for bulk work.
+- **Luckfox Pico Mini (64 MB)** — carries the signers too: they are ~55 KB of
+  stdlib and every heavy path streams, so a full mini-bundle re-sign peaks at
+  ~14 MB of Python heap (measured in-memory against a production bundle). The
+  app warns when free memory is low before running the heavy actions and points
+  at Sign Digest as the fallback.
 - **Any board, any time** — the *digest signer* role needs no storage at all:
-  32 bytes in, 256 bytes out over QR.
+  a few dozen bytes in, one signature out (below).
 
 ### Where Resign Release's keys come from
 
@@ -284,6 +330,43 @@ key (`minisign -G -W`, or `minisign.py keygen -s`), a PKCS#8 PEM/DER Ed25519 key
 (`openssl genpkey -algorithm ed25519`), or the bare 32-byte seed (raw or 64 hex
 characters). Passphrase-protected minisign keys are refused on the device:
 minisign's default scrypt parameters need about 1 GiB of RAM.
+
+### Sign Digest — signing without a bundle
+
+**Tools → Luckfox Build Tools → Sign Digest** signs bare digests instead of a
+bundle, so any board can act as the signer with no storage at all (the digest
+signer role from the air-gap table above). The PC lays the digests on a MicroSD
+card; the device writes the signatures back into the same folder:
+
+```
+<card>/seedsigner-release-sign/
+  manifest.txt        # what each file is and which tier it belongs to
+  download.digest     # 32 B, SHA-256          (tier A)
+  idblock.digest      # 32 B, SHA-256          (tier A)
+  uboot.digest        # 32 B, SHA-256          (tier B)
+  boot.digest         # 32 B, SHA-256          (tier B)
+  rootfs.digest       # 64 B, BLAKE2b-512      (tier C)
+
+# written back by the device:
+  download.sig        # 256 B raw RSA-PSS, little-endian
+  idblock.sig         # 256 B
+  uboot.sig           # 256 B
+  boot.sig            # 256 B
+  rootfs.minisig      # minisign text format (~200 B)
+```
+
+The digests are exactly what the CLI commands above emit (`rkloader.py digest`,
+`fitsign.py digest`, `minisign.py digest --size N`), so a card prepared by hand
+works too. The device refuses files of the wrong size (32 vs 64 bytes) with a
+clear message, signs each file it recognises, and reports per-file results. RSA
+signatures use the deterministic salt (`shake_256("seedsigner-pss-v1\0" || mhash)`),
+so re-signing is idempotent; tier C carries a third-party minisign key's stored
+`key_id` through, so signatures from such keys still verify.
+
+On the PC side, `tools/airgap-sign.py` does both halves in one command each:
+`digests <bundle> --card <mount>` writes the folder above; `splice <bundle>
+--card <mount>` splices every returned signature back and verifies the whole
+chain against the exported public keys.
 
 ## See also
 

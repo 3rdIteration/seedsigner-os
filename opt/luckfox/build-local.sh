@@ -2308,7 +2308,7 @@ install_seedsigner_app() {
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
-    install_secure_boot_tools "$hardware"
+    install_secure_boot_tools
 
     # Diagnostic aid (off by default): when SEEDSIGNER_ENABLE_ERROR_DIAGNOSTICS=1
     # is set in the build environment, ship the marker that enables the app's
@@ -2565,8 +2565,13 @@ package_firmware() {
 # A board that should not carry them opts out with a `no-secure-boot-tools` file
 # in opt/luckfox/; the app's menu entry then simply does not appear, so
 # availability is a build-time decision rather than runtime device detection.
+#
+# The Pico Mini (RV1103, 64 MB) carries them too: they are ~55 KB of stdlib and
+# the heavy paths stream (a full mini-bundle re-sign peaks at ~14 MB measured),
+# so carrying the modules costs nothing. An earlier OOM on the Mini was a
+# full-file read bug since fixed; the app warns when free memory is low before
+# running the heavy actions.
 install_secure_boot_tools() {
-    local board="${1:-}"
     local src="$SEEDSIGNER_LUCKFOX_DIR/secure-boot"
     local dst="$ROOTFS_DIR/usr/lib/seedsigner/secure-boot"
     local signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
@@ -2577,13 +2582,6 @@ install_secure_boot_tools() {
 
     if [ -f "$SEEDSIGNER_LUCKFOX_DIR/no-secure-boot-tools" ]; then
         print_info "secure-boot signers: skipped (no-secure-boot-tools)"
-        return 0
-    fi
-    # The Pico Mini (RV1103, 64 MB) crashes running the app's Luckfox Build
-    # Tools, so its image does not carry them; the app then hides the menu and
-    # refuses the setting there with an explanation.
-    if [ "$board" = "mini" ]; then
-        print_info "secure-boot signers: skipped (not supported on the Pico Mini)"
         return 0
     fi
 

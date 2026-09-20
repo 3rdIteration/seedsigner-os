@@ -424,6 +424,98 @@ class Rework(Base):
             lr.rework_initramfs(self.boot(), force=True)
 
 
+class Inject(Base):
+    """inject_rootfs_sig - the air-gap counterpart to rework's rootfs path: the
+    signature comes back from a signer instead of being made from a seed."""
+
+    def _signer_output(self, seed=NEW_SEED, key_id=None):
+        """A .minisig + .pub pair covering this folder's rootfs (what a signer returns)."""
+        size = lr.signed_size(lr.initramfs_members(self.boot()))
+        digest = lr.rootfs_prehash(self.tmp, size)
+        key = lr.ed25519_key(seed, key_id)
+        sig, gsig = ms._sign_with(key["seed"], key["key_id"], digest, ms.TRUSTED_COMMENT)
+        minisig = os.path.join(self.tmp, "rootfs.minisig")
+        pub = os.path.join(self.tmp, "rootfs.pub")
+        ms.write_sig(minisig, ms.ALG_PREHASHED, key["key_id"], sig, ms.TRUSTED_COMMENT, gsig)
+        ms.write_pubkey(pub, key["key_id"], key["pk"])
+        return minisig, pub
+
+    def test_inject_replaces_key_and_signature(self):
+        make_release(self.tmp)
+        minisig, pub = self._signer_output()
+        new, done = lr.inject_rootfs_sig(self.boot(), folder=self.tmp,
+                                         minisig_path=minisig, pubkey_path=pub)
+        m = lr.initramfs_members(new)
+        ok, detail = lr.verify_rootfs(self.tmp, m)
+        self.assertTrue(ok, detail)
+        self.assertEqual(lr.parse_pubkey_bytes(m["pubkey"])["key_id"],
+                         ms.key_id_for(ms.ed25519_public(NEW_SEED)))
+        old = lr.initramfs_members(self.boot())
+        self.assertEqual(m["bin/busybox"], old["bin/busybox"])
+        fs.sign_buf(new, N, D)
+        self.assertTrue(fs.verify_buf(new, N))
+
+    def test_fit_pubkey_sets_the_fit_class(self):
+        make_release(self.tmp)
+        minisig, pub = self._signer_output()
+        new, _ = lr.inject_rootfs_sig(self.boot(), folder=self.tmp, minisig_path=minisig,
+                                      pubkey_path=pub, fit_pubkey_path=DEV_PUB)
+        self.assertEqual(lr.key_classes(lr.initramfs_members(new)),
+                         {"FIT": "dev", "ROOTFS": "prod"})
+
+    def test_third_party_key_id_is_honoured(self):
+        make_release(self.tmp)
+        foreign = b"\x01" * 8
+        minisig, pub = self._signer_output(key_id=foreign)
+        new, _ = lr.inject_rootfs_sig(self.boot(), folder=self.tmp,
+                                      minisig_path=minisig, pubkey_path=pub)
+        m = lr.initramfs_members(new)
+        ok, detail = lr.verify_rootfs(self.tmp, m)
+        self.assertTrue(ok, detail)
+        self.assertEqual(lr.parse_pubkey_bytes(m["pubkey"])["key_id"], foreign)
+
+    def test_refuses_a_signature_over_the_wrong_rootfs(self):
+        make_release(self.tmp)
+        minisig, pub = self._signer_output()
+        with open(os.path.join(self.tmp, "rootfs.img"), "r+b") as f:
+            f.seek(0x10)
+            f.write(b"EVIL")
+        with self.assertRaises(lr.ReleaseError):
+            lr.inject_rootfs_sig(self.boot(), folder=self.tmp, minisig_path=minisig, pubkey_path=pub)
+
+    def test_refuses_a_key_id_mismatch(self):
+        make_release(self.tmp)
+        minisig, pub = self._signer_output()
+        other_pub = os.path.join(self.tmp, "other.pub")
+        ms.write_pubkey(other_pub, b"\x03" * 8, ms.ed25519_public(os.urandom(32)))
+        with self.assertRaises(lr.ReleaseError):
+            lr.inject_rootfs_sig(self.boot(), folder=self.tmp, minisig_path=minisig, pubkey_path=other_pub)
+
+    def test_refuses_a_non_prehashed_signature(self):
+        make_release(self.tmp)
+        size = lr.signed_size(lr.initramfs_members(self.boot()))
+        digest = lr.rootfs_prehash(self.tmp, size)
+        key = lr.ed25519_key(NEW_SEED)
+        sig = ms.ed25519_sign(key["seed"], digest)
+        gsig = ms.ed25519_sign(key["seed"], sig + ms.TRUSTED_COMMENT.encode())
+        minisig = os.path.join(self.tmp, "pure.minisig")
+        pub = os.path.join(self.tmp, "rootfs.pub")
+        ms.write_sig(minisig, ms.ALG_PURE, key["key_id"], sig, ms.TRUSTED_COMMENT, gsig)
+        ms.write_pubkey(pub, key["key_id"], key["pk"])
+        with self.assertRaises(lr.ReleaseError):
+            lr.inject_rootfs_sig(self.boot(), folder=self.tmp, minisig_path=minisig, pubkey_path=pub)
+
+    def test_idempotent_for_the_same_signature(self):
+        make_release(self.tmp)
+        minisig, pub = self._signer_output()
+        new, _ = lr.inject_rootfs_sig(self.boot(), folder=self.tmp,
+                                      minisig_path=minisig, pubkey_path=pub)
+        again, done = lr.inject_rootfs_sig(new, folder=self.tmp,
+                                           minisig_path=minisig, pubkey_path=pub)
+        self.assertIs(again, new)
+        self.assertEqual(done, [])
+
+
 class Identify(Base):
     def test_model_medium_console(self):
         make_release(self.tmp)

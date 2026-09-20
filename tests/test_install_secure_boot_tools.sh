@@ -92,8 +92,10 @@ if python3 "${a}/${rel}/luckfox_release.py" --help >/dev/null 2>&1; then ok "luc
 else fail "luckfox_release.py cannot import the signers from the install dir"; fi
 
 # The Luckfox builds have their own copy (os-build.sh, kept in lockstep with
-# build-local.sh), which also skips the Pico Mini: the tools crash there.
-# $1 = rootfs dir, $2 = board profile
+# build-local.sh). Every board carries the tooling - including the Pico Mini:
+# the signers are ~55 KB of stdlib and the heavy paths stream, so an earlier
+# OOM there was a full-file read bug since fixed. The app warns when free
+# memory is low before running the heavy actions.
 run_luckfox_install() {
   (
     set -o errexit -o pipefail
@@ -102,21 +104,16 @@ run_luckfox_install() {
     ROOTFS_DIR="$1"
     print_info() { :; }; print_success() { :; }; print_error() { echo "$*" >&2; }
     eval "$(sed -n '/^install_secure_boot_tools() {/,/^}/p' "${repo_dir}/opt/luckfox/os-build.sh")"
-    install_secure_boot_tools "$2"
+    install_secure_boot_tools
   )
 }
 
-echo "== Luckfox: the Pico Mini does not carry the tooling"
+echo "== Luckfox: every board carries the tooling, Pico Mini included"
 for board in max pi mini; do
   r="${work}/luckfox-${board}"; mkdir -p "${r}"
-  run_luckfox_install "${r}" "${board}"
-  if [ "${board}" = "mini" ]; then
-    if [ ! -e "${r}/${rel}" ]; then ok "${board}: not installed"
-    else fail "${board}: installed, but the tools crash on the Pico Mini"; fi
-  else
-    if [ -x "${r}/${rel}/luckfox_release.py" ]; then ok "${board}: installed"
-    else fail "${board}: not installed"; fi
-  fi
+  run_luckfox_install "${r}"
+  if [ -x "${r}/${rel}/luckfox_release.py" ]; then ok "${board}: installed"
+  else fail "${board}: not installed"; fi
 done
 
 echo

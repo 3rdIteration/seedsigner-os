@@ -29,6 +29,10 @@ Pure stdlib, like the three signers it builds on.
   identify   <folder>              hardware, boot medium, serial console, DDR blob
   check      <folder>              every signature, key and known pitfall
   sd-update  <folder> [--fix]      check (and repair) the MicroSD auto-flash script
+  inject     <folder> --minisig F --pubkey F [--fit-pubkey F]
+                                       replace boot.img's embedded rootfs signature
+                                       with an externally produced one (air-gap flow);
+                                       verifies it covers this folder's rootfs first
 
 Exit codes: 0 ok, 1 usage/IO, 2 check failed, 3 parse error.
 """
@@ -407,6 +411,68 @@ def rework_initramfs(boot_buf, folder=None, rootfs_seed=None, rsa_n=None, force=
     return initramfs_replace(boot_buf, changes), done
 
 
+def inject_rootfs_sig(boot_buf, folder=None, minisig_path=None, pubkey_path=None,
+                      fit_pubkey_path=None):
+    """Return (new boot.img, [what changed]) with /rootfs.sig and /pubkey replaced
+    from an externally produced signature.
+
+    The air-gap counterpart to rework_initramfs's rootfs_seed path: the .minisig
+    comes back from a signer that never held the key on this machine, so instead
+    of signing we verify it covers exactly the rootfs in `folder` and refuse
+    anything else. The signed size is /init's ROOTFS_SIGNED_SIZE, which must
+    match what the digest was computed over - a mismatch fails here rather than
+    at boot.
+
+    fit_pubkey_path  the RSA public key boot.img is about to be sealed with; sets
+                     FIT_KEY_CLASS in /init like rework_initramfs's rsa_n does.
+
+    Like rework_initramfs, the returned image is UNSIGNED whenever anything
+    changed: FIT-sign it next (and setkey uboot.img first if the RSA key moved).
+    """
+    members = initramfs_members(boot_buf)
+    if folder is None or not rootfs_kind(folder):
+        raise ReleaseError("no rootfs.img to check against")
+    with open(minisig_path, "rb") as f:
+        sig = parse_sig_bytes(f.read())
+    if sig["alg"] != ms.ALG_PREHASHED:
+        raise ReleaseError("the signature is not in prehashed mode (sig_alg %r)"
+                           % sig["alg"])
+    with open(pubkey_path, "rb") as f:
+        pub = parse_pubkey_bytes(f.read())
+    if pub["key_id"] != sig["key_id"]:
+        raise ReleaseError("signature key id does not match the public key's")
+
+    digest = rootfs_prehash(folder, signed_size(members))
+    if not ms.ed25519_verify(pub["pk"], digest, sig["sig"]):
+        raise ReleaseError("the signature does not cover this rootfs (digest mismatch)")
+    if not ms.ed25519_verify(pub["pk"], sig["sig"] + sig["trusted_comment"].encode(),
+                             sig["global_sig"]):
+        raise ReleaseError("the trusted comment is not authentic")
+
+    changes = {}
+    new_pub = ms.format_pubkey(sig["key_id"], pub["pk"])
+    if new_pub != members.get("pubkey"):
+        changes["pubkey"] = new_pub
+    new_sig = ms.format_sig(ms.ALG_PREHASHED, sig["key_id"], sig["sig"],
+                            sig["trusted_comment"], sig["global_sig"])
+    if new_sig != members.get("rootfs.sig"):
+        changes["rootfs.sig"] = new_sig
+    init = members.get("init", b"")
+    fit_class = None
+    if fit_pubkey_path:
+        fit_class = rsa_key_class(rk.load_pubkey(fit_pubkey_path)[0])
+    new_init = _set_key_classes(init, fit_class, rootfs_key_class(sig["key_id"]))
+    if new_init != init:
+        changes["init"] = new_init
+
+    if not changes:
+        return boot_buf, []
+    done = ["rootfs signature injected (key %s)" % ms.format_key_id(sig["key_id"])]
+    if "init" in changes:
+        done.append("pass-screen key classes: %s" % key_classes({"init": new_init}))
+    return initramfs_replace(boot_buf, changes), done
+
+
 # --- identity -------------------------------------------------------------------
 
 def _kernel_dtb_props(boot_buf):
@@ -719,6 +785,13 @@ def main(argv=None):
     s.add_argument("--script", default="sd_update.txt", help="or tftp_update.txt")
     s.add_argument("--lengths-only", action="store_true",
                    help="skip the DRAM staging check (the build does its own)")
+    s = sub.add_parser("inject")
+    s.add_argument("folder")
+    s.add_argument("--minisig", required=True, help="the .minisig to embed")
+    s.add_argument("--pubkey", required=True,
+                   help="its Ed25519 public key (minisign format)")
+    s.add_argument("--fit-pubkey",
+                   help="RSA public key boot.img will be sealed with; sets FIT_KEY_CLASS")
     a = p.parse_args(argv)
     try:
         if a.cmd == "identify":
@@ -729,6 +802,20 @@ def main(argv=None):
             rep = check_release(a.folder)
             print(format_report(rep))
             return 0 if rep.ok else 2
+        if a.cmd == "inject":
+            boot = os.path.join(a.folder, "boot.img")
+            new_buf, done = inject_rootfs_sig(rk.read(boot), folder=a.folder,
+                                              minisig_path=a.minisig, pubkey_path=a.pubkey,
+                                              fit_pubkey_path=a.fit_pubkey)
+            if not done:
+                print("boot.img already carries this signature - nothing to do")
+                return 0
+            with open(boot, "wb") as f:
+                f.write(new_buf)
+            for line in done:
+                print(line)
+            print("boot.img rewritten and UNSIGNED - FIT-sign it next (fitsign.py sign)")
+            return 0
         profile = None if a.lengths_only else (a.profile or identify(a.folder).get("profile"))
         res = sd_update_check(a.folder, profile, a.fix, a.script)
         for key, label in (("problems", "problem"), ("fixable", "fixable"), ("notes", "note")):

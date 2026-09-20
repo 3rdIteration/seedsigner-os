@@ -4,7 +4,28 @@ Developer utilities that are not part of the build itself.
 
 | Tool | Purpose |
 | ---- | ------- |
+| [`airgap-sign.py`](airgap-sign.py) | The PC half of the Luckfox air-gapped signing flow: emit digests for a signer, splice its signatures back. |
 | [`imgdiff.py`](imgdiff.py) | Explain why two SeedSigner OS `.img` files are not byte-identical. |
+
+## airgap-sign.py
+
+```bash
+python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard [--only rootfs]
+python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
+        [--rsa-pubkey F] [--rootfs-pubkey F] [--no-check]
+```
+
+One command per card round-trip with the device's **Sign Digest** action (or any other signer):
+`digests` writes `<card>/seedsigner-release-sign/` with a manifest and one `.digest` per artifact;
+`splice` verifies and splices every returned signature back into the bundle, injects a tier-C
+`.minisig` into `boot.img`'s initramfs (before `boot.sig`, which covers that ramdisk), fixes any
+sd_update.txt write lengths the rework changed, and finishes with a full release check. The rootfs
+digest is UBI-aware — on NAND bundles it hashes the logical volume exactly as the device streams it,
+not the raw file bytes. See [docs/luckfox/airgapped-signing.md](../docs/luckfox/airgapped-signing.md)
+for the round-trip ordering on a re-key.
+
+Python 3 standard library only (it imports the pure-stdlib signers from `opt/luckfox/secure-boot/`),
+and it runs on Windows.
 
 ## imgdiff.py
 
