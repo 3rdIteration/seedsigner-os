@@ -19,7 +19,13 @@ byte-identical on mini/max NAND, mini production and pi eMMC builds):
                    at 0x7bc.
   * magic RKNS = unsigned, RKSS = signed (and the u32 at hdr+0x0c 0x01 -> 0x11).
   * signed message = the 0x600 header bytes, hashed with SHA-256, natural order.
-  * signature = RSA-PSS, MGF1-SHA256, saltLen 32, stored LITTLE-ENDIAN.
+  * signature = RSA-PSS, MGF1-SHA256, saltLen 32, stored LITTLE-ENDIAN. The
+    vendor tools pick the salt at random; THIS script derives it from the
+    digest (deterministic_salt) instead. RFC 8017 accepts any salt and
+    verification recovers it from the block, so a fixed derivation changes
+    nothing for the verifier - it only makes two signings of the same message
+    with the same key byte-identical, which is what keeps a signed build
+    reproducible (the vendor tools also stamp wall-clock time elsewhere).
   * the RSA modulus is embedded LITTLE-ENDIAN at hdr+0x200; idblock.img also
     carries a big-endian copy in the SPL DTB's `rsa,modulus`.
 
@@ -301,11 +307,27 @@ def _mgf1(seed, length):
     return out[:length]
 
 
+def deterministic_salt(mhash, length):
+    """The PSS salt for digest `mhash`: shake_256 over a domain tag + the digest.
+
+    RFC 8017 accepts any salt and pss_verify() recovers it from the encoded
+    block, so deriving it instead of drawing os.urandom changes nothing for the
+    verifier - but two signings of the same message with the same key now yield
+    byte-identical signatures. That is what makes a signed build (and an on-
+    device re-sign) reproducible: the vendor tools use random salts, and their
+    FIT signing also stamps wall-clock time, so neither can be reproduced.
+    The domain tag keeps this derivation distinct from any other hash of the
+    digest and gives a place to version it if the scheme ever changes.
+    """
+    return hashlib.shake_256(b"seedsigner-pss-v1\0" + mhash).digest(length)
+
+
 def pss_encode(mhash, embits=2047, salt=None):
-    """EMSA-PSS-ENCODE. salt=None -> random; pass bytes for a deterministic test."""
+    """EMSA-PSS-ENCODE. salt=None -> deterministic (derived from the digest);
+    pass bytes to override (tests pin explicit salts)."""
     hlen, emlen = 32, (embits + 7) // 8
     if salt is None:
-        salt = os.urandom(SALT_LEN)
+        salt = deterministic_salt(mhash, SALT_LEN)
     h = hashlib.sha256(b"\x00" * 8 + mhash + salt).digest()
     ps_len = emlen - len(salt) - hlen - 2
     if ps_len < 0:

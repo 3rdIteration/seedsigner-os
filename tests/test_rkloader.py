@@ -180,6 +180,70 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 0)
 
 
+class DeterministicSalt(unittest.TestCase):
+    """The PSS salt is derived from the digest, not drawn at random.
+
+    RFC 8017 accepts any salt and verification recovers it from the block, so
+    this changes nothing on-device - but two signings of the same message with
+    the same key are now byte-identical, which is what makes a signed build (and
+    an on-device re-sign) reproducible. The vendor tools do neither: their FIT
+    signing stamps wall-clock time and draws random salts.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.n, cls.e, cls.d = rk.load_privkey(DEV_KEY)
+        cls.tmp = tempfile.mkdtemp(prefix="rkloader-det-")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_salt_is_the_documented_derivation(self):
+        mhash = hashlib.sha256(b"reproducible").digest()
+        self.assertEqual(rk.deterministic_salt(mhash, rk.SALT_LEN),
+                         hashlib.shake_256(b"seedsigner-pss-v1\0" + mhash).digest(rk.SALT_LEN))
+
+    def test_signing_is_byte_reproducible(self):
+        p = os.path.join(self.tmp, "det.bin")
+        with open(p, "wb") as f:
+            f.write(make_container(self.n))
+        self.assertEqual(rk.main(["sign", p, "--key", DEV_KEY]), 0)
+        first = bytes(rk.read(p))
+        # re-sign in place (idempotent), then from a fresh copy of the input
+        self.assertEqual(rk.main(["sign", p, "--key", DEV_KEY]), 0)
+        self.assertEqual(bytes(rk.read(p)), first, "re-signing must be byte-identical")
+        with open(p, "wb") as f:
+            f.write(make_container(self.n))
+        self.assertEqual(rk.main(["sign", p, "--key", DEV_KEY]), 0)
+        self.assertEqual(bytes(rk.read(p)), first, "fresh input + sign must match the first")
+
+    def test_pinned_signature_vector_for_the_dev_key(self):
+        """Any change to the salt derivation (or key handling) shifts these bytes."""
+        mhash = hashlib.sha256(b"seedsigner-os-rootfs").digest()
+        self.assertEqual(rk.deterministic_salt(mhash, rk.SALT_LEN).hex(),
+                         "5fa88d7779d06b9feb20642fe2c1f60739d011f53692d4fe61f36a1cf4145b50")
+        sig = rk.rsa_sign_digest(mhash, self.n, self.d)
+        self.assertEqual(sig.hex(),
+                         "a0009d0ea5c4ea89b22f98a7da9b657d6ba9de61d7d3924cfe0f04f0e65df01"
+                         "1652712d23d749c25ae07eefbcfc80fe6f824382646a88a1d9710d9626b0df"
+                         "1d514c253faf74fba4621ef7ebbe459883568431080f0f53c68b76e502d8258"
+                         "669f5596e8edd7d96d1478756d3b60d6da6416e3acccab4e93147c2a9ed595c"
+                         "b1f5fed9910c615b0732b674e41b5c1bc484af2fcb277c8e97311ef63967ad0"
+                         "ac17622129999a1a7d20d52dbd0b6d23439a1b35791ad2e7f40d5fa5bd3036c"
+                         "6ea40b78778fd76ad0ec65e0c0a15eafcd6eb367380aebe1f21a78e03c5c97e"
+                         "446a12276c1841c3f2a3a03502d789ba7f320ce6de36321e109736f738eecb2"
+                         "5adb2c612")
+        self.assertTrue(rk.rsa_verify_digest(mhash, int.from_bytes(sig, "little"), self.n))
+
+    def test_explicit_salt_still_overrides(self):
+        mhash = hashlib.sha256(b"x").digest()
+        em1 = rk.pss_encode(mhash, 2047, b"\x00" * rk.SALT_LEN)
+        em2 = rk.pss_encode(mhash, 2047, b"\x00" * rk.SALT_LEN)
+        self.assertEqual(em1, em2)
+        self.assertNotEqual(em1, rk.pss_encode(mhash, 2047))
+
+
 def make_key_dtb(n):
     """A minimal Rockchip-style FDT whose /signature/key-dev carries rsa,np and a
     hash@np subnode for modulus n - shaped like the SPL DTB's key node, so

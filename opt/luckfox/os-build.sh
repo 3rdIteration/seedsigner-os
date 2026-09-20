@@ -166,9 +166,15 @@ export RUST_BUILD_JOBS="${RUST_BUILD_JOBS:-$_ss_rust_default_jobs}"
 export FORCE_UNSAFE_CONFIGURE=1
 # Reproducible builds: the epoch compilers and packaging tools stamp into their
 # output. Same value and same reasoning as the Pi/La Frite path (opt/build.sh:5),
-# which the Luckfox build never picked up. Notably U-Boot's mkimage honours it
-# for the FIT `timestamp` field in boot.img, and e2fsprogs for ext4 superblock
-# times -- two things that otherwise differ on every single build.
+# which the Luckfox build never picked up. e2fsprogs honours it for ext4
+# superblock times, for example. It does NOT reach U-Boot's FIT `timestamp`
+# field: the SDK ships U-Boot 2017.09, whose mkimage stamps time(NULL) into
+# boot.img/uboot.img regardless (verified against shipped CI images), and its
+# RSA-PSS signing draws a random salt -- so even with this epoch set, two signed
+# builds differ in the FIT timestamp AND every signature byte. That is why
+# deterministic_sign_chain() re-signs all four images with our own tools after
+# the SDK's sign_boot_image: digest-derived salts + zeroed timestamps make the
+# final signatures byte-identical across builds of the same commit.
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
 
 # Kernel reproducibility. Without these the kernel records the build time, the
@@ -1960,6 +1966,24 @@ sign_boot_image() {
     print_success "boot.img signed (whole chain now signed with the FIT key)"
 }
 
+# Re-sign all four boot-chain images with our own tools (opt-in). The SDK's in-
+# build signing is not byte-reproducible: mkimage stamps wall-clock time into
+# the FIT signature node and draws random PSS salts, and rk_sign_tool (loader
+# tier) is a prebuilt binary we cannot patch. deterministic-sign.sh overwrites
+# every signature with a digest-derived salt and zeroes the timestamp; both sit
+# outside the signed region, so on-device verification is unaffected. Runs
+# AFTER sign_boot_image (all content mutations done) and BEFORE
+# normalise_boot_images, so update.img's repack embeds OUR signatures.
+deterministic_sign_chain() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local ubootdir="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot"
+    local image_dir="$LUCKFOX_SDK_DIR/output/image"
+    print_step "Deterministically re-signing the boot chain (SEEDSIGNER_FIT_SIGNATURE=1)"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/deterministic-sign.sh" \
+        "$image_dir" "$ubootdir/keys/dev.key" "$ubootdir/keys/dev.pubkey" \
+        || { print_error "deterministic re-signing failed"; exit 1; }
+}
+
 # --- Rootfs verification (SEEDSIGNER_FIT_SIGNATURE=1) -------------------------
 #
 # The rootfs volume's logical UBIFS contents are signed at build time by the
@@ -2995,7 +3019,8 @@ s/^endef\nendif/endef\nendif\nendif/
     print_step "Packaging Firmware"
     sdk_build firmware
     embed_rootfs_verifier "$board_profile" "$boot_medium"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE sign_boot_image so the FIT signature covers the new ramdisk.
-    sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE normalise so update.img embeds the signed boot.img.
+    sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE deterministic_sign_chain so our re-sign covers the final boot.img.
+    deterministic_sign_chain                # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). Digest-derived salts + zeroed timestamp => byte-reproducible signatures. BEFORE normalise so update.img embeds them.
     normalise_boot_images
     export_fit_sign_tree "$board_profile"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
     # The SDK emits sd_update.txt/tftp_update.txt staging every partition at

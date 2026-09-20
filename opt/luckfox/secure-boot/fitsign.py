@@ -32,13 +32,18 @@ for both uboot.img and boot.img.
 
 A consequence worth knowing: the signature node's own properties are excluded,
 so `value` and the wall-clock `timestamp` mkimage writes there can both be
-zeroed without invalidating anything. That is what `canonicalise` does, and it
-is what makes a signed release comparable against a reproducible rebuild.
+zeroed without invalidating anything. That is what `canonicalise` does (making
+a signed release comparable against a reproducible rebuild), and it is why
+`sign_buf` zeroes the timestamp on every signature: the vendor's in-build
+mkimage stamps time(NULL) there, which would otherwise desync two builds of
+the same commit.
 
 Padding is RSA-PSS with MGF1-SHA256 and the MAXIMUM salt length (222 bytes for
-rsa2048), which is what mkimage emits. Note this differs from the Rockchip
+rsa2048), matching what mkimage emits; note this differs from the Rockchip
 loader tier, which uses saltLen 32. Verification recovers the salt length from
-the block, so it accepts either.
+the block, so it accepts either - and `sign_buf` derives the salt from the
+digest (deterministic_salt) rather than drawing one at random, for the same
+reproducibility reason as the timestamp zeroing above.
 
 Pure stdlib.
 
@@ -64,9 +69,9 @@ Exit codes: 0 ok, 1 usage/IO, 2 verification failed, 3 parse error.
 import sys, os, struct, hashlib, argparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rkloader import (RkError, load_pubkey, load_privkey, _mgf1,      # noqa: E402
-                      pss_encode, pss_verify, read, swap_pka_constants,
-                      write_out)
+from rkloader import (RkError, deterministic_salt, load_pubkey,          # noqa: E402
+                      load_privkey, _mgf1, pss_encode, pss_verify, read,
+                      swap_pka_constants, write_out)
 
 FDT_BEGIN_NODE, FDT_END_NODE, FDT_PROP, FDT_NOP, FDT_END = 1, 2, 3, 4, 9
 FDT_MAGIC = 0xd00dfeed
@@ -246,12 +251,24 @@ def sign_buf(buf, n, d):
 
     The library entry point: callers holding a key in memory (a BIP85-derived
     key on a SeedSigner, say) must never have to write it to disk.
+
+    Deterministic by construction: the PSS salt is derived from the digest
+    (deterministic_salt), and the wall-clock `timestamp` mkimage left in the
+    signature node is zeroed - both sit outside the signed region, so nothing
+    on-device changes. Signing the same FIT twice with the same key therefore
+    yields byte-identical output, which is what makes a signed build
+    reproducible; the vendor's in-build signing does neither (random salt +
+    time(NULL) timestamp).
     """
     sig = signature_node(buf)
     digest = signed_digest(buf)
-    em = pss_encode(digest, n.bit_length() - 1, os.urandom(max_salt_len(n)))
+    em = pss_encode(digest, n.bit_length() - 1,
+                    deterministic_salt(digest, max_salt_len(n)))
     value = pow(int.from_bytes(em, "big"), d, n).to_bytes(256, "big")
     _write_value(buf, sig, value)
+    if "timestamp" in sig:
+        raw, off = sig["timestamp"]
+        buf[off:off + len(raw)] = b"\x00" * len(raw)
     if not verify_buf(buf, n):
         raise FitError("internal error: freshly made signature does not verify")
     return value

@@ -151,15 +151,35 @@ class Synthetic(unittest.TestCase):
         self.assertEqual(fs.main(["sign", p, "--key", DEV_KEY]), 0)
         self.assertEqual(fs.main(["verify", p, "--pubkey", DEV_PUB]), 0)
 
-    def test_sign_touches_only_the_value(self):
+    def test_sign_touches_only_value_and_timestamp(self):
         p = self.fit()
         before = bytes(fs.read(p))
         fs.main(["sign", p, "--key", DEV_KEY])
         after = bytes(fs.read(p))
         sig = fs.signature_node(fs.read(p))
-        _, off = sig["value"]
+        _, voff = sig["value"]
+        _, toff = sig["timestamp"]
         differing = [i for i in range(len(before)) if before[i] != after[i]]
-        self.assertTrue(all(off <= i < off + 256 for i in differing))
+        # the 256 signature bytes, plus the wall-clock timestamp zeroed for
+        # reproducibility - both outside the signed region
+        self.assertTrue(all((voff <= i < voff + 256) or (toff <= i < toff + 4)
+                            for i in differing), differing[:8])
+
+    def test_sign_zeroes_a_wall_clock_timestamp(self):
+        """build_fit() plants 0x5f5e100 where mkimage would stamp time(NULL)."""
+        p = self.fit()
+        fs.main(["sign", p, "--key", DEV_KEY])
+        buf = fs.read(p)
+        raw, off = fs.signature_node(buf)["timestamp"]
+        self.assertEqual(raw, b"\x00" * 4, "the wall-clock timestamp must be zeroed")
+        self.assertEqual(fs.main(["verify", p, "--pubkey", DEV_PUB]), 0)
+
+    def test_signing_is_byte_reproducible(self):
+        """Same FIT + same key => byte-identical output (digest-derived salt)."""
+        a, b = self.fit("ra.img"), self.fit("rb.img")
+        fs.main(["sign", a, "--key", DEV_KEY])
+        fs.main(["sign", b, "--key", DEV_KEY])
+        self.assertEqual(bytes(fs.read(a)), bytes(fs.read(b)))
 
     def test_uses_max_salt_length_like_mkimage(self):
         from rkloader import load_pubkey, _mgf1
@@ -241,8 +261,9 @@ class Synthetic(unittest.TestCase):
         a, b = self.fit("a.img"), self.fit("b.img")
         fs.main(["sign", a, "--key", DEV_KEY])
         fs.main(["sign", b, "--key", DEV_KEY])
-        self.assertNotEqual(bytes(fs.read(a)), bytes(fs.read(b)),
-                            "PSS is randomised; the raw images should differ")
+        # signing is now deterministic (digest-derived salt + zeroed timestamp),
+        # so the raw images already agree; canonicalise must still hold
+        self.assertEqual(bytes(fs.read(a)), bytes(fs.read(b)))
         fs.main(["canonicalise", a])
         fs.main(["canonicalise", b])
         self.assertEqual(bytes(fs.read(a)), bytes(fs.read(b)))

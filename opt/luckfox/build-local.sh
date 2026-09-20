@@ -1404,6 +1404,25 @@ sign_boot_image() {
     print_success "boot.img signed (whole chain now signed with the FIT key)"
 }
 
+# Re-sign all four boot-chain images with our own tools (opt-in). The SDK's in-
+# build signing is not byte-reproducible: mkimage stamps wall-clock time into
+# the FIT signature node and draws random PSS salts, and rk_sign_tool (loader
+# tier) is a prebuilt binary we cannot patch. deterministic-sign.sh overwrites
+# every signature with a digest-derived salt and zeroes the timestamp; both sit
+# outside the signed region, so on-device verification is unaffected. Runs
+# AFTER sign_boot_image (all content mutations done) and BEFORE the releaseTime
+# normalise step below, so update.img's repack embeds OUR signatures. Mirrors
+# deterministic_sign_chain in os-build.sh - keep the two in sync.
+deterministic_sign_chain() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local ubootdir="$WORK_DIR/luckfox-pico/sysdrv/source/uboot/u-boot"
+    local image_dir="$WORK_DIR/luckfox-pico/output/image"
+    print_step "Deterministically re-signing the boot chain (SEEDSIGNER_FIT_SIGNATURE=1)"
+    bash "$SCRIPT_DIR/deterministic-sign.sh" \
+        "$image_dir" "$ubootdir/keys/dev.key" "$ubootdir/keys/dev.pubkey" \
+        || { print_error "deterministic re-signing failed"; exit 1; }
+}
+
 # --- Rootfs verification (SEEDSIGNER_FIT_SIGNATURE=1) -------------------------
 #
 # The rootfs volume's logical UBIFS contents are signed at build time by the
@@ -2482,7 +2501,8 @@ package_firmware() {
     ./build.sh firmware
 
     embed_rootfs_verifier "$hardware" "$boot_medium"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE sign_boot_image so the FIT signature covers the new ramdisk.
-    sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE normalise so update.img embeds the signed boot.img.
+    sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE deterministic_sign_chain so our re-sign covers the final boot.img.
+    deterministic_sign_chain                # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). Digest-derived salts + zeroed timestamp => byte-reproducible signatures. BEFORE normalise so update.img embeds them.
 
     # Pin the wall-clock releaseTime that boot_merger (download.bin) and
     # rkImageMaker (update.img) stamp into their headers, and repair each file's
