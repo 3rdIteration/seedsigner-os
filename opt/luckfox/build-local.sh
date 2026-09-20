@@ -1639,6 +1639,9 @@ embed_rootfs_verifier() {
     # them along with uid/gid. mtime is pinned to SOURCE_DATE_EPOCH explicitly
     # (touch), gzip -n drops its timestamp header, and LC_ALL=C sort fixes the
     # entry order — so two builds of the same commit produce identical bytes.
+    # touch MUST use -h: without it a symlink's own mtime is never touched
+    # (the target is), so every busybox applet link kept its ln(1) wall-clock
+    # time and desynced the ramdisk on every build.
     # The archive is written OUTSIDE $stage: it must not appear in the tree
     # while find is still enumerating it (a pipeline runs all three at once).
     local work
@@ -1646,7 +1649,7 @@ embed_rootfs_verifier() {
     local epoch="${SOURCE_DATE_EPOCH:-0}"
     (
         cd "$stage"
-        find . -exec touch -d "@$epoch" {} + 2>/dev/null || true
+        find . -exec touch -h -d "@$epoch" {} + 2>/dev/null || true
         LC_ALL=C find . | LC_ALL=C sort | \
             cpio -o -H newc --owner=0:0 --reproducible --quiet 2>/dev/null | gzip -9 -n > "$work/ramdisk"
     )

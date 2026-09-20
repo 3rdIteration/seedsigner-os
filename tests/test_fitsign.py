@@ -181,6 +181,49 @@ class Synthetic(unittest.TestCase):
         fs.main(["sign", b, "--key", DEV_KEY])
         self.assertEqual(bytes(fs.read(a)), bytes(fs.read(b)))
 
+    def _garbage_pad(self, path, seed):
+        """Plant uninitialised-heap-style garbage in the FDT pad after the
+        signature node's hashed-nodes value - what mkimage leaves behind when
+        libfdt grows the structure block into a fresh malloc()."""
+        buf = fs.read(path)
+        raw, off = fs.fdt_props(buf)["/configurations/conf/signature"]["hashed-nodes"]
+        end = (off + len(raw) + 3) & ~3          # pad up to the next token
+        self.assertGreater(end - (off + len(raw)), 0, "test FIT needs a padded prop")
+        buf[off + len(raw):end] = bytes([seed, seed + 1, seed + 2][: end - off - len(raw)])
+        fs.write_out(buf, path, None)
+
+    def test_sign_zeroes_uninitialised_fdt_padding(self):
+        p = self.fit()
+        self._garbage_pad(p, 0xd9)
+        self.assertEqual(fs.main(["sign", p, "--key", DEV_KEY]), 0)
+        buf = fs.read(p)
+        raw, off = fs.fdt_props(buf)["/configurations/conf/signature"]["hashed-nodes"]
+        end = (off + len(raw) + 3) & ~3
+        self.assertEqual(bytes(buf[off + len(raw):end]), b"\x00" * (end - off - len(raw)))
+        self.assertEqual(fs.main(["verify", p, "--pubkey", DEV_PUB]), 0)
+
+    def test_signing_is_byte_reproducible_despite_garbage_pads(self):
+        """Two builds of the same FIT differ only in mkimage's heap garbage;
+        signing must canonicalise them to identical bytes."""
+        a, b = self.fit("pg-a.img"), self.fit("pg-b.img")
+        self._garbage_pad(a, 0xd9)
+        self._garbage_pad(b, 0x94)
+        fs.main(["sign", a, "--key", DEV_KEY])
+        fs.main(["sign", b, "--key", DEV_KEY])
+        self.assertEqual(bytes(fs.read(a)), bytes(fs.read(b)))
+
+    def test_canonicalise_zeroes_fdt_padding(self):
+        """A vendor-signed image carries the heap garbage; canonicalise must
+        clear it so two builds compare equal."""
+        p = self.fit()
+        fs.main(["sign", p, "--key", DEV_KEY])
+        self._garbage_pad(p, 0x7b)              # re-plant it post-signing
+        self.assertEqual(fs.main(["canonicalise", p]), 0)
+        buf = bytes(fs.read(p))
+        raw, off = fs.fdt_props(buf)["/configurations/conf/signature"]["hashed-nodes"]
+        end = (off + len(raw) + 3) & ~3
+        self.assertEqual(bytes(buf[off + len(raw):end]), b"\x00" * (end - off - len(raw)))
+
     def test_uses_max_salt_length_like_mkimage(self):
         from rkloader import load_pubkey, _mgf1
         p = self.fit()

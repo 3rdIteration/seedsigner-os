@@ -18,9 +18,24 @@
 #     signature node (time(NULL); it does NOT honour SOURCE_DATE_EPOCH) and
 #     draws its PSS salt at random. Two builds of the same commit therefore
 #     differ in exactly those bytes - verified against shipped CI images, whose
-#     timestamps were 1789823100 / 1789826498 (the build window), not 0.
+#     timestamps were 1789823100 / 1789826498 (the build window), not 0. It
+#     also leaves UNINITIALISED HEAP BYTES in the FDT alignment padding: when
+#     libfdt grows the structure block to append the signature node it copies
+#     into a fresh malloc(), so the pad after whatever property triggered the
+#     grow is random (observed: 3 bytes after `hashed-nodes` in uboot.img).
+#     fitsign.zero_fdt_padding clears all of it - FDT pads are undefined and no
+#     parser reads them, and hashed-node pads are already zero at creation.
 #   * idblock.img / download.bin - rk_sign_tool, a PREBUILT binary we cannot
 #     patch; its salt behaviour is whatever the blob does.
+#
+# KNOWN EXCEPTION (vendor-encrypted, not fixable here): download.bin's tail
+# (the 196 KiB after the two hashed components) is an AES-ECB-encrypted vendor
+# "flashhead" loader - 220 repeated 16-byte ciphertext blocks give it away.
+# sign_tool signs its internal head with a random salt on every build, and the
+# resulting 256 bytes of CIPHERTEXT (tail+0x600..0x700) therefore differ per
+# build; we cannot re-sign inside it without the vendor's AES key. It does not
+# affect the SD card image (download.bin is a USB-flash package, never written
+# to the card - see sd_update.txt), only download.bin/update.img in the bundle.
 #
 # Neither can be made deterministic without patching vendor C source in the
 # pinned SDK (fragile across SDK bumps) or replacing an unpatchable binary. So

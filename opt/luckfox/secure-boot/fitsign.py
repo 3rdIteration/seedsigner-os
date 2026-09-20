@@ -181,6 +181,38 @@ def signed_regions(buf):
     return [(a, b) for a, b in merged]
 
 
+def zero_fdt_padding(buf):
+    """Zero every alignment byte of the struct block. That is FDT_NOP tokens and
+    the pad after node names / property values - bytes the FDT spec leaves
+    undefined and no parser reads.
+
+    Why this exists: mkimage builds the signature node by appending properties
+    to an already-full FDT; when libfdt grows the structure block it copies into
+    a fresh malloc() buffer, so the pad of whatever property triggered the grow
+    holds uninitialised heap memory (observed in shipped CI images: 3 random
+    bytes after `hashed-nodes` in uboot.img, different on every build). The FDT
+    spec leaves those bytes undefined and no parser reads them - but they desync
+    two builds of the same commit.
+
+    Safe for verification: pads of hashed nodes are deterministically zero at
+    creation (libfdt zero-initialises), so this is a no-op there; pads of the
+    signature node sit outside every signed region. Returns the number of bytes
+    changed."""
+    changed = 0
+    for kind, path, name, s, e in fdt_tokens(buf):
+        if kind == "begin":
+            end = bytes(buf).index(b"\x00", s + 4) + 1   # name incl. NUL
+        elif kind == "prop":
+            ln, _ = struct.unpack_from(">II", buf, s + 4)
+            end = s + 12 + ln                             # value only
+        else:
+            end = e                                       # nop/end: no payload
+        if end < e and any(buf[end:e]):
+            changed += len(bytes(buf[end:e])) - bytes(buf[end:e]).count(0)
+            buf[end:e] = b"\x00" * (e - end)
+    return changed
+
+
 def signed_digest(buf):
     return hashlib.sha256(b"".join(bytes(buf[a:b]) for a, b in signed_regions(buf))).digest()
 
@@ -252,14 +284,18 @@ def sign_buf(buf, n, d):
     The library entry point: callers holding a key in memory (a BIP85-derived
     key on a SeedSigner, say) must never have to write it to disk.
 
-    Deterministic by construction: the PSS salt is derived from the digest
-    (deterministic_salt), and the wall-clock `timestamp` mkimage left in the
-    signature node is zeroed - both sit outside the signed region, so nothing
-    on-device changes. Signing the same FIT twice with the same key therefore
-    yields byte-identical output, which is what makes a signed build
-    reproducible; the vendor's in-build signing does neither (random salt +
-    time(NULL) timestamp).
+    Deterministic by construction: FDT alignment padding is zeroed first, then
+    the PSS salt is derived from the resulting digest (deterministic_salt), and
+    finally the wall-clock `timestamp` mkimage left in the signature node is
+    zeroed. The timestamp sits outside the signed region; the padding does not
+    change any hashed byte (hashed-node pads are already zero - see
+    zero_fdt_padding), so nothing on-device changes either way. Signing the same
+    FIT twice with the same key therefore yields byte-identical output, which is
+    what makes a signed build reproducible; the vendor's in-build signing does
+    none of this (random salt + time(NULL) timestamp + uninitialised heap bytes
+    in the FDT pad).
     """
+    zero_fdt_padding(buf)
     sig = signature_node(buf)
     digest = signed_digest(buf)
     em = pss_encode(digest, n.bit_length() - 1,
@@ -510,6 +546,9 @@ def cmd_canonicalise(a):
     buf = read(a.image)
     sig = signature_node(buf)
     cleared = []
+    pad = zero_fdt_padding(buf)
+    if pad:
+        cleared.append("fdt padding (%d bytes, uninitialised heap)" % pad)
     if "value" in sig:
         raw, off = sig["value"]
         buf[off:off + len(raw)] = b"\x00" * len(raw)
