@@ -21,6 +21,14 @@ One command per card round-trip:
       the logical volume exactly as the device streams it from /dev/ubi0_0, not
       the raw file bytes.
 
+  force <bundle> --card <dir> [--off]
+      Toggle the forced rootfs check WITHOUT a private key on this machine -
+      the PC-side counterpart of the app's Force Rootfs Check action (which is
+      too heavy for small boards such as the Pico Mini). Reworks boot.img's
+      initramfs in place (adds or removes /force-rootfs-verify), drops any stale
+      update.img, and leaves boot.digest on the card. Sign it with the device's
+      Sign Digest, then `splice` puts the signature back and runs the full check.
+
   splice <bundle> --card <dir> [--rsa-pubkey F] [--rootfs-pubkey F] [--no-check]
       Splice every signature the card carries back into the bundle: tier A and B
       signatures are verified as they go; a rootfs.minisig is injected into
@@ -98,6 +106,34 @@ def rootfs_signed_size(folder):
     sys.exit("no way to determine the rootfs signed size (no boot.img /init, no rootfs.img.size)")
 
 
+def _emit_digest(d, name, bundle):
+    """Write <d>/<name>.digest for one artifact; return its manifest line."""
+    tier, kind = ARTIFACTS[name]
+    path = os.path.join(bundle, name + (".img" if name != "download" else ".bin"))
+    if not os.path.isfile(path):
+        sys.exit("%s is missing from the bundle" % path)
+    out = os.path.join(d, name + ".digest")
+    if kind == "ldr":
+        buf = rk.read(path)
+        digest = rk.signing_digest(buf, rk.layout(buf))
+    elif kind == "fit":
+        digest = fs.signed_digest(rk.read(path))
+    else:  # rootfs
+        size = rootfs_signed_size(bundle)
+        print("rootfs: %s, signed size %d bytes" % (lr.rootfs_kind(bundle), size))
+        digest = lr.rootfs_prehash(bundle, size)
+    with open(out, "wb") as f:
+        f.write(digest)
+    line = "%-16s sha256:%s...  %s" % (name + ".digest", digest.hex()[:16], TIER_NOTES[name])
+    print("wrote %s (%d bytes)" % (out, len(digest)))
+    return line
+
+
+def _card_ready(card_dir_path):
+    print("\ncard ready at %s - insert it into the SeedSigner and run" % card_dir_path)
+    print("Tools -> Luckfox Build Tools -> Sign Digest")
+
+
 def cmd_digests(a):
     names = [n.strip() for n in a.only.split(",") if n.strip()] if a.only else list(ARTIFACTS)
     bad = [n for n in names if n not in ARTIFACTS]
@@ -108,31 +144,53 @@ def cmd_digests(a):
     os.makedirs(d, exist_ok=True)
     manifest = ["# airgap-sign.py digests - one .digest per line below",
                 "# bundle: %s" % os.path.abspath(a.bundle), ""]
-
     for name in names:
-        tier, kind = ARTIFACTS[name]
-        path = os.path.join(a.bundle, name + (".img" if name != "download" else ".bin"))
-        if not os.path.isfile(path):
-            sys.exit("%s is missing from the bundle" % path)
-        out = os.path.join(d, name + ".digest")
-        if kind == "ldr":
-            buf = rk.read(path)
-            digest = rk.signing_digest(buf, rk.layout(buf))
-        elif kind == "fit":
-            digest = fs.signed_digest(rk.read(path))
-        else:  # rootfs
-            size = rootfs_signed_size(a.bundle)
-            print("rootfs: %s, signed size %d bytes" % (lr.rootfs_kind(a.bundle), size))
-            digest = lr.rootfs_prehash(a.bundle, size)
-        with open(out, "wb") as f:
-            f.write(digest)
-        manifest.append("%-16s sha256:%s...  %s" % (name + ".digest", digest.hex()[:16], TIER_NOTES[name]))
-        print("wrote %s (%d bytes)" % (out, len(digest)))
+        manifest.append(_emit_digest(d, name, a.bundle))
 
     with open(os.path.join(d, "manifest.txt"), "w") as f:
         f.write("\n".join(manifest) + "\n")
-    print("\ncard ready at %s - insert it into the SeedSigner and run" % d)
-    print("Tools -> Luckfox Build Tools -> Sign Digest")
+    _card_ready(d)
+
+
+def cmd_force(a):
+    on = not a.off
+    boot = os.path.join(a.bundle, "boot.img")
+    if not os.path.isfile(boot):
+        sys.exit("no boot.img in the bundle")
+    buf = rk.read(boot)
+    members = lr.initramfs_members(buf)
+    if not lr.supports_force_marker(members):
+        sys.exit("this release's verifier predates forced rootfs checks - it cannot be turned on")
+    current = lr.FORCE_MARKER in members
+    if current == on:
+        print("forced rootfs check is already %s - nothing to do" % ("on" if on else "off"))
+        return 0
+
+    new_buf, done = lr.rework_initramfs(buf, force=on)
+    with open(boot, "wb") as f:
+        f.write(bytes(new_buf))
+    for line in done:
+        print(line)
+    print("boot.img reworked - unsigned until its signature is spliced back")
+
+    # update.img packs a verbatim copy of the chain; after boot.img changes it is stale.
+    upd = os.path.join(a.bundle, "update.img")
+    if os.path.isfile(upd):
+        os.remove(upd)
+        print("removed update.img (it packed the old boot.img; regenerate with mk-update-pack.sh)")
+
+    d = os.path.join(a.card, CARD_DIRNAME)
+    os.makedirs(d, exist_ok=True)
+    manifest = ["# airgap-sign.py force - one .digest per line below",
+                "# bundle: %s" % os.path.abspath(a.bundle), ""]
+    manifest.append(_emit_digest(d, "boot", a.bundle))
+    with open(os.path.join(d, "manifest.txt"), "w") as f:
+        f.write("\n".join(manifest) + "\n")
+    _card_ready(d)
+    print("then on this machine:")
+    print("  airgap-sign.py splice %s --card %s" % (a.bundle, a.card))
+    print("(splice verifies boot.sig against the card's release-rsa.pub and runs the full check)")
+    return 0
 
 
 def _splice_ldr(path, sig_path):
@@ -334,6 +392,15 @@ def main():
     s.add_argument("--card", required=True, help="MicroSD mount point (or any directory)")
     s.add_argument("--only", help="comma-separated subset of %s (default: all)" % ",".join(ARTIFACTS))
     s.set_defaults(func=cmd_digests)
+
+    s = sub.add_parser(
+        "force",
+        help="toggle the forced rootfs check via a Sign Digest round-trip (no private key needed here)")
+    s.add_argument("bundle", help="release folder to rework in place")
+    s.add_argument("--card", required=True, help="MicroSD mount point (or any directory)")
+    s.add_argument("--off", action="store_true",
+                   help="turn the forced check OFF instead of on")
+    s.set_defaults(func=cmd_force)
 
     s = sub.add_parser("splice", help="splice the returned signatures back and verify")
     s.add_argument("bundle")
