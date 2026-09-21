@@ -93,6 +93,12 @@ python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
 # prepare the card for the signer (writes <card>/seedsigner-release-sign/)
 python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard [--only a,b,c]
 
+# toggle the forced rootfs check without a private key here: rework boot.img's
+# initramfs locally, drop any stale update.img, leave boot.digest on the card.
+# The PC-side counterpart of the app's Force Rootfs Check action - use it when
+# the board is too small to run that (it crashes on the Pico Mini).
+python3 tools/airgap-sign.py force   <bundle> --card /media/sdcard [--off]
+
 # after the device has written the signatures back: splice everything, verify.
 # Sign Digest also wrote release-rsa.pub / release-rootfs.pub into the folder, so
 # no --*-pubkey flags are needed; they only override those copies.
@@ -104,6 +110,9 @@ python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
 NAND bundles). `splice` performs the tier-A/B splices, the tier-C injection and
 re-seal, fixes any sd_update.txt write lengths the rework changed, and finishes
 with a full `check_release` — it exits non-zero if anything does not verify.
+`force` is one such round-trip scoped to boot.img: after its Sign Digest pass,
+a plain `splice` (no flags) splices the signature back and must come out VALID,
+since only that image changed.
 
 **A re-key takes two signing round-trips**, in this order:
 
@@ -369,7 +378,9 @@ minisign's default scrypt parameters need about 1 GiB of RAM.
 **Tools → Luckfox Build Tools → Sign Digest** signs bare digests instead of a
 bundle, so any board can act as the signer with no storage at all (the digest
 signer role from the air-gap table above). The PC lays the digests on a MicroSD
-card; the device writes the signatures back into the same folder:
+card; the device writes the signatures back into the same folder. Insert the card
+before powering the board on — these images do not detect hot-swapped cards (see
+[README](README.md#microsd-card)):
 
 ```
 <card>/seedsigner-release-sign/

@@ -921,7 +921,11 @@ boots without verifying — the panel tells the user this board has no rootfs-in
 an unfused board verifies the rootfs anyway. The build adds it with
 `SEEDSIGNER_ROOTFS_VERIFY_UNFUSED=1` (workflow input `rootfs_verify_unfused`, default off); the
 SeedSigner app's *Luckfox Build Tools → Force Rootfs Check* adds or removes it on an existing release
-and re-signs `boot.img`. A pass shows an **orange** `PASSED / rootfs valid / SECURE BOOT / not enabled`
+and re-signs `boot.img`. That action is too heavy for small boards — it crashes on the Pico Mini,
+where the app refuses it with a warning. The PC-side counterpart works everywhere:
+`tools/airgap-sign.py force <bundle> --card <mount>` (or `--off`) reworks `boot.img` locally and
+leaves its digest on the card for Sign Digest; `splice` then puts the signature back and runs the
+full check. A pass shows an **orange** `PASSED / rootfs valid / SECURE BOOT / not enabled`
 panel (held 5 s), never the green one; a failure is the usual red screen with its escape key. It is
 harmless but gives **no real protection**: without the fuse nothing checks the initramfs either, so
 anyone who can rewrite the rootfs can rewrite the checker. What it does give is proof the flashed
