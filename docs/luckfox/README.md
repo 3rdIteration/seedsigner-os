@@ -245,9 +245,11 @@ log's own timestamps are real dates. Sources, last wins:
 2. `/etc/seedsigner-build-time`, baked by `install-build-time.sh` from the **pinned app commit's** committer
    date. This is the normal path, and it is reproducible: same OS commit + same `--seedsigner-ref` → same byte.
 3. `/mnt/microsd/time.txt`, the user escape hatch — same filename and `YYYY-MM-DD HH:MM` format as the Pi.
-   Best-effort here: the card is mounted by the `fat-fsck-hotplug` mdev rule rather than at boot, so a card
-   present at power-on may not be mounted yet. The override is therefore re-checked before each app launch
-   attempt, guarded on the file existing so a normal boot never rewinds its clock.
+   Best-effort here: the card is mounted by the `fat-fsck-hotplug` mdev rule, which `S10mdev` also triggers
+   for partitions that already existed at power-on (a coldplug pass re-emitting their uevents) — but the
+   mount happens asynchronously after S10mdev runs, so a power-on card may still not be mounted when the
+   early clock init ran. The override is therefore re-checked before each app launch attempt, guarded on
+   the file existing so a normal boot never rewinds its clock.
 
 The set is **unconditional** by design. Do not add a "only if the clock looks wrong" or "only move forward"
 guard: the fault this fixes is a clock in the *future*, which such a guard would never repair. And never
