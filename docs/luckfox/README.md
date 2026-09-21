@@ -257,6 +257,23 @@ source the value from `SOURCE_DATE_EPOCH` — it is `0`, and a 1970 clock is the
 (it passes the app's expiry check while stamping every key with a 1970 creation date). `install-build-time.sh`
 enforces a year floor of 2020 to fail the build on exactly that edit.
 
+## MicroSD card
+
+Cards are mounted by mdev, not at boot: the `fat-fsck-hotplug` rule fscks and mounts each FAT
+partition as it appears, and `S10mdev` re-emits the uevents of partitions that already existed when
+the board came up (a coldplug pass), so a **power-on card is handled like a hot-inserted one**.
+
+**Hot-swapping is not supported.** The SDK's device tree gives the MicroSD controller (`&sdio`) no
+card-detect GPIO and nothing polls for insertion, so a card inserted or removed *after* boot is never
+seen. This was verified on the Pico Pi against both our image and the vendor stock Buildroot — identical
+behaviour, i.e. an SDK/hardware limitation rather than something these images introduced. A removed card
+leaves a stale mmc object behind (accessing it produces `tried to HW reset card, got error -2` /
+`pre recovery failed!` I/O errors), and a freshly inserted one does not appear until the next boot.
+
+The rule is therefore: **insert the card before power-on** — which is also the natural flow for the
+air-gapped signing work (the card moves between PC and device while both are off). To swap cards, reboot
+with the new one in place; there is no userspace rescan that works around this.
+
 ## Read-only root filesystem
 
 Non-dev images mount `/` as **squashfs** with **tmpfs overlays** on `/etc`, `/var`, `/root` and `/home`.
