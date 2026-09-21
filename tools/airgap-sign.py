@@ -20,6 +20,11 @@ One command per card round-trip:
       --no-check skips that final step for intermediate round-trips, where the
       bundle is expected to be unsigned until the last splice lands.
 
+      The device's Sign Digest writes release-rsa.pub / release-rootfs.pub into
+      the card folder alongside the signatures; when present they are used for
+      verification automatically and the --*-pubkey flags are not needed (they
+      still win if given).
+
 Round-trip ordering on a re-key: setkey/rehash the loaders first (public-key
 operations, no signature needed), then `digests --only rootfs`, sign it, splice
 it back with `splice` (which injects and leaves boot.img unsigned), then
@@ -159,6 +164,14 @@ def _splice_fit(path, sig_path, rsa_pubkey=None):
     print("%s: spliced%s" % (os.path.basename(path), " (verified)" if verified else " (not verified - pass --rsa-pubkey)"))
 
 
+def _pubkey(cli_value, d, filename):
+    """The CLI flag wins; otherwise the key Sign Digest wrote into the card folder."""
+    if cli_value:
+        return cli_value
+    path = os.path.join(d, filename)
+    return path if os.path.isfile(path) else None
+
+
 def cmd_splice(a):
     d = card_dir(a.card)
     names = [n.strip() for n in a.only.split(",") if n.strip()] if a.only else list(ARTIFACTS)
@@ -166,14 +179,18 @@ def cmd_splice(a):
     if bad:
         sys.exit("unknown artifact(s): %s" % ", ".join(bad))
 
+    rsa_pubkey = _pubkey(a.rsa_pubkey, d, "release-rsa.pub")
+    rootfs_pubkey = _pubkey(a.rootfs_pubkey, d, "release-rootfs.pub")
+
     # Tier C first: the injection rewrites boot.img's ramdisk, which boot.sig covers.
     minisig = os.path.join(d, "rootfs.minisig")
     if "rootfs" in names and os.path.isfile(minisig):
-        if not a.rootfs_pubkey:
-            sys.exit("rootfs.minisig is present but --rootfs-pubkey was not given")
+        if not rootfs_pubkey:
+            sys.exit("rootfs.minisig is present but no release-rootfs.pub on the card "
+                     "(Sign Digest writes it) - pass --rootfs-pubkey")
         boot = os.path.join(a.bundle, "boot.img")
         new_buf, done = lr.inject_rootfs_sig(rk.read(boot), folder=a.bundle,
-                                             minisig_path=minisig, pubkey_path=a.rootfs_pubkey)
+                                             minisig_path=minisig, pubkey_path=rootfs_pubkey)
         if done:
             with open(boot, "wb") as f:
                 f.write(new_buf)
@@ -193,7 +210,7 @@ def cmd_splice(a):
         if ARTIFACTS[name][1] == "ldr":
             _splice_ldr(path, sig)
         else:
-            _splice_fit(path, sig, a.rsa_pubkey)
+            _splice_fit(path, sig, rsa_pubkey)
 
     # The rework changes image sizes; keep the auto-flash script honest.
     res = lr.sd_update_check(a.bundle, fix=True)
@@ -227,8 +244,12 @@ def main():
     s.add_argument("bundle")
     s.add_argument("--card", required=True)
     s.add_argument("--only", help="comma-separated subset of %s (default: all)" % ",".join(ARTIFACTS))
-    s.add_argument("--rsa-pubkey", help="RSA public key to verify tier A/B splices against")
-    s.add_argument("--rootfs-pubkey", help="Ed25519 public key the rootfs.minisig must match (minisign format)")
+    s.add_argument("--rsa-pubkey",
+                   help="RSA public key to verify tier B splices against "
+                        "(default: release-rsa.pub from the card folder, if present)")
+    s.add_argument("--rootfs-pubkey",
+                   help="Ed25519 public key the rootfs.minisig must match (minisign format; "
+                        "default: release-rootfs.pub from the card folder, if present)")
     s.add_argument("--no-check", action="store_true",
                    help="skip the final check_release (for intermediate round-trips, "
                         "where the bundle is expected to be unsigned until the last splice)")

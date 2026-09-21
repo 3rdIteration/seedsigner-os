@@ -17,12 +17,16 @@ python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
 
 One command per card round-trip with the device's **Sign Digest** action (or any other signer):
 `digests` writes `<card>/seedsigner-release-sign/` with a manifest and one `.digest` per artifact;
-`splice` verifies and splices every returned signature back into the bundle, injects a tier-C
-`.minisig` into `boot.img`'s initramfs (before `boot.sig`, which covers that ramdisk), fixes any
-sd_update.txt write lengths the rework changed, and finishes with a full release check. The rootfs
-digest is UBI-aware — on NAND bundles it hashes the logical volume exactly as the device streams it,
-not the raw file bytes. See [docs/luckfox/airgapped-signing.md](../docs/luckfox/airgapped-signing.md)
-for the round-trip ordering on a re-key.
+the device signs them and also drops the public halves of whatever keys it used into that folder as
+`release-rsa.pub` / `release-rootfs.pub`; `splice` verifies and splices every returned signature back
+into the bundle, injects a tier-C `.minisig` into `boot.img`'s initramfs (before `boot.sig`, which
+covers that ramdisk), fixes any sd_update.txt write lengths the rework changed, and finishes with a
+full release check. Because the card carries its own public keys, `splice` needs no `--*-pubkey`
+flags in the normal case — they are only there to override the folder's copies (e.g. when signing was
+done by something other than Sign Digest). The rootfs digest is UBI-aware — on NAND bundles it hashes
+the logical volume exactly as the device streams it, not the raw file bytes. See
+[docs/luckfox/airgapped-signing.md](../docs/luckfox/airgapped-signing.md) for the round-trip ordering
+on a re-key.
 
 Python 3 standard library only (it imports the pure-stdlib signers from `opt/luckfox/secure-boot/`),
 and it runs on Windows.

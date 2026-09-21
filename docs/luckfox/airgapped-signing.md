@@ -88,9 +88,11 @@ in one command per direction:
 # prepare the card for the signer (writes <card>/seedsigner-release-sign/)
 python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard
 
-# after the device has written the signatures back: splice everything, verify
+# after the device has written the signatures back: splice everything, verify.
+# Sign Digest also wrote release-rsa.pub / release-rootfs.pub into the folder, so
+# no --*-pubkey flags are needed; they only override those copies.
 python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
-        [--rsa-pubkey release-rsa.pub] [--rootfs-pubkey release-rootfs.pub]
+        [--rsa-pubkey F] [--rootfs-pubkey F]
 ```
 
 `digests` writes `manifest.txt` plus one `.digest` per artifact (UBI-aware for
@@ -353,6 +355,11 @@ card; the device writes the signatures back into the same folder:
   uboot.sig           # 256 B
   boot.sig            # 256 B
   rootfs.minisig      # minisign text format (~200 B)
+
+# also written back by the device - the public halves of whatever keys it used,
+# so the card is self-contained for `splice` (same names/formats as Export Pubkeys):
+  release-rsa.pub     # PEM RSA-2048, only if a tier A/B digest was signed
+  release-rootfs.pub  # minisign public key, only if rootfs.digest was signed
 ```
 
 The digests are exactly what the CLI commands above emit (`rkloader.py digest`,
@@ -366,7 +373,10 @@ so re-signing is idempotent; tier C carries a third-party minisign key's stored
 On the PC side, `tools/airgap-sign.py` does both halves in one command each:
 `digests <bundle> --card <mount>` writes the folder above; `splice <bundle>
 --card <mount>` splices every returned signature back and verifies the whole
-chain against the exported public keys.
+chain against the public keys. Because Sign Digest drops those keys into the
+folder itself, `splice` needs no `--*-pubkey` flags in the normal case — it reads
+`release-rsa.pub` / `release-rootfs.pub` from the card; the flags remain as an
+override for cards signed by something else (e.g. a hand-run CLI signer).
 
 ## See also
 
