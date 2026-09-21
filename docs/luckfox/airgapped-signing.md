@@ -85,20 +85,45 @@ The PC half of the device **Sign Digest** flow (and of the raw commands above),
 in one command per direction:
 
 ```bash
+# (only when moving off the bundle's current boot key) round 0: embed the new
+# RSA public key into download.bin / idblock.img / uboot.img - public halves
+# only, read from release-rsa.pub on the card (Export Pubkeys or Sign Digest).
+python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
+
 # prepare the card for the signer (writes <card>/seedsigner-release-sign/)
-python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard
+python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard [--only a,b,c]
 
 # after the device has written the signatures back: splice everything, verify.
 # Sign Digest also wrote release-rsa.pub / release-rootfs.pub into the folder, so
 # no --*-pubkey flags are needed; they only override those copies.
 python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
-        [--rsa-pubkey F] [--rootfs-pubkey F]
+        [--rsa-pubkey F] [--rootfs-pubkey F] [--no-check]
 ```
 
 `digests` writes `manifest.txt` plus one `.digest` per artifact (UBI-aware for
 NAND bundles). `splice` performs the tier-A/B splices, the tier-C injection and
 re-seal, fixes any sd_update.txt write lengths the rework changed, and finishes
 with a full `check_release` — it exits non-zero if anything does not verify.
+
+**A re-key takes two signing round-trips**, in this order:
+
+```bash
+python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
+python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard --only rootfs
+# ... device: Sign Digest ...
+python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard --only rootfs --no-check
+python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard \
+        --only download,idblock,uboot,boot
+# ... device: Sign Digest ...
+python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard   # RESULT: VALID
+```
+
+`rekey` clears the loaders' signatures and removes `update.img` (it packs a copy
+of the old chain); mid-flow bundles are expected to fail `check_release`, which
+is what `--no-check` is for. The order exists because of the two things above:
+rootfs must be injected before `boot.digest` is emitted, and every digest must
+be taken over the *re-keyed* images — a signature made against the old key's
+header will not verify under the new embedded modulus, and `splice` refuses it.
 
 ## Deriving the keys from a BIP85 seed
 
@@ -129,10 +154,16 @@ from `minisign -G` will have a random one.
 
 ## Swapping the chain to a new key
 
-Needed once, when moving off the published dev key. `uboot.img` is the awkward
-one: it embeds the public key U-Boot uses to verify `boot.img`, so changing keys
-changes a payload, which changes its hash, which is covered by the signature —
-hence the `rehash` between `setkey` and `sign`.
+Needed once, when moving off the published dev key. If the private key must not
+touch this machine at all, use the air-gap form instead: `tools/airgap-sign.py
+rekey` does exactly the public-key half of what is below (setkey + rehash on the
+loaders and uboot), and the two signing round-trips that follow it supply the
+signatures — see [tools/airgap-sign.py](#toolsairgap-signpy) for the sequence.
+
+The commands here assume the private key is available locally. `uboot.img` is
+the awkward one: it embeds the public key U-Boot uses to verify `boot.img`, so
+changing keys changes a payload, which changes its hash, which is covered by the
+signature — hence the `rehash` between `setkey` and `sign`.
 
 ```bash
 python3 $SB/rkloader.py setkey download.bin --pubkey new.pub

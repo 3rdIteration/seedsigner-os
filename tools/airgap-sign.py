@@ -3,6 +3,17 @@
 
 One command per card round-trip:
 
+  rekey <bundle> --card <dir> [--rsa-pubkey F]
+      Round 0 of an air-gap RE-KEY: embed the new RSA public key into the images
+      that carry one (public halves only - no private key ever touches this
+      machine). download.bin and idblock.img get the new modulus with their
+      signatures cleared; uboot.img's embedded verification key is swapped and
+      rehashed. boot.img is deliberately left alone: its initramfs holds the
+      rootfs key pair, which splice replaces via the tier-C injection (that also
+      sets /init's key classes). After this, run `digests` on the re-keyed
+      bundle - for a full re-key do the rootfs round-trip first (see below), so
+      boot.digest is taken over the final initramfs.
+
   digests <bundle> --card <dir> [--only a,b,c]
       Write <card>/seedsigner-release-sign/ with manifest.txt and one .digest
       per requested artifact, ready for the device's Sign Digest action (or any
@@ -44,7 +55,8 @@ import fitsign as fs             # noqa: E402
 import minisign as ms            # noqa: E402
 import luckfox_release as lr     # noqa: E402
 
-CARD_DIRNAME = "seedsigner-release-sign"
+CARD_DIRNAME = "seedsigner-release-sign"   # Sign Digest writes here (digests, sigs, pubkeys)
+KEYS_DIRNAME = "seedsigner-release-keys"   # Export Pubkeys writes here (pubkeys + README)
 
 # name -> (tier, kind). kind: "ldr" = rkloader image, "fit" = U-Boot FIT,
 # "rootfs" = the minisigned payload.
@@ -164,12 +176,86 @@ def _splice_fit(path, sig_path, rsa_pubkey=None):
     print("%s: spliced%s" % (os.path.basename(path), " (verified)" if verified else " (not verified - pass --rsa-pubkey)"))
 
 
-def _pubkey(cli_value, d, filename):
-    """The CLI flag wins; otherwise the key Sign Digest wrote into the card folder."""
+def _pubkey(cli_value, card, filename):
+    """The CLI flag wins; otherwise the key on the card (Sign Digest's folder first, then Export Pubkeys')."""
     if cli_value:
         return cli_value
-    path = os.path.join(d, filename)
-    return path if os.path.isfile(path) else None
+    for dirname in (CARD_DIRNAME, KEYS_DIRNAME):
+        path = os.path.join(card, dirname, filename)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def cmd_rekey(a):
+    rsa_pubkey = _pubkey(a.rsa_pubkey, a.card, "release-rsa.pub")
+    if not rsa_pubkey:
+        sys.exit("no release-rsa.pub found (Export Pubkeys or Sign Digest writes it) - pass --rsa-pubkey")
+
+    new_n = rk.load_pubkey(rsa_pubkey)[0]
+
+    # The old modulus must be captured BEFORE anything is re-keyed: uboot.img can only
+    # be re-keyed by searching for the key it currently embeds.
+    old_n = None
+    for name in ("idblock.img", "download.bin"):
+        path = os.path.join(a.bundle, name)
+        if os.path.isfile(path):
+            buf = rk.read(path)
+            old_n = rk.read_modulus(buf, rk.layout(buf))
+            break
+
+    # 1. loaders: embed the new modulus; their signatures are cleared (unsigned until signed).
+    for name in ("download.bin", "idblock.img"):
+        path = os.path.join(a.bundle, name)
+        if not os.path.isfile(path):
+            print("note: %s not present - skipped" % name)
+            continue
+        buf = bytearray(rk.read(path))
+        lay = rk.layout(buf)
+        hits = rk.set_pubkey(buf, lay, new_n)
+        # set_pubkey rewrites key material inside idblock's SPL DTB - a hashed
+        # component - so refresh the header's component hashes to match. The
+        # trailer CRC covers those bytes too, so it goes last (no-op on idblock).
+        changed = rk.rehash_components(buf, lay)
+        rk.refresh_ldr_trailer(buf)
+        with open(path, "wb") as f:
+            f.write(bytes(buf))
+        print("%s: embedded the new key (%d locations), signature cleared%s"
+              % (name, hits, ", %d component hash(es) refreshed" % changed if changed else ""))
+
+    # 2. uboot.img: swap the verification key U-Boot uses for boot.img; rehash the payload.
+    path = os.path.join(a.bundle, "uboot.img")
+    if os.path.isfile(path):
+        buf = bytearray(rk.read(path))
+        hits = 0
+        if old_n is None:
+            print("note: no embedded key found in the loaders - cannot locate uboot.img's copy; skipped")
+        elif old_n != new_n:
+            hits = fs.set_pubkey(buf, new_n, old_n)
+            if not hits:
+                sys.exit("uboot.img did not contain the old public key (modulus %s...) - "
+                         "cannot locate its embedded verification key" % hex(old_n)[:20])
+            fs.rehash_buf(buf)
+        with open(path, "wb") as f:
+            f.write(bytes(buf))
+        print("uboot.img: swapped the embedded verification key (%d locations), rehashed%s"
+              % (hits, "" if hits else " - already carried the new key"))
+
+    # 3. update.img packs a verbatim copy of the chain it was built from; after a
+    # re-key that copy is stale, so remove it (regenerate with mk-update-pack.sh if needed).
+    upd = os.path.join(a.bundle, "update.img")
+    if os.path.isfile(upd):
+        os.remove(upd)
+        print("removed update.img (it packed the old chain; regenerate with mk-update-pack.sh)")
+
+    # 4. boot.img is deliberately left alone: its initramfs holds the rootfs key pair, which
+    # splice replaces via the tier-C injection (that also sets /init's key classes).
+    print("\nboot.img left alone - its re-key happens at `splice` time (tier-C injection)")
+    print("next steps for a full re-key:")
+    print("  digests --only rootfs            -> Sign Digest on the device")
+    print("  splice --only rootfs --no-check  (injects; boot.img stays unsigned)")
+    print("  digests --only download,idblock,uboot,boot   -> Sign Digest")
+    print("  splice                           (final check_release must pass)")
 
 
 def cmd_splice(a):
@@ -179,8 +265,8 @@ def cmd_splice(a):
     if bad:
         sys.exit("unknown artifact(s): %s" % ", ".join(bad))
 
-    rsa_pubkey = _pubkey(a.rsa_pubkey, d, "release-rsa.pub")
-    rootfs_pubkey = _pubkey(a.rootfs_pubkey, d, "release-rootfs.pub")
+    rsa_pubkey = _pubkey(a.rsa_pubkey, a.card, "release-rsa.pub")
+    rootfs_pubkey = _pubkey(a.rootfs_pubkey, a.card, "release-rootfs.pub")
 
     # Tier C first: the injection rewrites boot.img's ramdisk, which boot.sig covers.
     minisig = os.path.join(d, "rootfs.minisig")
@@ -190,7 +276,8 @@ def cmd_splice(a):
                      "(Sign Digest writes it) - pass --rootfs-pubkey")
         boot = os.path.join(a.bundle, "boot.img")
         new_buf, done = lr.inject_rootfs_sig(rk.read(boot), folder=a.bundle,
-                                             minisig_path=minisig, pubkey_path=rootfs_pubkey)
+                                             minisig_path=minisig, pubkey_path=rootfs_pubkey,
+                                             fit_pubkey_path=rsa_pubkey)
         if done:
             with open(boot, "wb") as f:
                 f.write(new_buf)
@@ -233,6 +320,14 @@ def main():
     p = argparse.ArgumentParser(prog="airgap-sign.py", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("rekey", help="round 0 of an air-gap re-key: embed new public keys (no private key needed)")
+    s.add_argument("bundle", help="release folder to re-key in place")
+    s.add_argument("--card", required=True,
+                   help="MicroSD mount point holding release-rsa.pub "
+                        "(from Export Pubkeys or a previous Sign Digest), or any directory")
+    s.add_argument("--rsa-pubkey", help="RSA public key (PEM) to embed; default: release-rsa.pub from the card")
+    s.set_defaults(func=cmd_rekey)
 
     s = sub.add_parser("digests", help="write the card folder for a signing round-trip")
     s.add_argument("bundle", help="release folder (download.bin, *.img, rootfs.img)")
