@@ -403,10 +403,11 @@ rootfs itself does.
 
 **`update.img`** in an SD artifact packs the old chain; the re-key tools delete it.
 
-> **Not yet booted on hardware.** The SD re-sign, the rebuilt image and the air-gapped round-trip
-> were all validated on the 2026-09-22 CI artifact, but no re-signed card has been booted. Do that on
-> an **unfused** board that genuinely boots from MicroSD before trusting it — note that some clone
-> Minis cannot SD-boot at all (`MMC: no card present`).
+> **Hardware-confirmed (2026-09-22).** A CI SD release was re-keyed and re-signed through the
+> air-gapped flow, rebuilt with `sd-image`, and booted on an **unfused** SD-only Pico Mini: SPL and
+> U-Boot both verified under the new key and the app came up
+> ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)). Note some clone Minis cannot SD-boot at
+> all (`MMC: no card present`), so use a board you know boots from a card.
 
 #### Flashing a board that boots from MicroSD
 
@@ -1851,7 +1852,26 @@ unfused BootROM checks neither. Both are now checked in software, and arming ref
 fails. Keep rehearsing on a sacrificial board. When a fused board sits in maskrom, work from SocToolkit's
 own log, `rk_sign_tool otp`, and a clean rkbin loader before concluding it is dead.
 
-### 7.9 Provenance
+### 7.9 Bench: re-signed MicroSD image (2026-09-22)
+
+The MicroSD path end to end, on the CI artifact
+`seedsigner-luckfox-pico-RV1103_Luckfox_Pico_Mini-SD_CARD-293`: re-keyed to a BIP85 key with
+`airgap-sign.py rekey`, signed in two device round-trips (Air-Gap Re-Key Rounds 1 and 2 on a
+SeedSigner, which never saw the bundle), rebuilt with `luckfox_release.py sd-image`, and written to a
+card.
+
+| # | Test | Result | Bearing |
+|---|---|---|---|
+| G1 | `check` on the shipped folder, before anything | `RESULT: VALID` | A MicroSD release is a release folder like NAND's; the tools need no special case |
+| G2 | Air-gapped re-key, two rounds | `RESULT: VALID` under the new key; `download.bin`'s flashhead signed from `idblock.sig`; `rootfs.img.minisig` refreshed | The air-gap flow works unchanged on SD, including the two fixes made after §7.8 |
+| G3 | Round 1 and 2 on the device | second round noticeably faster | The BIP85 cache survives a round now that rounds end on their own menu, instead of at Home |
+| G4 | Rebuild with `sd-image` | 890,798,080 bytes; only the `idblock`, `uboot` and `boot` slots differ from the original | The rootfs signature lives in `boot.img`, so a re-sign never rewrites the 51 MB rootfs |
+| G5 | Boot the rebuilt card on an **unfused** SD-only Mini | SPL `sha256,rsa2048:dev+ OK`; U-Boot `FIT: signed, conf required` + `sha256,rsa2048:dev+ OK`; kernel `fuse.programmed=0`; `/init`: *secure boot NOT fused … skipping rootfs verification*; app starts | The whole re-signed chain boots from a rebuilt image. The `dev` in those lines is the FIT key-name hint, which stays `dev` whatever key signs |
+
+Still open: no re-signed SD card has been booted on a **fused** board, and the rootfs signature was
+not exercised (an unfused board skips it unless the forced check is on, §5.2).
+
+### 7.10 Provenance
 
 This work started as a feasibility study because **no public Rockchip secure boot document covers
 RV1103/RV1106**. Three were reviewed:
