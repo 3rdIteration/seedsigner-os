@@ -310,7 +310,7 @@ initramfs), then runs the full check. Keys are held in RAM only.
 - **Not on the Pico Mini:** re-signing the rootfs needs more memory than the Mini has and crashes
   it, so the app refuses and points at Sign Digest ([§2.4](#24-air-gapped-signing)) instead. The same
   applies to **Force Rootfs Check** (`airgap-sign.py force` is its PC-side counterpart).
-- The other Build Tools actions: **Check Release** (the same check as §2.6), **Export Pubkeys**,
+- The other Build Tools actions: **Check Release** (the same check as §2.6),
   **Provision MicroSD** (copy a checked release to the card root for U-Boot's auto-flash), and
   **Danger Zone → Arm eFuse Burn** ([§3.2](#32-ways-to-arm)).
 

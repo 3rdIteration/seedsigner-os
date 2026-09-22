@@ -94,7 +94,8 @@ in one command per direction:
 ```bash
 # (only when moving off the bundle's current boot key) round 0: embed the new
 # RSA public key into download.bin / idblock.img / uboot.img - public halves
-# only, read from release-rsa.pub on the card (Export Pubkeys or Sign Digest).
+# only, read from release-rsa.pub on the card (Air-Gap Re-Key Round 0, or a
+# previous Sign Digest).
 python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
 
 # prepare the card for the signer (writes <card>/seedsigner-release-sign/)
@@ -512,7 +513,7 @@ before powering the board on — these images do not detect hot-swapped cards (s
   rootfs.minisig      # minisign text format (~200 B)
 
 # also written back by the device - the public halves of whatever keys it used,
-# so the card is self-contained for `splice` (same names/formats as Export Pubkeys):
+# so the card is self-contained for `splice` (same names/formats as Round 0's export):
   release-rsa.pub     # PEM RSA-2048, only if a tier A/B digest was signed
   release-rootfs.pub  # minisign public key, only if rootfs.digest was signed
 ```

@@ -30,7 +30,7 @@ the logical volume exactly as the device streams it, not the raw file bytes.
 `rekey` is round 0 of an air-gap **re-key** (moving a release off its current boot key): it embeds the
 new RSA public key into `download.bin`, `idblock.img` and `uboot.img` using only the public halves —
 the private key never touches this machine. It reads `release-rsa.pub` from the card (written by the
-device's **Export Pubkeys** or a previous **Sign Digest**), clears the loaders' signatures, refreshes
+device's **Air-Gap Re-Key Round 0** or a previous **Sign Digest**), clears the loaders' signatures, refreshes
 idblock's component hashes and uboot's payload hash, removes the stale `update.img`, and leaves
 `boot.img` alone — its initramfs holds the rootfs key pair, which `splice` replaces via the tier-C
 injection (that also sets `/init`'s pass-screen key classes). A full re-key then takes **two** signing

@@ -64,7 +64,7 @@ import minisign as ms            # noqa: E402
 import luckfox_release as lr     # noqa: E402
 
 CARD_DIRNAME = "seedsigner-release-sign"   # Sign Digest writes here (digests, sigs, pubkeys)
-KEYS_DIRNAME = "seedsigner-release-keys"   # Export Pubkeys writes here (pubkeys + README)
+KEYS_DIRNAME = "seedsigner-release-keys"   # Re-Key Round 0 writes here (pubkeys + README)
 
 # name -> (tier, kind). kind: "ldr" = rkloader image, "fit" = U-Boot FIT,
 # "rootfs" = the minisigned payload.
@@ -276,7 +276,7 @@ def _splice_fit(path, sig_path, rsa_pubkey=None):
 
 
 def _pubkey(cli_value, card, filename):
-    """The CLI flag wins; otherwise the key on the card (Sign Digest's folder first, then Export Pubkeys')."""
+    """The CLI flag wins; otherwise the key on the card (Sign Digest's folder first, then Round 0's)."""
     if cli_value:
         return cli_value
     for dirname in (CARD_DIRNAME, KEYS_DIRNAME):
@@ -289,7 +289,7 @@ def _pubkey(cli_value, card, filename):
 def cmd_rekey(a):
     rsa_pubkey = _pubkey(a.rsa_pubkey, a.card, "release-rsa.pub")
     if not rsa_pubkey:
-        sys.exit("no release-rsa.pub found (Export Pubkeys or Sign Digest writes it) - pass --rsa-pubkey")
+        sys.exit("no release-rsa.pub found (Air-Gap Re-Key Round 0 or Sign Digest writes it) - pass --rsa-pubkey")
 
     new_n = rk.load_pubkey(rsa_pubkey)[0]
 
@@ -437,7 +437,7 @@ def main():
     s.add_argument("bundle", help="release folder to re-key in place")
     s.add_argument("--card", required=True,
                    help="MicroSD mount point holding release-rsa.pub "
-                        "(from Export Pubkeys or a previous Sign Digest), or any directory")
+                        "(from Air-Gap Re-Key Round 0 or a previous Sign Digest), or any directory")
     s.add_argument("--rsa-pubkey", help="RSA public key (PEM) to embed; default: release-rsa.pub from the card")
     s.set_defaults(func=cmd_rekey)
 
