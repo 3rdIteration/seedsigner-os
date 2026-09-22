@@ -349,3 +349,12 @@ extract/inject route (the `.sign.rsa` encoding). That route became unnecessary
 once the loader signature format was recovered directly (RSA-PSS, saltLen 32,
 little-endian — `secure-boot.md` §7.2, Q16), and `rkloader.py` now does the
 digest and splice itself.
+
+## See also
+
+- [secure-boot.md](secure-boot.md) — the hub: background, signing a release (all four methods),
+  burning the fuse and recovery, future work, findings. Its
+  [§8 Links and resources](secure-boot.md#8-links-and-resources) lists every related document,
+  tool and external reference.
+- [airgapped-signing.md](airgapped-signing.md) — signature formats and signers.
+- [soctoolkit-cli.md](soctoolkit-cli.md) — recovering a board with `upgrade_tool`.

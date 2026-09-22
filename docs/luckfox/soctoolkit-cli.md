@@ -194,3 +194,14 @@ corrected `idblock.img` at sector 512.
   out of the repo.
 - Read SocToolkit's log instead of inferring what happened from the user's
   description.
+
+## See also
+
+- [secure-boot.md](secure-boot.md) — the hub: background, signing a release (all four methods),
+  burning the fuse and recovery, future work, findings. Its
+  [§8 Links and resources](secure-boot.md#8-links-and-resources) lists every related document,
+  tool and external reference.
+- [`rockchip-linux/rkbin`](https://github.com/rockchip-linux/rkbin) — `upgrade_tool`,
+  `rkdeveloptool`, `boot_merger`, `rk_sign_tool` for Linux.
+- [Rockusb (maskrom) — Rockchip open source wiki](https://opensource.rock-chips.com/wiki_Rockusb).
+- [Luckfox wiki](https://wiki.luckfox.com/) — SocToolkit downloads and board flashing guides.

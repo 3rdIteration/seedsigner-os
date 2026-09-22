@@ -536,7 +536,8 @@ override for cards signed by something else (e.g. a hand-run CLI signer).
 ## See also
 
 - [secure-boot.md](secure-boot.md) — start here: background, how to sign a release (all four
-  methods), burning the fuse and recovery, technical notes and bench history
+  methods), burning the fuse and recovery, technical notes and bench history; its
+  [§8 Links and resources](secure-boot.md#8-links-and-resources) collects every reference
 - [verifying-a-release.md](verifying-a-release.md) — the other side: checking a distributed image
 - [secure-boot-bench-procedure.md](secure-boot-bench-procedure.md) — the staged hardware procedure
 - [soctoolkit-cli.md](soctoolkit-cli.md) — flashing and recovering boards with `upgrade_tool`

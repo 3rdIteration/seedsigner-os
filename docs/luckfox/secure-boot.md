@@ -1475,11 +1475,33 @@ enters maskrom on every board, fused or not (bench row C6), and maskrom accepts 
   recovery (built by `boot_merger RKBOOT/RV1106MINIALL.ini` from rkbin master: DDR v1.16, usbplug v1.09,
   SPL v1.03) was accepted by `db` and initialised the DRAM. It has never been written to NAND or booted
   from it.
-- **Prebuilt SPL v1.03** (2026-03-02; the SDK pins v1.02) fixes *"SPL hw decompression of uboot
-  failed"*, which sounds relevant because `uboot.img` is LZMA-compressed. It is probably not the SPL
-  that runs, though: the idblock's SPL appears to be the one the SDK compiles from its U-Boot source
-  (it carries our key, `burn-key-hash` and the FIT-signature config in its DTB). Confirm which SPL
-  ends up in `idblock.img` before spending time on it.
+- **Prebuilt SPL v1.03 does not apply** (2026-03-02; the SDK pins v1.02; it fixes *"SPL hw
+  decompression of uboot failed"*). Confirmed from the SDK's `u-boot/make.sh`: `pack_spl_loader_image`
+  runs the SPL packer with `--spl ${SRCTREE}/…`, which puts the **source-built** SPL (carrying our key,
+  `burn-key-hash` and the FIT-signature config) into the loader in place of the prebuilt
+  `rv1106_spl_v1.0x.bin` named in the ini.
+- **Wiring v1.16 into the build is a small change; validating it is the work.** The build scripts
+  never touch rkbin: the SDK's `make.sh` `select_ini_file()` takes `rkbin/RKBOOT/RV1106MINIALL.ini`
+  (overridable with `CONFIG_LOADER_INI` or `--ini`) and `boot_merger` packs `download.bin` and
+  `idblock.img` from it. Two ways to move to v1.16:
+  - **in the SDK fork** (`3rdIteration/luckfox-pico`) — add the v1.16 blobs to
+    `sysdrv/source/uboot/rkbin/bin/rv11/`, point the ini's `CODE471 Path1` and `FlashData` at
+    `rv1106_ddr_924MHz_v1.16.bin`, and bump `opt/luckfox/SDK_COMMIT`. One change, picked up by all
+    three build paths. Preferred.
+  - **in this repo** — vendor the blob with a SHA-256 pin (as the initramfs binaries are) and patch
+    the ini during the SDK patch step, in `build-luckfox.yml`, `os-build.sh` and `build-local.sh`.
+
+  Then validate NAND boot, SD boot and `db` on the Mini, Pro Max and Pico Pi (the DDR blob is what
+  brings up each board's DRAM), and a signed build's `check`.
+- **How to actually disable download is undocumented.** The only mention anywhere in rkbin is the
+  one-line v1.16 release note. There is no doc, tool, script or ini option for it. The blob's strings
+  give nothing away: v1.15 and v1.16 carry the same OTP-read strings (`OTP rd FAIL`, `OTP null`,
+  `Unk OTP data`), and v1.16 adds only its version banner and an `LPDDR5X` entry. None of the public
+  material reviewed covers it: the Secure Boot Application Note V1.9, the RV1106 datasheet and TRM,
+  the Rockusb wiki, or community secure-boot write-ups ([§8](#8-links-and-resources)). Options: ask
+  Rockchip or Luckfox for the OTP guide section and burn procedure; look for an SDK SPL/U-Boot or
+  `rk_sign_tool` option that writes the bit; or reverse-engineer the DDR blob's OTP check. Testing any
+  of them is irreversible, and a mistake leaves the board without maskrom recovery.
 
 ---
 
@@ -1744,7 +1766,7 @@ unfused BootROM checks neither. Both are now checked in software, and arming ref
 fails. Keep rehearsing on a sacrificial board. When a fused board sits in maskrom, work from SocToolkit's
 own log, `rk_sign_tool otp`, and a clean rkbin loader before concluding it is dead.
 
-### 7.9 Provenance and references
+### 7.9 Provenance
 
 This work started as a feasibility study because **no public Rockchip secure boot document covers
 RV1103/RV1106**. Three were reviewed:
@@ -1756,19 +1778,77 @@ RV1103/RV1106**. Three were reviewed:
 | `rkbin/doc/release/RV1106_EN.md` | current | RV1106 — but contains **no** secure boot or signing section |
 
 RV1106 launched after both guides; their flows were treated as *the mechanism*, not as an RV1106
-procedure, then confirmed or corrected on hardware (§7.4–6.8). Facts in this document were **verified
+procedure, then confirmed or corrected on hardware (§7.4–7.8). Facts in this document were **verified
 directly** against the pinned SDK (`opt/luckfox/SDK_COMMIT` =
 `0b5c1f30ca6333b7ec5af70d26511da9ef8d39af`), shipped build artifacts, `rk_sign_tool` v1.49's own help
 output, and sacrificial hardware.
 
-References:
+The documents and sources used are listed in [§8](#8-links-and-resources).
 
-- Rockchip Secure Boot Application Note V1.9 (2018-06)
-- Rockchip Secure Boot for U-Boot Next Dev V2.3.0 (2021-04)
-- Rockchip Crypto/HWRNG Developer Guide V1.2.1 — §2.2 HWRNG, §2.3 hardware crypto
-- Rockchip OTP Developer Guide V1.4.0 — §3 Secure OTP zones
-- Rockchip TEE SDK Developer Guide V1.10.0 — §3.3 TEE firmware, §10.2 memory, §13 OTP
-- [`rockchip-linux/rkbin`](https://github.com/rockchip-linux/rkbin) — `tools/rk_sign_tool`,
-  `doc/release/RV1106_EN.md`
-- [README.md](README.md) — build process, read-only rootfs, boot recovery
-- [`docs/hwrng.md`](../hwrng.md) — how hardware entropy reaches the app on each platform
+---
+
+## 8. Links and resources
+
+**In this repository**
+
+| What | Where |
+|---|---|
+| Signature formats and the pure-Python signers (reference) | [airgapped-signing.md](airgapped-signing.md) |
+| Staged bench procedure for signing, flashing and burning the fuse | [secure-boot-bench-procedure.md](secure-boot-bench-procedure.md) |
+| Checking a distributed release (authenticity, reproducibility) | [verifying-a-release.md](verifying-a-release.md) |
+| Flashing and recovering boards with SocToolkit's `upgrade_tool` | [soctoolkit-cli.md](soctoolkit-cli.md) |
+| Luckfox build process, read-only rootfs, boot recovery, MicroSD | [README.md](README.md) |
+| How hardware entropy reaches the app | [`docs/hwrng.md`](../hwrng.md) |
+| Loader/idblock signer (`rkloader.py`), FIT signer (`fitsign.py`), rootfs signer (`minisign.py`), release check (`luckfox_release.py`) | [`opt/luckfox/secure-boot/`](../../opt/luckfox/secure-boot/) and its [README](../../opt/luckfox/secure-boot/README.md) |
+| PC half of air-gapped signing | [`tools/airgap-sign.py`](../../tools/airgap-sign.py) |
+| Build-time signing, rootfs verifier, `releaseTime` pin | [`opt/luckfox/os-build.sh`](../../opt/luckfox/os-build.sh), [`build-local.sh`](../../opt/luckfox/build-local.sh), [`deterministic-sign.sh`](../../opt/luckfox/deterministic-sign.sh), [`ss-fs-normalise.sh`](../../opt/luckfox/ss-fs-normalise.sh) |
+| Committed public dev keys (no protection) | [`secure-boot/dev-keys/`](../../opt/luckfox/secure-boot/dev-keys/README.md), [`secure-boot/dev-keys-rootfs/`](../../opt/luckfox/secure-boot/dev-keys-rootfs/README.md) |
+| Tests | [`tests/test_rkloader.py`](../../tests/test_rkloader.py), [`test_fitsign.py`](../../tests/test_fitsign.py), [`test_minisign.py`](../../tests/test_minisign.py), [`test_luckfox_release.py`](../../tests/test_luckfox_release.py), [`test_airgap_sign.py`](../../tests/test_airgap_sign.py) |
+| Device-side tools (Resign Release, Sign Digest, Air-Gap Re-Key, Arm eFuse Burn) | the SeedSigner app, `src/seedsigner/helpers/resign_release.py` and `src/seedsigner/views/resign_views.py` in [3rdIteration/seedsigner](https://github.com/3rdIteration/seedsigner) |
+
+**SDK and vendor binaries**
+
+- [`3rdIteration/luckfox-pico`](https://github.com/3rdIteration/luckfox-pico) — the Luckfox SDK fork
+  this build pins (`opt/luckfox/SDK_COMMIT`); upstream is
+  [`LuckfoxTECH/luckfox-pico`](https://github.com/LuckfoxTECH/luckfox-pico). U-Boot, SPL and the
+  pinned rkbin live under `sysdrv/source/uboot/`.
+- [`rockchip-linux/rkbin`](https://github.com/rockchip-linux/rkbin) (fork:
+  [`3rdIteration/rkbin`](https://github.com/3rdIteration/rkbin)) — `tools/rk_sign_tool`,
+  `tools/boot_merger`, `tools/fit-sign.sh`, `tools/upgrade_tool`, `RKBOOT/RV1106MINIALL.ini`,
+  `bin/rv11/` (DDR, SPL, usbplug, TEE blobs), and the release notes in
+  [`doc/release/RV1106_EN.md`](https://github.com/rockchip-linux/rkbin/blob/master/doc/release/RV1106_EN.md).
+- [Luckfox wiki](https://wiki.luckfox.com/) — board documentation and SocToolkit downloads.
+
+**Rockchip documentation**
+
+- [Rockchip Secure Boot Application Note V1.9](http://resource.milesight-iot.com/files/Rockchip-Secure-Boot-Application-Note-V1.9.pdf)
+  (2018-06) — the BootROM → loader → U-Boot model, key handling, OTP burn flow; predates RV1106.
+- Rockchip Secure Boot for U-Boot Next Dev V2.3.0 (2021-04) — FIT signing, `fit-sign.sh`,
+  rollback indexes; predates RV1106. Distributed with Rockchip SDKs.
+- Rockchip OTP Developer Guide V1.4.0 — §3 Secure OTP zones. Distributed with Rockchip SDKs.
+- Rockchip TEE SDK Developer Guide V1.10.0 — §3.3 TEE firmware, §10.2 memory, §13 OTP. Distributed
+  with Rockchip SDKs.
+- Rockchip Crypto/HWRNG Developer Guide V1.2.1 — §2.2 HWRNG, §2.3 hardware crypto.
+- [Rockchip RV1106 datasheet](https://rockchip.fr/RV1106%20datasheet%20V1.9.pdf) and
+  [TRM V0.3 Part 1](https://rockchip.fr/Rockchip%20RV1106%20TRM%20V0.3%20Part1.pdf).
+- [Rockusb (maskrom) — Rockchip open source wiki](https://opensource.rock-chips.com/wiki_Rockusb).
+
+**Standards and upstream projects**
+
+- [U-Boot FIT signature verification](https://docs.u-boot.org/en/latest/usage/fit/signature.html) —
+  the mechanism `uboot.img` / `boot.img` signing is built on.
+- [RFC 8017](https://www.rfc-editor.org/rfc/rfc8017) — RSA-PSS (EMSA-PSS), used by every RSA tier.
+- [minisign](https://jedisct1.github.io/minisign/) — the rootfs signature format (Ed25519,
+  pre-hashed BLAKE2b-512).
+- [BIP85](https://github.com/bitcoin/bips/blob/master/bip-0085.mediawiki) — deterministic entropy
+  from a BIP39 seed, used to derive the signing keys.
+
+**Community write-ups on Rockchip secure boot** (other SoCs, useful background)
+
+- [Enabling Secure Boot on RockChip SoCs](https://blog.3mdeb.com/2021/2021-12-03-rockchip-secure-boot/) — 3mdeb.
+- [Secure Boot on Rock 5B](https://forum.radxa.com/t/secure-boot-on-rock-5b/14498) — Radxa forum,
+  including whether maskrom survives the fuse.
+- [`DualTachyon/rk3588-secure-boot`](https://github.com/DualTachyon/rk3588-secure-boot) — enabling
+  secure boot on the RK3588 family.
+- [Overview of Secure Boot state in the ARM-based SoCs](https://archive.fosdem.org/2023/schedule/event/arm_secure_boot_2/)
+  — FOSDEM 2023.
