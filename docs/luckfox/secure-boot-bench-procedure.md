@@ -264,6 +264,16 @@ prompt at `bootdelay=0` — bench-confirmed — so a fused production build also
 > passes, before burning. If the board ever sits in maskrom, recover it with
 > [soctoolkit-cli.md](soctoolkit-cli.md) (`db`, then `wl`).
 
+> **MicroSD-only boards (2026-09-22).** A board with no NAND is armed by *writing
+> an armed card*, not by flashing over USB, and the recovery question above has a
+> different answer: maskrom cannot help, because Download mode never writes the
+> card — but rewriting the card with an image signed for the fused key always
+> does. Build the armed and unarmed cards from one folder, boot the unarmed one
+> first, and keep it. Steps:
+> [secure-boot.md §3.2, *Arming a board that boots from MicroSD*](secure-boot.md#32-ways-to-arm);
+> bench run: [§7.9](secure-boot.md#79-bench-re-signed-microsd-image-2026-09-22).
+> Stages 1–4 below are the NAND/USB path.
+
 ## Stage 4 — the burn (irreversible)
 
 ```sh
@@ -340,7 +350,7 @@ rootfs`. Restore by reflashing the `rootfs` partition from the build output.
 
 Implemented. The private key can stay on a SeedSigner (BIP85-derived) for every
 tier: the PC writes 32–64-byte digests to a MicroSD card, the device signs them
-(Sign Digest, or the guided Air-Gap Re-Key), and `tools/airgap-sign.py` splices
+(Sign Digests on Card, or the guided Air-Gap Signing rounds), and `tools/airgap-sign.py` splices
 the signatures back. See [secure-boot.md §2.4](secure-boot.md#24-air-gapped-signing)
 for the procedure and [airgapped-signing.md](airgapped-signing.md) for the formats.
 

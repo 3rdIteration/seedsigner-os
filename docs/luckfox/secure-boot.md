@@ -19,6 +19,8 @@ and hardware-proven**:
   - 2026-09-21: a Mini fused to a BIP85-derived key after an on-device re-sign. That run also
     found, fixed and documented two defects that only a fused board shows
     ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
+  - 2026-09-22: a **MicroSD-only** Mini, re-signed air-gapped and fused from the card alone - no
+    NAND and no USB at any point ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)).
 
 **Where to start**
 
@@ -308,7 +310,7 @@ initramfs), then runs the full check. Keys are held in RAM only.
 - **It deletes `update.img`** (it would still carry the old chain) and fixes `sd_update.txt`'s write
   lengths for the new image sizes.
 - **Not on the Pico Mini:** re-signing the rootfs needs more memory than the Mini has and crashes
-  it, so the app refuses and points at Sign Digest ([§2.4](#24-air-gapped-signing)) instead. The same
+  it, so the app refuses and points at Sign Digests on Card ([§2.4](#24-air-gapped-signing)) instead. The same
   applies to **Force Rootfs Check** (`airgap-sign.py force` is its PC-side counterpart).
 - The other Build Tools actions: **Check Release** (the same check as §2.6),
   **Provision MicroSD** (copy a checked release to the card root for U-Boot's auto-flash), and
@@ -324,16 +326,13 @@ The private key never leaves the SeedSigner and never touches the PC: the PC wri
 signatures back. Any SeedSigner can be the signer, including a Pico Mini or a Pi Zero, because it
 never needs the release itself.
 
-On the device, two entry points under **Tools → Luckfox Build Tools**:
+On the device it is all one menu, **Tools → Luckfox Build Tools → Air-Gap Signing**:
 
-- **Sign Digest** signs whatever digests are on the card. Use it for a routine re-sign under an
-  existing key.
-- **Air-Gap Re-Key** is a guided three-round ceremony for moving a release to new keys:
-  - Round 0 — Export Pubkeys
-  - Round 1 — Sign Rootfs Digest
-  - Round 2 — Sign Boot Chain
-
-  Each round validates the card before signing.
+- **Round 0 — Export Pubkeys**, **Round 1 — Sign Rootfs Digest**, **Round 2 — Sign Boot Chain** — the
+  guided ceremony for moving a release to new keys. Each round validates the card before signing.
+- **Sign Digests on Card** — the plain signer the rounds are built on, without the round checks. Use
+  it for a routine re-sign under a key the release already carries, for arming
+  ([§3.2](#32-ways-to-arm)), and for the forced-rootfs-check round-trip.
 
 Each step finishes back on its own menu rather than at Home, so the BIP85 keys it derived stay
 cached for the next round (Home clears them). Insert the card before powering the board on — these
@@ -344,15 +343,15 @@ images do not detect hot-swapped cards ([README](README.md#microsd-card)).
 ```bash
 python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard    # after Round 0 put release-rsa.pub on the card
 python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard --only rootfs
-# ... device: Air-Gap Re-Key -> Round 1 (or Sign Digest) ...
+# ... device: Air-Gap Signing -> Round 1 (or Sign Digests on Card) ...
 python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard --only rootfs --no-check
 python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard --only download,idblock,uboot,boot
-# ... device: Air-Gap Re-Key -> Round 2 (or Sign Digest) ...
+# ... device: Air-Gap Signing -> Round 2 (or Sign Digests on Card) ...
 python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard    # must end RESULT: VALID
 ```
 
 **Re-signing under an existing key** is one round-trip: `digests` (all, or `--only` what changed) →
-Sign Digest → `splice`.
+Sign Digests on Card → `splice`.
 
 Things to know:
 
@@ -363,7 +362,7 @@ Things to know:
   digest of its own: its header is byte-identical to `idblock.img`'s after a re-key, so `splice`
   signs it with the device's `idblock.sig`, verifying it first.
 - **Toggle the forced rootfs check** without the key on the PC: `airgap-sign.py force <bundle> --card
-  <mount> [--off]`, then one Sign Digest round-trip and `splice`.
+  <mount> [--off]`, then one Sign Digests on Card round-trip and `splice`.
 - The card layout, the raw per-tier commands, and why the NAND rootfs digest is UBI-aware are in
   [airgapped-signing.md](airgapped-signing.md#toolsairgap-signpy).
 
@@ -402,6 +401,9 @@ folder by hand, so the re-sign tools (`airgap-sign.py splice`, the app's Resign 
 rootfs itself does.
 
 **`update.img`** in an SD artifact packs the old chain; the re-key tools delete it.
+
+**Turning secure boot on for such a board** — building an armed card, and what recovery looks like
+when there is no NAND to fall back to — is [§3.2, *Arming a board that boots from MicroSD*](#32-ways-to-arm).
 
 > **Hardware-confirmed (2026-09-22).** A CI SD release was re-keyed and re-signed through the
 > air-gapped flow, rebuilt with `sd-image`, and booted on an **unfused** SD-only Pico Mini: SPL and
@@ -522,11 +524,61 @@ boot on its first boot. Three ways to produce one:
 - **On the device:** Danger Zone → **Arm eFuse Burn**. It refuses unless `check_release` passes and
   the key is not the dev key, and it re-checks the armed image before writing it.
 
-Only `idblock.img` is armed; SocToolkit's Download mode writes it to NAND. **What does not work on
-this SoC:** the legacy `sign_flag=0x20` / `ss --flag 0x20` loader flag (V1.9 §6.6's `config.ini` edit;
+Only `idblock.img` is armed - `download.bin` and the two FITs are untouched, and `check` passes
+with the folder in that state, reporting `! idblock.img is ARMED`. On a NAND board SocToolkit's
+Download mode writes that idblock; on a card-booting board see the walkthrough below. **What does
+not work on this SoC:** the legacy `sign_flag=0x20` / `ss --flag 0x20` loader flag (V1.9 §6.6's `config.ini` edit;
 Q2 in [§7.2](#72-answered-questions)),
 and the standalone `rkbin/fit-sign.sh --burn-key-hash` re-sign flow, which needs
 `fit_signcfg/sign.readonly_config` that this SDK never generates (Q3).
+
+#### Arming a board that boots from MicroSD
+
+An SD-only board has no NAND and USB Download cannot write its medium
+([§2.5](#25-microsd-and-emmc-releases)), so **arming is just writing an armed card**: build two
+images from the same re-signed folder, boot the unarmed one to prove the chain, then write the armed
+one. Nothing is irreversible until that armed card boots.
+
+```bash
+SB=opt/luckfox/secure-boot
+python3 $SB/luckfox_release.py check    <folder>                     # must be RESULT: VALID first
+cp <folder>/idblock.img idblock.unarmed.bak                          # keep the unarmed original
+
+# 1. rehearsal card: same signatures, fuse untouched - boot it as often as you like
+python3 $SB/luckfox_release.py sd-image <folder> -o card-unarmed.img
+
+# 2. arm the idblock, then re-sign it (setburn rewrites the SPL DTB, clearing the signature)
+python3 $SB/rkloader.py setburn <folder>/idblock.img --confirm I-UNDERSTAND-THIS-BURNS-A-FUSE
+python3 $SB/rkloader.py sign    <folder>/idblock.img --key your.key  # air-gapped: see below
+
+# 3. confirm what it will burn, then build the armed card
+python3 $SB/rkloader.py inspect <folder>/idblock.img   # "OTP key hash" == "SPL burns  (ARMED)"
+python3 $SB/luckfox_release.py check    <folder>       # VALID, with "! idblock.img is ARMED"
+python3 $SB/luckfox_release.py sd-image <folder> -o card-armed.img
+```
+
+**Air-gapped (no private key on this PC).** Step 2's `sign` becomes one more card round-trip, using
+the same signer as every other round:
+
+```bash
+python3 tools/airgap-sign.py digests <folder> --card <mount> --only idblock
+# ... device: Air-Gap Signing -> Sign Digests on Card ...
+python3 tools/airgap-sign.py splice  <folder> --card <mount>
+```
+
+Use **Sign Digests on Card**, not Rounds 0-2: the rounds move a release to *new* keys, while arming
+re-signs one image under the key the release already carries.
+
+**Order matters.** Boot `card-unarmed.img` on the target board first and confirm the app comes up
+(`## Verified-boot: 0`, and `fuse.programmed=0` on the kernel command line). Only then write
+`card-armed.img`. Keep the unarmed image: on a board fused to the same key it still boots, and it is
+the cleanest recovery card. The whole sequence is bench row G6 onwards
+([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)).
+
+**The fuse is in the SoC, not the card.** After that boot the board demands this key from *every*
+card, forever - including any stock or unsigned image you later write. Cards are cheap and
+rewritable, so an SD-only board is the most forgiving place to rehearse a fuse; the board itself is
+still one-way.
 
 ### 3.3 What the logs show
 
@@ -561,6 +613,12 @@ fused key**:
 
 The full CLI procedure, the NAND sector layout, and a troubleshooting sequence for "Download boot
 failed!" are in [soctoolkit-cli.md](soctoolkit-cli.md).
+
+**On a card-booting board, recovery is a card.** Write an image whose loader is signed for the fused
+key and the board boots again; a wrong card simply drops it to maskrom, where USB cannot help
+because Download mode never writes the card ([§2.5](#25-microsd-and-emmc-releases)). So keep the
+release folder and its key: `sd-image` rebuilds a bootable card from them at any time. A board that
+has both NAND and a card slot still recovers through maskrom as above.
 
 ### 3.5 Which key is a fused board expecting?
 
@@ -1498,7 +1556,7 @@ a set of keys.
    signature over *this* manifest and boots only if the count reaches the threshold. The failure
    policy stays the same: red screen, halt, physical escape key.
 5. **Tooling.** Re-signing a rootfs becomes: compute the manifest, have each quorum member sign it
-   (air-gapped SeedSigners are a natural fit — each signer is one Sign Digest round-trip), and splice
+   (air-gapped SeedSigners are a natural fit — each signer is one Sign Digests on Card round-trip), and splice
    the signatures into the block. `boot.img` and the RSA key are not involved. `check` reports how many
    valid signatures are present against the threshold.
 
@@ -1856,7 +1914,7 @@ own log, `rk_sign_tool otp`, and a clean rkbin loader before concluding it is de
 
 The MicroSD path end to end, on the CI artifact
 `seedsigner-luckfox-pico-RV1103_Luckfox_Pico_Mini-SD_CARD-293`: re-keyed to a BIP85 key with
-`airgap-sign.py rekey`, signed in two device round-trips (Air-Gap Re-Key Rounds 1 and 2 on a
+`airgap-sign.py rekey`, signed in two device round-trips (Air-Gap Signing Rounds 1 and 2 on a
 SeedSigner, which never saw the bundle), rebuilt with `luckfox_release.py sd-image`, and written to a
 card.
 
@@ -1867,9 +1925,14 @@ card.
 | G3 | Round 1 and 2 on the device | second round noticeably faster | The BIP85 cache survives a round now that rounds end on their own menu, instead of at Home |
 | G4 | Rebuild with `sd-image` | 890,798,080 bytes; only the `idblock`, `uboot` and `boot` slots differ from the original | The rootfs signature lives in `boot.img`, so a re-sign never rewrites the 51 MB rootfs |
 | G5 | Boot the rebuilt card on an **unfused** SD-only Mini | SPL `sha256,rsa2048:dev+ OK`; U-Boot `FIT: signed, conf required` + `sha256,rsa2048:dev+ OK`; kernel `fuse.programmed=0`; `/init`: *secure boot NOT fused … skipping rootfs verification*; app starts | The whole re-signed chain boots from a rebuilt image. The `dev` in those lines is the FIT key-name hint, which stays `dev` whatever key signs |
+| G6 | Arm the same folder: `setburn`, sign the idblock through one **Sign Digests on Card** round-trip, `check`, `sd-image` | `OTP key hash` == `SPL burns (ARMED)`; `RESULT: VALID` with `! idblock.img is ARMED`; `download.bin` left unarmed and still valid | Arming is one image and one card round-trip; the air-gap signer needs no special case for it |
+| G7 | Boot `card-armed.img` on that Mini | `RSA: Write RSA key hash successfully.`, then the kernel | The fuse burns from the card - no NAND, no USB, no vendor tool anywhere in the ceremony |
+| G8 | Power-cycle | `## Verified-boot: 1` in SPL and U-Boot; `fuse.programmed=1`; `/init`: *verifying minisign signature (streaming 51118080 bytes)* → `Signature and comment signature verified` → `signature OK`; app starts | All three tiers enforced on SD: BootROM over the loader, U-Boot over both FITs, and the verifier over the rootfs. `Write RSA key hash` does not reappear - the burn is one-shot |
 
-Still open: no re-signed SD card has been booted on a **fused** board, and the rootfs signature was
-not exercised (an unfused board skips it unless the forced check is on, §5.2).
+That closes the two gaps §7.9 opened: a re-signed SD card boots on a **fused** board, and the rootfs
+signature is exercised for real (an unfused board skips it unless the forced check is on, §5.2).
+Unchanged from §7.8: F1 and F2 would still have bricked this board without their fixes, and here
+there would have been no maskrom route back - only rewriting the card.
 
 ### 7.10 Provenance
 
@@ -1909,7 +1972,7 @@ The documents and sources used are listed in [§8](#8-links-and-resources).
 | Build-time signing, rootfs verifier, `releaseTime` pin | [`opt/luckfox/os-build.sh`](../../opt/luckfox/os-build.sh), [`build-local.sh`](../../opt/luckfox/build-local.sh), [`deterministic-sign.sh`](../../opt/luckfox/deterministic-sign.sh), [`ss-fs-normalise.sh`](../../opt/luckfox/ss-fs-normalise.sh) |
 | Committed public dev keys (no protection) | [`secure-boot/dev-keys/`](../../opt/luckfox/secure-boot/dev-keys/README.md), [`secure-boot/dev-keys-rootfs/`](../../opt/luckfox/secure-boot/dev-keys-rootfs/README.md) |
 | Tests | [`tests/test_rkloader.py`](../../tests/test_rkloader.py), [`test_fitsign.py`](../../tests/test_fitsign.py), [`test_minisign.py`](../../tests/test_minisign.py), [`test_luckfox_release.py`](../../tests/test_luckfox_release.py), [`test_airgap_sign.py`](../../tests/test_airgap_sign.py) |
-| Device-side tools (Resign Release, Sign Digest, Air-Gap Re-Key, Arm eFuse Burn) | the SeedSigner app, `src/seedsigner/helpers/resign_release.py` and `src/seedsigner/views/resign_views.py` in [3rdIteration/seedsigner](https://github.com/3rdIteration/seedsigner) |
+| Device-side tools (Resign Release, Sign Digests on Card, Air-Gap Signing, Arm eFuse Burn) | the SeedSigner app, `src/seedsigner/helpers/resign_release.py` and `src/seedsigner/views/resign_views.py` in [3rdIteration/seedsigner](https://github.com/3rdIteration/seedsigner) |
 
 **SDK and vendor binaries**
 

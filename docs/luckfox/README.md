@@ -473,7 +473,9 @@ Notes:
 - [secure-boot.md](secure-boot.md) — **start here for secure boot**: what it protects, how to sign a
   release (build-time, re-sign on a PC, re-sign on the device, or air-gapped), burning the fuse and
   recovery, and the technical notes and bench history. Every build is signed by default
-  (`signing: on`) with the committed *public* dev keys; the OTP fuse burn is always opt-in.
+  (`signing: on`) with the committed *public* dev keys; the OTP fuse burn is always opt-in. It works
+  on NAND and on MicroSD-only boards alike — a card-booting board is armed by writing an armed card,
+  with no NAND and no USB involved.
 - [airgapped-signing.md](airgapped-signing.md) — reference for the signature formats and the
   pure-Python signers: digests out, signatures in, BIP85-derived keys, and what a re-key rewrites.
 - [secure-boot-bench-procedure.md](secure-boot-bench-procedure.md) — runnable staged procedure for

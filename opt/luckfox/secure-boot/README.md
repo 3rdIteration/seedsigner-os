@@ -18,7 +18,7 @@ never set by CI.
 Start with [`docs/luckfox/secure-boot.md`](../../../docs/luckfox/secure-boot.md) — background, and
 §2 for the four ways to sign a release: build-time (this directory, in-build), re-sign on a PC
 (`rkloader.py` / `fitsign.py` / `minisign.py` with `tools/airgap-sign.py`), re-sign on a SeedSigner
-(Resign Release), or air-gapped (`tools/airgap-sign.py` + Sign Digest). The fuse-burn bench steps are
+(Resign Release), or air-gapped (`tools/airgap-sign.py` + Sign Digests on Card). The fuse-burn bench steps are
 [`docs/luckfox/secure-boot-bench-procedure.md`](../../../docs/luckfox/secure-boot-bench-procedure.md).
 
 ## Contents

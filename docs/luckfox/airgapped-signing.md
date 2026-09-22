@@ -88,14 +88,14 @@ image.
 
 ### tools/airgap-sign.py
 
-The PC half of the device **Sign Digest** flow (and of the raw commands above),
+The PC half of the device **Sign Digests on Card** flow (and of the raw commands above),
 in one command per direction:
 
 ```bash
 # (only when moving off the bundle's current boot key) round 0: embed the new
 # RSA public key into download.bin / idblock.img / uboot.img - public halves
-# only, read from release-rsa.pub on the card (Air-Gap Re-Key Round 0, or a
-# previous Sign Digest).
+# only, read from release-rsa.pub on the card (Air-Gap Signing Round 0, or a
+# previous Sign Digests on Card).
 python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
 
 # prepare the card for the signer (writes <card>/seedsigner-release-sign/)
@@ -108,7 +108,7 @@ python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard [--only a,b,c
 python3 tools/airgap-sign.py force   <bundle> --card /media/sdcard [--off]
 
 # after the device has written the signatures back: splice everything, verify.
-# Sign Digest also wrote release-rsa.pub / release-rootfs.pub into the folder, so
+# Sign Digests on Card also wrote release-rsa.pub / release-rootfs.pub into the folder, so
 # no --*-pubkey flags are needed; they only override those copies.
 python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
         [--rsa-pubkey F] [--rootfs-pubkey F] [--no-check]
@@ -118,7 +118,7 @@ python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
 NAND bundles). `splice` performs the tier-A/B splices, the tier-C injection and
 re-seal, fixes any sd_update.txt write lengths the rework changed, and finishes
 with a full `check_release` — it exits non-zero if anything does not verify.
-`force` is one such round-trip scoped to boot.img: after its Sign Digest pass,
+`force` is one such round-trip scoped to boot.img: after its Sign Digests on Card pass,
 a plain `splice` (no flags) splices the signature back and must come out VALID,
 since only that image changed.
 
@@ -466,7 +466,7 @@ where a ~225 MB image bundle can be staged:
   stdlib and every heavy path streams, so a full mini-bundle re-sign peaks at
   ~14 MB of Python heap (measured in-memory against a production bundle). The
   app warns when free memory is low before running the heavy actions and points
-  at Sign Digest as the fallback.
+  at Sign Digests on Card as the fallback.
 - **Any board, any time** — the *digest signer* role needs no storage at all:
   a few dozen bytes in, one signature out (below).
 
@@ -487,9 +487,9 @@ key (`minisign -G -W`, or `minisign.py keygen -s`), a PKCS#8 PEM/DER Ed25519 key
 characters). Passphrase-protected minisign keys are refused on the device:
 minisign's default scrypt parameters need about 1 GiB of RAM.
 
-### Sign Digest — signing without a bundle
+### Sign Digests on Card — signing without a bundle
 
-**Tools → Luckfox Build Tools → Sign Digest** signs bare digests instead of a
+**Tools → Luckfox Build Tools → Air-Gap Signing → Sign Digests on Card** signs bare digests instead of a
 bundle, so any board can act as the signer with no storage at all (the digest
 signer role from the air-gap table above). The PC lays the digests on a MicroSD
 card; the device writes the signatures back into the same folder. Insert the card
@@ -529,7 +529,7 @@ so re-signing is idempotent; tier C carries a third-party minisign key's stored
 On the PC side, `tools/airgap-sign.py` does both halves in one command each:
 `digests <bundle> --card <mount>` writes the folder above; `splice <bundle>
 --card <mount>` splices every returned signature back and verifies the whole
-chain against the public keys. Because Sign Digest drops those keys into the
+chain against the public keys. Because Sign Digests on Card drops those keys into the
 folder itself, `splice` needs no `--*-pubkey` flags in the normal case — it reads
 `release-rsa.pub` / `release-rootfs.pub` from the card; the flags remain as an
 override for cards signed by something else (e.g. a hand-run CLI signer).
