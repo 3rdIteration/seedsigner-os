@@ -15,9 +15,19 @@ embeds that key's public half into the loader (SPL DTB).
 Using a **fixed, public** key here instead of a fresh random one gives two
 properties that a throwaway key does not:
 
-1. **Determinism.** The signed build is reproducible — the same key produces the
-   same signatures every time. (The default *unsigned* build is unaffected
+1. **Determinism.** The signed build is reproducible — the same commit produces
+   byte-identical images every time. (The default *unsigned* build is unaffected
    either way; this whole path is off unless `SEEDSIGNER_FIT_SIGNATURE=1`.)
+   Note that determinism does NOT come from the SDK's own signing: its U-Boot
+   2017.09 mkimage stamps wall-clock time into the FIT signature node (it does
+   not honour `SOURCE_DATE_EPOCH`) and draws random PSS salts, and rk_sign_tool
+   is a prebuilt binary we cannot patch. Instead, after the SDK signs,
+   [`../deterministic-sign.sh`](../deterministic-sign.sh) re-signs all four boot-chain
+   images with our own tools: the PSS salt is derived from the digest
+   (`shake_256("seedsigner-pss-v1\0" || mhash)`), and the FIT `timestamp`
+   property is zeroed. Both sit outside the signed region, so on-device
+   verification is unaffected — RFC 8017 PSS recovers the salt from the block,
+   which also means images signed with random salts (older builds) still verify.
 2. **A recoverable failure mode.** If someone builds, skips the re-sign step, and
    then runs the irreversible OTP burn, the board fuses to *this* key's hash —
    and because the key is public, anyone can still sign firmware the board will

@@ -166,9 +166,15 @@ export RUST_BUILD_JOBS="${RUST_BUILD_JOBS:-$_ss_rust_default_jobs}"
 export FORCE_UNSAFE_CONFIGURE=1
 # Reproducible builds: the epoch compilers and packaging tools stamp into their
 # output. Same value and same reasoning as the Pi/La Frite path (opt/build.sh:5),
-# which the Luckfox build never picked up. Notably U-Boot's mkimage honours it
-# for the FIT `timestamp` field in boot.img, and e2fsprogs for ext4 superblock
-# times -- two things that otherwise differ on every single build.
+# which the Luckfox build never picked up. e2fsprogs honours it for ext4
+# superblock times, for example. It does NOT reach U-Boot's FIT `timestamp`
+# field: the SDK ships U-Boot 2017.09, whose mkimage stamps time(NULL) into
+# boot.img/uboot.img regardless (verified against shipped CI images), and its
+# RSA-PSS signing draws a random salt -- so even with this epoch set, two signed
+# builds differ in the FIT timestamp AND every signature byte. That is why
+# deterministic_sign_chain() re-signs all four images with our own tools after
+# the SDK's sign_boot_image: digest-derived salts + zeroed timestamps make the
+# final signatures byte-identical across builds of the same commit.
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
 
 # Kernel reproducibility. Without these the kernel records the build time, the
@@ -1177,6 +1183,75 @@ enable_dts_node() {
 # CRYPTO_DEV_ROCKCHIP_V3 sub-option to build at all -- confirmed absent on a
 # flashed image (empty /proc/crypto, unbound crypto node). Pinning only &rng is
 # deliberate; do not re-add &crypto without also building the driver.
+# Make the MicroSD slot usable as removable storage on the NAND / eMMC profiles.
+#
+# The controller on the sdmmc0 pins IS enabled in the stock device tree, but it
+# is configured as an SDIO interface - the upstream Luckfox default for the
+# Wi-Fi board variants:
+#
+#     /mmc@ffaa0000  status = okay
+#         pinctrl-0 = sdmmc0-clk, sdmmc0-cmd, sdmmc0-det, sdmmc0-bus4
+#         supports-sdio, cap-sdio-irq, non-removable, no-mmc, no-1-8-v
+#
+# `non-removable` makes the kernel ignore the sdmmc0-det card-detect line and
+# `supports-sdio` makes it probe as an SDIO function, so no /dev/mmcblk block
+# device is ever created. That, and not /etc/luckfox.cfg, is why a NAND-booted
+# Luckfox has no MicroSD in Linux. Verified by reading the built kernel DTB out
+# of boot.img on mini and max.
+#
+# SD_CARD profiles are left alone: there the same controller already carries the
+# rootfs (root=/dev/mmcblk1p7), so it is configured as storage already and the
+# one slot is occupied anyway.
+apply_sdmmc_dts_patch() {
+    local board_profile="$1" boot_medium="$2"
+
+    case "$boot_medium" in
+        nand|emmc) ;;
+        *) return 0 ;;
+    esac
+
+    local dts_file
+    dts_file="$(resolve_dts_path_for_profile "$board_profile")"
+
+    # Find the label of the controller that owns the sdmmc0 pins, rather than
+    # assuming it. A wrong label would otherwise fail deep inside dtc.
+    local dts_dir="$LUCKFOX_SDK_DIR/sysdrv/source/kernel/arch/arm/boot/dts"
+    local label
+    label="$(grep -rhoE '^[[:space:]]*[a-z0-9_]+:[[:space:]]*mmc@ffaa0000' "$dts_dir" 2>/dev/null \
+             | head -n1 | cut -d: -f1 | tr -d "[:space:]")"
+    if [[ -z "$label" ]]; then
+        print_error "could not find the label for mmc@ffaa0000 in $dts_dir"
+        print_error "candidates: $(grep -rhoE '[a-z0-9_]+:[[:space:]]*mmc@[0-9a-f]+' "$dts_dir" 2>/dev/null | sort -u | tr -s "[:space:]" " ")"
+        exit 1
+    fi
+
+    if grep -q "SEEDSIGNER-SDMMC-REMOVABLE" "$dts_file"; then
+        print_success "MicroSD already enabled as removable storage in: $dts_file"
+        return 0
+    fi
+
+    print_step "Enabling MicroSD as removable storage (&${label}, ${board_profile}/${boot_medium})"
+    cat >> "$dts_file" <<EOF
+
+/* SEEDSIGNER-SDMMC-REMOVABLE: the stock config drives this controller as SDIO,
+ * so the card-detect line is ignored and no block device appears. Drop the SDIO
+ * properties so a MicroSD enumerates as removable storage. */
+&${label} {
+	/delete-property/ supports-sdio;
+	/delete-property/ cap-sdio-irq;
+	/delete-property/ non-removable;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	disable-wp;
+	status = "okay";
+};
+EOF
+
+    grep -q "SEEDSIGNER-SDMMC-REMOVABLE" "$dts_file" || {
+        print_error "failed to append the sdmmc override to $dts_file"; exit 1; }
+    print_success "MicroSD override appended to: $dts_file (&${label})"
+}
+
 apply_rng_dts_patch() {
     local board_profile="$1"
 
@@ -1891,6 +1966,24 @@ sign_boot_image() {
     print_success "boot.img signed (whole chain now signed with the FIT key)"
 }
 
+# Re-sign all four boot-chain images with our own tools (opt-in). The SDK's in-
+# build signing is not byte-reproducible: mkimage stamps wall-clock time into
+# the FIT signature node and draws random PSS salts, and rk_sign_tool (loader
+# tier) is a prebuilt binary we cannot patch. deterministic-sign.sh overwrites
+# every signature with a digest-derived salt and zeroes the timestamp; both sit
+# outside the signed region, so on-device verification is unaffected. Runs
+# AFTER sign_boot_image (all content mutations done) and BEFORE
+# normalise_boot_images, so update.img's repack embeds OUR signatures.
+deterministic_sign_chain() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local ubootdir="$LUCKFOX_SDK_DIR/sysdrv/source/uboot/u-boot"
+    local image_dir="$LUCKFOX_SDK_DIR/output/image"
+    print_step "Deterministically re-signing the boot chain (SEEDSIGNER_FIT_SIGNATURE=1)"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/deterministic-sign.sh" \
+        "$image_dir" "$ubootdir/keys/dev.key" "$ubootdir/keys/dev.pubkey" \
+        || { print_error "deterministic re-signing failed"; exit 1; }
+}
+
 # --- Rootfs verification (SEEDSIGNER_FIT_SIGNATURE=1) -------------------------
 #
 # The rootfs volume's logical UBIFS contents are signed at build time by the
@@ -2093,6 +2186,14 @@ embed_rootfs_verifier() {
     chmod 755 "$stage/init"
     cp "$keydir/dev.pubkey" "$stage/pubkey"
     cp "$sig"               "$stage/rootfs.sig"
+    # Opt-in: verify the rootfs even on an UNFUSED board (/init looks for this
+    # marker). Harmless, but gives no real protection without the fuse -- see
+    # the comment above FORCED_VERIFY in initramfs/init. The SeedSigner
+    # "Luckfox Build Tools" can set or clear the same marker after the build.
+    if [ "${SEEDSIGNER_ROOTFS_VERIFY_UNFUSED:-0}" = "1" ]; then
+        : > "$stage/force-rootfs-verify"
+        print_info "SEEDSIGNER_ROOTFS_VERIFY_UNFUSED=1: rootfs is verified even when secure boot is not fused"
+    fi
 
     # --- deterministic cpio.gz ------------------------------------------------
     # newc headers carry inode + device numbers, which vary with the host's
@@ -2100,6 +2201,9 @@ embed_rootfs_verifier() {
     # them along with uid/gid. mtime is pinned to SOURCE_DATE_EPOCH explicitly
     # (touch), gzip -n drops its timestamp header, and LC_ALL=C sort fixes the
     # entry order — so two builds of the same commit produce identical bytes.
+    # touch MUST use -h: without it a symlink's own mtime is never touched
+    # (the target is), so every busybox applet link kept its ln(1) wall-clock
+    # time and desynced the ramdisk on every build.
     # The archive is written OUTSIDE $stage: it must not appear in the tree
     # while find is still enumerating it (a pipeline runs all three at once).
     local work
@@ -2107,7 +2211,7 @@ embed_rootfs_verifier() {
     local epoch="${SOURCE_DATE_EPOCH:-0}"
     (
         cd "$stage"
-        find . -exec touch -d "@$epoch" {} + 2>/dev/null || true
+        find . -exec touch -h -d "@$epoch" {} + 2>/dev/null || true
         LC_ALL=C find . | LC_ALL=C sort | \
             cpio -o -H newc --owner=0:0 --reproducible --quiet 2>/dev/null | gzip -9 -n > "$work/ramdisk"
     )
@@ -2248,6 +2352,51 @@ export_fit_sign_tree() {
     print_success "     --images <out> --build-tree build-output/fit-sign-tree-${board_profile} --tools <rkbin/tools>"
 }
 
+# Install the secure-boot signers as OS-provided tooling, matching what
+# opt/build.sh does for the Pi / La Frite images.
+#
+# The OS owns them and the app imports them at runtime, so there is one copy and
+# nothing can drift. Installed outside /opt because the app tree lives there and
+# is pruned above. Pure stdlib, ~55 KB, so the app imports them directly rather
+# than shelling out, and the same files double as CLIs for checking a release
+# on-device.
+#
+# A board that should not carry them opts out with a `no-secure-boot-tools` file
+# in opt/luckfox/; the app's menu entry then simply does not appear, so
+# availability is a build-time decision rather than runtime device detection.
+#
+# The Pico Mini (RV1103, 64 MB) carries them too: they are ~55 KB of stdlib and
+# the heavy paths stream (a full mini-bundle re-sign peaks at ~14 MB measured),
+# so carrying the modules costs nothing. An earlier OOM on the Mini was a
+# full-file read bug since fixed; the app warns when free memory is low before
+# running the heavy actions.
+install_secure_boot_tools() {
+    local src="$SEEDSIGNER_LUCKFOX_DIR/secure-boot"
+    local dst="$ROOTFS_DIR/usr/lib/seedsigner/secure-boot"
+    local signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
+    local f
+
+    # Clear first, so a rebuild that newly opts out leaves no stale copy.
+    rm -rf "$dst"
+
+    if [ -f "$SEEDSIGNER_LUCKFOX_DIR/no-secure-boot-tools" ]; then
+        print_info "secure-boot signers: skipped (no-secure-boot-tools)"
+        return 0
+    fi
+
+    for f in $signers; do
+        [ -f "$src/$f" ] || { print_error "secure-boot signer missing: $src/$f"; exit 1; }
+    done
+
+    mkdir -p "$dst"
+    for f in $signers; do
+        cp -f "$src/$f" "$dst/$f"
+        chmod 755 "$dst/$f"
+    done
+    find "$dst" -exec touch -d "@${SOURCE_DATE_EPOCH:-0}" {} +
+    print_success "Installed secure-boot signers to /usr/lib/seedsigner/secure-boot"
+}
+
 build_profile_artifacts() {
     local board_profile="$1"
     local boot_medium="$2"
@@ -2313,6 +2462,7 @@ build_profile_artifacts() {
     apply_spi_display_dts "$board_profile"
     apply_hwrng_kernel_patch "$board_profile" "$boot_medium"
     apply_rng_dts_patch "$board_profile"
+    apply_sdmmc_dts_patch "$board_profile" "$boot_medium"
     apply_otp_size_patch
     apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
     apply_signed_nand_bootargs "$board_profile" "$boot_medium"   # signed NAND: bake root=ubi0 into the DTB (no-op otherwise)
@@ -2653,6 +2803,8 @@ s/^endef\nendif/endef\nendif\nendif/
          -name '*.po' -delete 2>/dev/null || true
     print_success "Cleaned up non-essential files"
 
+    install_secure_boot_tools
+
     # Mini hardware_config (FOX_22 vs FOX_40).
     #
     # NOTE: this is currently a NO-OP, deliberately kept in step with CI rather
@@ -2868,7 +3020,8 @@ s/^endef\nendif/endef\nendif\nendif/
     print_step "Packaging Firmware"
     sdk_build firmware
     embed_rootfs_verifier "$board_profile" "$boot_medium"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE sign_boot_image so the FIT signature covers the new ramdisk.
-    sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE normalise so update.img embeds the signed boot.img.
+    sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE deterministic_sign_chain so our re-sign covers the final boot.img.
+    deterministic_sign_chain                # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). Digest-derived salts + zeroed timestamp => byte-reproducible signatures. BEFORE normalise so update.img embeds them.
     normalise_boot_images
     export_fit_sign_tree "$board_profile"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
     # The SDK emits sd_update.txt/tftp_update.txt staging every partition at
@@ -2877,7 +3030,7 @@ s/^endef\nendif/endef\nendif\nendif/
     # there: mw.b overwrote the running loader and the microSD auto-flash hung
     # mid-write with no console output. Restage low and hard-fail if any image
     # ever outgrows the window again. Shared with build-local.sh.
-    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-sd-update-scripts.sh" "$LUCKFOX_SDK_DIR"
+    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-sd-update-scripts.sh" "$LUCKFOX_SDK_DIR" "$board_profile"
     # Re-verify now that the oem partition is staged: every built .ko lands in
     # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
     # there would be loadable by root.

@@ -194,8 +194,25 @@ case "$cmdline" in
         ;;
 esac
 
+# --- forced verification on unfused boards -----------------------------------
+# A /force-rootfs-verify file in this initramfs makes an UNFUSED board verify
+# the rootfs anyway. It is added by the build flag
+# SEEDSIGNER_ROOTFS_VERIFY_UNFUSED=1, or later by the SeedSigner "Luckfox Build
+# Tools" (which re-sign boot.img to do it). A marker file rather than a baked-in
+# value, so a tool can set or clear it without editing this script.
+#
+# It is harmless and gives NO real protection: without the fuse, nothing checks
+# this initramfs either, so anyone able to replace the rootfs can replace the
+# checker too. What it does give is proof the image is intact, and a way to
+# exercise the verifier before a board is ever fused.
+FORCED_VERIFY=0
+if [ "$SECURE_BOOT_FUSED" = 0 ] && [ -e /force-rootfs-verify ]; then
+    FORCED_VERIFY=1
+    log "secure boot NOT fused, but /force-rootfs-verify is present — verifying the rootfs anyway"
+fi
+
 # --- verify the signature ----------------------------------------------------
-if [ "$SECURE_BOOT_FUSED" = 0 ]; then
+if [ "$SECURE_BOOT_FUSED" = 0 ] && [ "$FORCED_VERIFY" = 0 ]; then
     log "secure boot NOT fused (no fuse.programmed=1 on cmdline and OTP byte not 0xff) — skipping rootfs verification"
     lcd orange SHIELDSIGNER SECURE BOOT not enabled "" BOOTING
     # Hold so a human can actually read it: without this, mount + switch_root
@@ -247,7 +264,14 @@ fi
 fi
 
 # --- mount and hand over -----------------------------------------------------
-if [ "$SECURE_BOOT_FUSED" = 1 ] && [ "${UNVERIFIED:-0}" = 0 ]; then
+if [ "$FORCED_VERIFY" = 1 ] && [ "${UNVERIFIED:-0}" = 0 ]; then
+    # Verified, but on an unfused board: integrity, not authenticity. Say so
+    # plainly, in orange, and hold it long enough to read - the same way the
+    # plain "not enabled" screen does - so it is never mistaken for green.
+    log "signature OK on an UNFUSED board (forced) — secure boot is not enabled"
+    lcd orange PASSED "rootfs valid" "SECURE BOOT" "not enabled" "" BOOTING
+    sleep 5
+elif [ "$SECURE_BOOT_FUSED" = 1 ] && [ "${UNVERIFIED:-0}" = 0 ]; then
     if [ "$FIT_KEY_CLASS" = "dev" ] || [ "$ROOTFS_KEY_CLASS" = "dev" ]; then
         # Verified, but at least one signature was made with the committed
         # PUBLIC dev key — that grants no protection, so say so on the panel

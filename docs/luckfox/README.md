@@ -245,15 +245,34 @@ log's own timestamps are real dates. Sources, last wins:
 2. `/etc/seedsigner-build-time`, baked by `install-build-time.sh` from the **pinned app commit's** committer
    date. This is the normal path, and it is reproducible: same OS commit + same `--seedsigner-ref` → same byte.
 3. `/mnt/microsd/time.txt`, the user escape hatch — same filename and `YYYY-MM-DD HH:MM` format as the Pi.
-   Best-effort here: the card is mounted by the `fat-fsck-hotplug` mdev rule rather than at boot, so a card
-   present at power-on may not be mounted yet. The override is therefore re-checked before each app launch
-   attempt, guarded on the file existing so a normal boot never rewinds its clock.
+   Best-effort here: the card is mounted by the `fat-fsck-hotplug` mdev rule, which `S10mdev` also triggers
+   for partitions that already existed at power-on (a coldplug pass re-emitting their uevents) — but the
+   mount happens asynchronously after S10mdev runs, so a power-on card may still not be mounted when the
+   early clock init ran. The override is therefore re-checked before each app launch attempt, guarded on
+   the file existing so a normal boot never rewinds its clock.
 
 The set is **unconditional** by design. Do not add a "only if the clock looks wrong" or "only move forward"
 guard: the fault this fixes is a clock in the *future*, which such a guard would never repair. And never
 source the value from `SOURCE_DATE_EPOCH` — it is `0`, and a 1970 clock is the invisible version of this bug
 (it passes the app's expiry check while stamping every key with a 1970 creation date). `install-build-time.sh`
 enforces a year floor of 2020 to fail the build on exactly that edit.
+
+## MicroSD card
+
+Cards are mounted by mdev, not at boot: the `fat-fsck-hotplug` rule fscks and mounts each FAT
+partition as it appears, and `S10mdev` re-emits the uevents of partitions that already existed when
+the board came up (a coldplug pass), so a **power-on card is handled like a hot-inserted one**.
+
+**Hot-swapping is not supported.** The SDK's device tree gives the MicroSD controller (`&sdio`) no
+card-detect GPIO and nothing polls for insertion, so a card inserted or removed *after* boot is never
+seen. This was verified on the Pico Pi against both our image and the vendor stock Buildroot — identical
+behaviour, i.e. an SDK/hardware limitation rather than something these images introduced. A removed card
+leaves a stale mmc object behind (accessing it produces `tried to HW reset card, got error -2` /
+`pre recovery failed!` I/O errors), and a freshly inserted one does not appear until the next boot.
+
+The rule is therefore: **insert the card before power-on** — which is also the natural flow for the
+air-gapped signing work (the card moves between PC and device while both are off). To swap cards, reboot
+with the new one in place; there is no userspace rescan that works around this.
 
 ## Read-only root filesystem
 
@@ -451,7 +470,15 @@ Notes:
 
 ## Other reference docs in this folder
 
-- [secure-boot.md](secure-boot.md) — secure boot / OTP feasibility report (research only; nothing is enabled).
+- [secure-boot.md](secure-boot.md) — secure boot design, rationale and bench results. **FIT + rootfs
+  signing is enabled and is the CI default** (`signing: on`), using the committed *public* dev keys;
+  the OTP fuse burn remains opt-in and off.
+- [secure-boot-bench-procedure.md](secure-boot-bench-procedure.md) — runnable staged procedure for
+  signing, flashing and (last, irreversibly) burning the fuse on sacrificial hardware.
+- [airgapped-signing.md](airgapped-signing.md) — signing the chain without the private key ever
+  reaching the build host: digests out, signatures in, BIP85-derived keys.
+- [verifying-a-release.md](verifying-a-release.md) — how anyone can check a distributed image for
+  authenticity and reproducibility, with no keys and no vendor tools.
 - [../hwrng.md](../hwrng.md) — how hardware entropy reaches the app on this and the other boards.
 - [OS-build-instructions.md](OS-build-instructions.md) — detailed manual SDK build steps (original standalone layout).
 - [LUCKFOX_STARTUP_WORKFLOW.md](LUCKFOX_STARTUP_WORKFLOW.md) — on-device startup / camera sequencing.

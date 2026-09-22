@@ -696,11 +696,11 @@ while [ $retry_count -lt $MAX_RETRIES ]; do
     init_gnupg_home
 
     # Give the microSD time override a second chance. /mnt/microsd mounts late
-    # and conditionally here: S10mdev only registers the hotplug handler (it
-    # runs no coldplug pass) and the mount itself lives in fat-fsck-hotplug, so
-# a card present at power-on may not be mounted yet when the early
-# init_system_clock ran. By now the boot has spent tens of seconds in the
-# camera bootstrap, so it usually is.
+    # and conditionally: S10mdev registers the hotplug handler and re-triggers
+    # uevents for partitions that already existed (power-on card), but the mount
+    # itself happens asynchronously in fat-fsck-hotplug, so a power-on card may
+    # still not be mounted when the early init_system_clock ran. By now the boot
+    # has spent tens of seconds in the camera bootstrap, so it usually is.
     #
     # Guarded on the file existing rather than run unconditionally: re-applying
     # rewinds the clock by the boot elapsed time, which is fine when it buys a

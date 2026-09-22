@@ -2,12 +2,14 @@
 #
 # S10mdev - Register mdev as the kernel hotplug handler
 #
-# Enables automatic FAT filesystem repair when block devices (MicroSD cards,
-# USB drives) are inserted after boot.  mdev intercepts kernel hotplug events
-# and runs /usr/sbin/fat-fsck-hotplug for each new block partition.
+# Enables automatic FAT filesystem repair + mounting for block devices (MicroSD
+# cards, USB drives), whether inserted after boot or already present at power-on.
+# mdev intercepts kernel hotplug events and runs /usr/sbin/fat-fsck-hotplug for
+# each new block partition; a coldplug pass re-triggers the uevents of partitions
+# that existed before registration so a power-on card is handled too (see start()).
 #
-# Runs after S02fsck (which handles partitions present at boot) so that
-# both boot-time and hot-inserted storage devices are covered.
+# Runs after S02fsck (which fscks partitions present at boot) so that both
+# boot-time and hot-inserted storage devices are covered.
 #
 
 start() {
@@ -29,7 +31,24 @@ start() {
         echo "[mdev] Hotplug handler registered (/proc/sys/kernel/hotplug)"
     else
         echo "[mdev] WARNING: /proc/sys/kernel/hotplug not writable; hotplug events may not be received"
+        return 0
     fi
+
+    # Coldplug pass. Block devices probed before we registered - a card already
+    # inserted at power-on is the case that matters - emitted their "add" uevent
+    # while /proc/sys/kernel/hotplug was still empty, so it went to dmesg only and
+    # nothing will ever re-emit it. Re-trigger each existing partition's uevent:
+    # the kernel redelivers it as ACTION=add through the handler we just wrote,
+    # so fat-fsck-hotplug treats a power-on card exactly like a hot-inserted one.
+    # Non-FAT partitions (the eMMC/NAND root chain) exit immediately inside the
+    # helper, which is why this can run unconditionally. The events are handled
+    # asynchronously; by the time S99seedsigner starts the app, any FAT card is
+    # mounted at /mnt/microsd.
+    local sysdev
+    for sysdev in /sys/class/block/mmcblk[0-9]p* /sys/class/block/sd*; do
+        [ -e "$sysdev/uevent" ] || continue
+        echo add > "$sysdev/uevent" 2>/dev/null || true
+    done
 }
 
 stop() {
