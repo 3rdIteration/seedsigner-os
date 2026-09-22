@@ -35,7 +35,9 @@ def make_container(modulus, hdr_off=0x0, filler=b"\xa5", ldr=False):
         buf[0:4] = rk.LDR_TAG
     buf[hdr_off:hdr_off + 4] = rk.MAGIC_UNSIGNED
     struct.pack_into("<I", buf, hdr_off + 0x0c, 0x01)
-    buf[hdr_off + rk.MOD_OFF:hdr_off + rk.MOD_OFF + rk.SIG_LEN] = modulus.to_bytes(rk.SIG_LEN, "little")
+    # the whole key block (N, E, C) as the vendor tools write it, not just N
+    if modulus:
+        rk.write_key_block(buf, hdr_off, modulus)
     if ldr:
         rk.refresh_ldr_trailer(buf)
     return buf

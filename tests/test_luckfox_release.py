@@ -641,7 +641,7 @@ class CheckRelease(Base):
         buf[0:4] = rk.LDR_TAG
         buf[off:off + 4] = rk.MAGIC_UNSIGNED
         struct.pack_into("<I", buf, off + 0x0c, 0x01)
-        buf[off + rk.MOD_OFF:off + rk.MOD_OFF + rk.SIG_LEN] = N.to_bytes(rk.SIG_LEN, "little")
+        rk.write_key_block(buf, off, N)
         lay = rk.layout(buf)
         rk.sign_buf(buf, lay, N, D)
         if stale_trailer:
@@ -694,7 +694,17 @@ class Artifacts(unittest.TestCase):
         for d in self.bundles:
             with self.subTest(d=os.path.basename(d)):
                 rep = lr.check_release(d)
-                self.assertTrue(rep.ok, lr.format_report(rep))
+                dl = os.path.join(d, "download.bin")
+                if os.path.isfile(dl) and rk.ldr_release_time_ok(rk.read(dl)) is False:
+                    # Built before releaseTime was floored at 2025: check_release
+                    # must fail download.bin (a fused board refuses a 1970-dated
+                    # loader), and nothing else.
+                    bad = [(name, detail) for name, ok, detail in rep.items if not ok]
+                    self.assertEqual([name for name, _ in bad], ["download.bin"],
+                                     lr.format_report(rep))
+                    self.assertIn("releaseTime", bad[0][1])
+                else:
+                    self.assertTrue(rep.ok, lr.format_report(rep))
                 self.assertTrue(rep.boot_key["dev"])
                 self.assertTrue(rep.rootfs_key["dev"])
 

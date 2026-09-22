@@ -45,7 +45,16 @@
 #              time, so two builds of identical source differ in exactly those
 #              bytes plus the trailer checksum that covers them:
 #                - releaseTime is a packed rk_time (year u16 LE, month, day,
-#                  hour, minute, second) at header offset 14..20; set it to EPOCH.
+#                  hour, minute, second) at header offset 14..20; set it to
+#                  EPOCH, floored at 2025-01-01 00:00:00 (RELEASE_FLOOR_EPOCH).
+#                  The floor is load-bearing: a FUSED RV1103/RV1106 refuses a
+#                  download.bin dated 1970-01-01 at Download Boot ("Download
+#                  boot failed!") even when it is correctly signed, and the
+#                  default SOURCE_DATE_EPOCH=0 used to write exactly that date.
+#                  2025-01-01 is the earliest date confirmed working on a fused
+#                  board (2026-09-21). It is still a constant, so builds stay
+#                  reproducible. rkloader.py applies the same floor when
+#                  it re-signs (LDR_RELEASE_FLOOR).
 #                - download.bin's last 4 bytes are CRC-32 over the rest of the
 #                  file -- table-driven, init 0, no final XOR, polynomial
 #                  0x04C10DB7 (boot_merger.c's gTable_Crc32; NOT the standard
@@ -210,6 +219,11 @@ def rk_crc32(data):
 
 path = sys.argv[1]
 epoch = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+# A fused board rejects a 1970-dated download.bin - see the header comment.
+# Applied to update.img's RKFW header too; it is the same field, and nothing
+# needs it to be older.
+RELEASE_FLOOR_EPOCH = 1735689600          # 2025-01-01 00:00:00 UTC
+epoch = max(epoch, RELEASE_FLOOR_EPOCH)
 data = bytearray(open(path, "rb").read())
 tag = bytes(data[:4])
 

@@ -675,10 +675,17 @@ def check_release(folder, profile=None):
         # flashing tools verify it on load and reject a stale one.
         trail = rk.ldr_trailer_ok(buf)
         detail = "signature %s, components %s" % ("ok" if sig else "BAD", "ok" if comp else "STALE")
+        # What a FUSED board checks beyond the signature: the header key block
+        # it hashes against OTP, what an armed SPL would burn, and download.bin's
+        # releaseTime. All of these pass on an unfused board, and getting any of
+        # them wrong strands a fused one in maskrom.
+        fused = rk.fused_boot_problems(buf) if key else []
         if key != n:
             rep.add(name, False, "embeds a DIFFERENT key from idblock.img")
         elif trail is False:
             rep.add(name, False, detail + ", trailer CRC STALE - flashing tools will reject this file")
+        elif fused:
+            rep.add(name, False, detail + "; FUSED BOARD WOULD REJECT: " + "; ".join(fused))
         else:
             rep.add(name, sig and comp, detail)
         if name == "idblock.img":

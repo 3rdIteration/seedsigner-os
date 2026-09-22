@@ -44,7 +44,9 @@ def make_container(modulus, hdr_off=0x0, filler=b"\xa5", ldr=False):
         buf[0:4] = rk.LDR_TAG
     buf[hdr_off:hdr_off + 4] = rk.MAGIC_UNSIGNED
     struct.pack_into("<I", buf, hdr_off + 0x0c, 0x01)
-    buf[hdr_off + rk.MOD_OFF:hdr_off + rk.MOD_OFF + rk.SIG_LEN] = modulus.to_bytes(rk.SIG_LEN, "little")
+    # the whole key block (N, E, C) as the vendor tools write it, not just N
+    if modulus:
+        rk.write_key_block(buf, hdr_off, modulus)
     buf[hdr_off + rk.HDR_LEN:hdr_off + rk.HDR_LEN + rk.SIG_LEN] = b"\x00" * rk.SIG_LEN
     if ldr:
         rk.refresh_ldr_trailer(buf)
@@ -420,12 +422,12 @@ def make_flashhead_container(modulus, inner_size=0x800):
     buf[hdr:hdr + 4] = rk.MAGIC_UNSIGNED
     struct.pack_into("<I", buf, hdr + 0x0c, 0x01)
     struct.pack_into("<HH", buf, hdr + 0x0d0, start_s, count_s)
-    buf[hdr + rk.MOD_OFF:hdr + rk.MOD_OFF + rk.SIG_LEN] = modulus.to_bytes(rk.SIG_LEN, "little")
+    rk.write_key_block(buf, hdr, modulus)
 
     inner = bytearray(b"\xa5" * inner_size)
     inner[0:4] = rk.MAGIC_SIGNED
     struct.pack_into("<I", inner, 0x0c, 0x11)
-    inner[rk.MOD_OFF:rk.MOD_OFF + rk.SIG_LEN] = modulus.to_bytes(rk.SIG_LEN, "little")
+    rk.write_key_block(inner, 0, modulus)
     buf[region_start:region_start + inner_size] = rk._flashhead_xor(bytes(inner))
     rk.refresh_ldr_trailer(buf)
     return buf
@@ -655,7 +657,20 @@ class Artifacts(unittest.TestCase):
             self.skipTest("no signed build under opt/luckfox/build-output/ (gitignored)")
         for p in images:
             with self.subTest(image=os.path.relpath(p, REPO)):
-                self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 0)
+                buf = rk.read(p)
+                if rk.ldr_release_time_ok(buf) is False:
+                    # Built before ss-fs-normalise floored releaseTime at 2025:
+                    # verify must now fail it (a fused board refuses 1970-dated
+                    # loaders), and that must be the ONLY fused-board problem.
+                    self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 2)
+                    problems = rk.fused_boot_problems(buf)
+                    self.assertEqual(len(problems), 1, problems)
+                    self.assertIn("releaseTime", problems[0])
+                    rk.pin_ldr_release_time(buf)
+                    rk.refresh_ldr_trailer(buf)
+                    self.assertEqual(rk.fused_boot_problems(buf), [])
+                else:
+                    self.assertEqual(rk.main(["verify", p, "--pubkey", DEV_PUB]), 0)
 
     def test_ldr_trailers_are_valid_as_shipped(self):
         pat = os.path.join(REPO, "opt", "luckfox", "build-output", "*signed-devkey*")
@@ -775,6 +790,122 @@ class Artifacts(unittest.TestCase):
                 self.assertTrue(rk.rsa_verify_digest(
                     rk.msg_digest(bytearray(pt), inner),
                     int.from_bytes(pt[rk.HDR_LEN:rk.HDR_LEN + rk.SIG_LEN], "little"), n))
+
+
+class FusedBoard(unittest.TestCase):
+    """What a FUSED board checks beyond the signature.
+
+    Regression for 2026-09-21. A Mini was re-signed to a new key, armed and
+    burned, and then dropped straight to maskrom. Nothing flashed afterwards
+    was accepted:
+      * set_pubkey rewrote the header modulus but left C (hdr+0x410, the PKA
+        Barrett constant) holding the dev key's value, so the header's OTP
+        hash differed from the one the SPL burned;
+      * every download.bin carried a 1970-01-01 releaseTime, which a fused
+        board refuses at Download Boot;
+      * the flashhead's own SPL DTB was never re-keyed.
+    Every software verifier passed all three.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.n, cls.e, cls.d = rk.load_privkey(DEV_KEY)
+        # flip a HIGH bit: a low-bit flip leaves floor(2^2180/n) - and so C -
+        # unchanged, which would make every stale-C assertion vacuous
+        cls.other = cls.n ^ (1 << 2040)
+
+    def _otp_ok(self, buf, base, n):
+        return rk.key_block_hash(buf, base) == rk.burn_key_hash(n.to_bytes(rk.SIG_LEN, "big"))
+
+    def test_key_block_hash_is_the_burn_hash(self):
+        """The header key block and rsa_burn_key_hash()'s buffer are the same
+        bytes - that identity is what makes the burned OTP match the ROM."""
+        buf = make_container(self.n)
+        self.assertTrue(self._otp_ok(buf, 0, self.n))
+
+    def test_set_pubkey_rewrites_the_c_field(self):
+        buf = make_container(self.n)
+        rk.set_pubkey(buf, rk.layout(buf), self.other)
+        self.assertEqual(bytes(buf[rk.PKA_C_OFF:rk.PKA_C_OFF + rk.PKA_C_LEN]),
+                         rk.pka_c_field(self.other))
+        self.assertTrue(self._otp_ok(buf, 0, self.other),
+                        "re-keyed header does not hash to the new key's OTP value")
+
+    def test_stale_c_is_a_fused_board_problem(self):
+        """Exactly the bricking image: the new modulus with the old key's C."""
+        buf = make_container(self.n)
+        buf[rk.MOD_OFF:rk.MOD_OFF + rk.SIG_LEN] = self.other.to_bytes(rk.SIG_LEN, "little")
+        problems = rk.fused_boot_problems(buf)
+        self.assertTrue(any("stale PKA constant C" in p for p in problems), problems)
+
+    def test_set_pubkey_rekeys_the_flashhead_key_block(self):
+        buf = make_flashhead_container(self.n)
+        rk.set_pubkey(buf, rk.layout(buf), self.other)
+        self.assertTrue(self._otp_ok(buf, 0x1bc, self.other))
+        self.assertTrue(self._otp_ok(rk.flashhead_plaintext(buf), 0, self.other))
+
+    def test_armed_spl_and_header_must_agree(self):
+        """An idblock whose SPL would burn a different hash than its header
+        presents to the BootROM bricks the board on the boot after the burn."""
+        dtb = make_key_dtb(self.other)                 # SPL burns the new key...
+        buf = make_container(self.n)                   # ...header still the old one
+        buf.extend(dtb)
+        problems = rk.fused_boot_problems(buf)
+        self.assertTrue(any("bricks the board" in p for p in problems), problems)
+
+    def test_1970_release_time_is_pinned_on_sign(self):
+        buf = make_container(self.n, hdr_off=0x1bc, ldr=True)
+        struct.pack_into("<HBBBBB", buf, rk.LDR_RELEASE_OFF, 1970, 1, 1, 0, 0, 0)
+        rk.refresh_ldr_trailer(buf)
+        self.assertTrue(any("releaseTime" in p for p in rk.fused_boot_problems(buf)))
+        lay = rk.layout(buf)
+        rk.sign_buf(buf, lay, self.n, self.d)
+        self.assertEqual(rk.ldr_release_time(buf), rk.LDR_RELEASE_FLOOR)
+        self.assertTrue(rk.ldr_trailer_ok(buf))
+        self.assertEqual(rk.fused_boot_problems(buf), [])
+
+    def test_newer_release_time_is_left_alone(self):
+        buf = make_container(self.n, hdr_off=0x1bc, ldr=True)
+        struct.pack_into("<HBBBBB", buf, rk.LDR_RELEASE_OFF, 2026, 9, 21, 23, 4, 55)
+        self.assertFalse(rk.pin_ldr_release_time(buf))
+        self.assertEqual(rk.ldr_release_time(buf), (2026, 9, 21, 23, 4, 55))
+
+    def test_real_bundle_rekey_is_fused_board_clean(self):
+        """Full re-key of a real build with a real second key: header, flashhead
+        header and flashhead SPL DTB must all end up on the new key, and the
+        hash an armed SPL would burn must equal what the ROM will compute."""
+        try:
+            from Cryptodome.PublicKey import RSA
+        except ImportError:
+            self.skipTest("Cryptodome not available (needed for a second test key)")
+        pat = os.path.join(REPO, "opt", "luckfox", "build-output", "*signed-devkey*")
+        dirs = [d for d in glob.glob(pat)
+                if os.path.isfile(os.path.join(d, "download.bin"))
+                and os.path.isfile(os.path.join(d, "idblock.img"))]
+        if not dirs:
+            self.skipTest("no signed build with both images (gitignored)")
+        other = RSA.generate(2048)
+        n1, d1 = int(other.n), int(other.d)
+        want = rk.burn_key_hash(n1.to_bytes(rk.SIG_LEN, "big"))
+        for d in dirs:
+            for name in ("idblock.img", "download.bin"):
+                with self.subTest(image=os.path.join(os.path.basename(d), name)):
+                    buf = rk.read(os.path.join(d, name))
+                    lay = rk.layout(buf)
+                    rk.set_pubkey(buf, lay, n1)
+                    if name == "idblock.img":
+                        rk.arm_burn(buf, lay)
+                    rk.sign_buf(buf, lay, n1, d1)
+                    self.assertEqual(rk.fused_boot_problems(buf), [])
+                    self.assertEqual(rk.key_block_hash(buf, lay["hdr"]), want)
+                    if name == "idblock.img":
+                        self.assertEqual(rk.spl_burn_hash(buf), want)
+                    else:
+                        pt = rk.flashhead_plaintext(buf)
+                        self.assertEqual(rk.spl_burn_hash(pt), want,
+                                         "flashhead SPL DTB still on the old key")
+                        self.assertTrue(rk.components_ok(bytearray(pt), {"hdr": 0}))
+                        self.assertTrue(rk.flashhead_sig_ok(buf, n1))
 
 
 if __name__ == "__main__":
