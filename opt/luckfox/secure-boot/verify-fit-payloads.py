@@ -22,8 +22,8 @@ unsigned build's. The key used does NOT affect any payload here.
 
 Not covered: the loader (download.bin / idblock.img). Its SPL DTB embeds the
 pubkey + burn-key-hash + an rk_sign_tool signature as binary inside a boot_merger
-blob (pubkey modulus little-endian near 0x3bc; see secure-boot.md §10 Q16), so it
-is not a plain FIT and needs separate handling.
+blob (pubkey modulus little-endian near 0x3bc; see secure-boot.md §4.4 and Q16 in
+§7.2), so it is not a plain FIT - rkloader.py handles it.
 
 Pure stdlib — no dtc, no external deps.
 

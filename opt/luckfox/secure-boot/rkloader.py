@@ -28,6 +28,21 @@ byte-identical on mini/max NAND, mini production and pi eMMC builds):
     reproducible (the vendor tools also stamp wall-clock time elsewhere).
   * the RSA modulus is embedded LITTLE-ENDIAN at hdr+0x200; idblock.img also
     carries a big-endian copy in the SPL DTB's `rsa,modulus`.
+  * the header's KEY BLOCK is hdr[0x200:0x430] and has three fields:
+        0x200  N  0x200 bytes  modulus, little-endian, zero-padded
+        0x400  E  0x10 bytes   public exponent, little-endian
+        0x410  C  0x20 bytes   low 32 bytes (LE) of the PKA Barrett constant
+                               pka_barrett_np(n) - the same value the SPL DTB
+                               stores big-endian as `rsa,np`
+    sha256 of this block is what the BootROM compares against the OTP key hash,
+    and it is byte-for-byte the buffer the SPL's rsa_burn_key_hash() hashes
+    before it burns: sha256(hdr[0x200:0x430]) == burn_key_hash(n) on every
+    vendor-signed image, and `rk_sign_tool otp --loader --hash` prints it.
+    C is derived from the modulus, so RE-KEYING MUST REWRITE IT. A stale C
+    (the old key's constant) passes every software verifier, rk_sign_tool
+    vl/vb included, and unfused boards boot. But a board fused to the new key
+    rejects the loader without printing anything (UART shows only RKUART) -
+    see write_key_block() and fused_boot_problems().
 
 download.bin additionally has an integrity field OUTSIDE the header: its last
 4 bytes are CRC-32 over everything before them (boot_merger.c's gTable_Crc32 -
@@ -36,6 +51,14 @@ standard 0x04C11DB7). Rockchip's flashing tools verify it when they load the
 file, so every mutation must be followed by refresh_ldr_trailer() - a re-signed
 download.bin with a stale trailer is rejected by SoCtoolkit before anything is
 sent to the board. idblock.img has no such field.
+
+Its LDR container also carries a releaseTime (rk_time at offset 14). On a
+FUSED board, `upgrade_tool db` / SocToolkit's Download Boot fails ("Download
+boot failed!") when that date is 1970-01-01 00:00:00, which is what the
+reproducibility pin used to write, even for a correctly signed loader.
+2025-01-01 00:00:00 and live 2026 dates were both accepted on the same
+board (hardware-confirmed 2026-09-21). The field is outside every signature,
+so prepare_for_signing() raises any older date to LDR_RELEASE_FLOOR.
 
 And download.bin carries a THIRD structure: an RC4-obfuscated copy of the whole
 loader image (the "flashhead"), from the end of the header's second component
@@ -74,6 +97,9 @@ import sys, os, struct, hashlib, argparse, base64
 HDR_LEN  = 0x600           # signed header, and the offset of the signature after it
 SIG_LEN  = 256             # rsa2048
 MOD_OFF  = 0x200           # modulus offset inside the header, little-endian
+EXP_OFF  = 0x400           # public exponent, 16 bytes little-endian
+PKA_C_OFF, PKA_C_LEN = 0x410, 0x20   # low 32 LE bytes of pka_barrett_np(n)
+KEY_BLOCK = (0x200, 0x430) # what the BootROM hashes and compares against OTP
 SALT_LEN = 32              # recovered: equal to hLen
 MAGIC_UNSIGNED = b"RKNS"
 MAGIC_SIGNED   = b"RKSS"
@@ -240,6 +266,48 @@ def refresh_ldr_trailer(buf):
     if not is_ldr(buf):
         return False
     struct.pack_into("<I", buf, len(buf) - 4, ldr_crc32(bytes(buf[:-4])))
+    return True
+
+
+# --- the LDR releaseTime ------------------------------------------------------
+#
+# rk_boot_header.releaseTime (rk_time: year u16 LE, month, day, hour, minute,
+# second at offset 14..20) is stamped with the live clock by boot_merger and
+# was pinned to SOURCE_DATE_EPOCH (0 -> 1970-01-01) by ss-fs-normalise.sh for
+# reproducibility. A FUSED RV1103/RV1106 rejects a 1970-dated download.bin at
+# Download Boot. Unfused boards never check, which is how it went unnoticed.
+# Confirmed on one fused Mini (2026-09-21) by changing ONLY this field (and the
+# CRC it feeds): 1970-01-01 failed, and 2025-01-01 00:00:00 and a live 2026
+# date both passed. Which part of the chain checks the date is not known; the
+# floor is the earliest date proven good.
+
+LDR_RELEASE_OFF = 14
+LDR_RELEASE_FLOOR = (2025, 1, 1, 0, 0, 0)
+
+
+def ldr_release_time(buf):
+    """(year, month, day, hour, minute, second) of an LDR image, or None."""
+    if not is_ldr(buf) or len(buf) < LDR_RELEASE_OFF + 7:
+        return None
+    return struct.unpack_from("<HBBBBB", bytes(buf), LDR_RELEASE_OFF)
+
+
+def ldr_release_time_ok(buf):
+    """None for non-LDR images, else whether releaseTime is >= the floor."""
+    t = ldr_release_time(buf)
+    return None if t is None else t >= LDR_RELEASE_FLOOR
+
+
+def pin_ldr_release_time(buf):
+    """Raise an LDR releaseTime below LDR_RELEASE_FLOOR to the floor.
+
+    Deterministic (every older date maps to the same value), so reproducible
+    builds stay reproducible. Newer dates are left alone. Returns True when
+    the field changed; the caller must refresh the trailer afterwards.
+    """
+    if ldr_release_time_ok(buf) is not False:
+        return False
+    struct.pack_into("<HBBBBB", buf, LDR_RELEASE_OFF, *LDR_RELEASE_FLOOR)
     return True
 
 
@@ -529,11 +597,19 @@ def prepare_for_signing(buf, lay):
     already-marked form (every shipped signed image carries RKSS inside its own
     signed region). Marking afterwards silently produces a signature over the
     wrong bytes.
+
+    Also raises a pre-2025 LDR releaseTime to LDR_RELEASE_FLOOR (see
+    pin_ldr_release_time), because a fused board refuses a 1970-dated
+    download.bin. That field is outside the signed header, so it could be
+    fixed at any point. Doing it here covers every signing path (sign_buf,
+    splice, and the air-gap tools' splice), all of which refresh the trailer
+    afterwards.
     """
     hdr = lay["hdr"]
     buf[hdr:hdr + 4] = MAGIC_SIGNED
     flag = struct.unpack_from("<I", bytes(buf), hdr + 0x0c)[0]
     struct.pack_into("<I", buf, hdr + 0x0c, flag | 0x10)
+    pin_ldr_release_time(buf)
 
 
 def signing_digest(buf, lay):
@@ -575,6 +651,20 @@ def cmd_inspect(a):
         print("   flashhead      : [0x%x:0x%x] RC4-obfuscated, inner signature %s"
               % (reg[0], reg[0] + reg[1],
                  "VALID for the embedded key" if fh_ok else "INVALID for the embedded key"))
+    if n:
+        # What a fused board compares against OTP - the same value
+        # `rk_sign_tool otp --loader --hash` prints.
+        print("   OTP key hash   : %s  (sha256 of the header key block)"
+              % key_block_hash(buf, lay["hdr"]).hex())
+    burn = spl_burn_hash(buf)
+    if burn is not None:
+        print("   SPL burns      : %s%s" % (burn.hex(), "  (ARMED)" if is_burn_armed(buf) else ""))
+    rt = ldr_release_time(buf)
+    if rt is not None:
+        print("   releaseTime    : %04d-%02d-%02d %02d:%02d:%02d" % rt)
+    if n:
+        for p in fused_boot_problems(buf):
+            print("   !! FUSED BOARD : %s" % p)
     return 0
 
 
@@ -697,6 +787,97 @@ def burn_key_hash(n_be, e=65537):
     return hashlib.sha256(data).digest()
 
 
+def pka_c_field(n):
+    """The header's C field for modulus n: low PKA_C_LEN LE bytes of rsa,np."""
+    return pka_barrett_np(n).to_bytes(SIG_LEN, "little")[:PKA_C_LEN]
+
+
+def write_key_block(buf, base, n, e=65537):
+    """Write N, E and C for modulus `n` into the RKSS header at `base`.
+
+    The header's own copy of the key block, which is what the BootROM hashes
+    against OTP (see the module docstring). Write all three fields together.
+    Before this existed, set_pubkey rewrote N only and left the old key's C in
+    place, which bricks a board once its fuse is burned.
+    """
+    # N's field is 0x200 bytes (sized for RSA-4096); the BootROM hashes all of
+    # it, so the tail past a 2048-bit modulus must be zero.
+    buf[base + MOD_OFF:base + EXP_OFF] = n.to_bytes(EXP_OFF - MOD_OFF, "little")
+    buf[base + EXP_OFF:base + PKA_C_OFF] = e.to_bytes(PKA_C_OFF - EXP_OFF, "little")
+    buf[base + PKA_C_OFF:base + PKA_C_OFF + PKA_C_LEN] = pka_c_field(n)
+
+
+def key_block_hash(buf, base=0):
+    """sha256 over the header key block at `base` - the value OTP must hold."""
+    return hashlib.sha256(bytes(buf[base + KEY_BLOCK[0]:base + KEY_BLOCK[1]])).digest()
+
+
+def spl_burn_hash(buf):
+    """The `hash@np` value in idblock's SPL DTB, or None.
+
+    This is exactly what the SPL writes to OTP when armed. rsa_burn_key_hash()
+    hashes the DTB's key and refuses to burn unless the result equals this
+    value, so a board that printed "Write RSA key hash successfully" holds it.
+    """
+    loc = find_spl_dtb(buf)
+    if loc is None:
+        return None
+    off, size = loc
+    props = _fitsign().fdt_props(bytearray(bytes(buf[off:off + size])))
+    for node in props:
+        if node.startswith("/signature/key-") and node.endswith("/hash@np"):
+            v = props[node].get("value")
+            v = v[0] if isinstance(v, tuple) else v
+            return bytes(v) if v else None
+    return None
+
+
+def fused_boot_problems(buf):
+    """Why a board fused to this image's key would still refuse it.
+
+    Returns a list of human-readable problems (empty = none found). Everything
+    here is invisible to signature verification and to unfused boards:
+
+      * a header key block whose C/E do not match its modulus (outer header,
+        and the flashhead's inner header in download.bin);
+      * an idblock whose SPL would BURN a different hash than its header
+        presents to the BootROM - arming it bricks the board on the next boot;
+      * a download.bin dated before LDR_RELEASE_FLOOR, which a fused board
+        refuses at Download Boot.
+    """
+    problems = []
+    lay = layout(buf)
+    n = read_modulus(buf, lay)
+    if not n:
+        return ["no public key embedded"]
+    want = burn_key_hash(n.to_bytes(SIG_LEN, "big"))
+    if key_block_hash(buf, lay["hdr"]) != want:
+        problems.append("header key block (N/E/C at hdr+0x200..0x430) does not match its "
+                        "modulus - stale PKA constant C; a fused BootROM rejects this image")
+    reg = flashhead_region(buf)
+    if reg is not None:
+        pt = flashhead_plaintext(buf)
+        if key_block_hash(pt, 0) != want:
+            problems.append("flashhead key block does not match the modulus (stale C inside "
+                            "the RC4 copy); the loader it writes would not boot on a fused board")
+        if not flashhead_sig_ok(buf, n):
+            # e.g. an air-gap re-sign that spliced only the outer signature and
+            # left the vendor's dev-key signature on the embedded copy.
+            problems.append("flashhead inner signature is not valid for the embedded key; the "
+                            "idblock it writes (upgrade_tool ul / update.img) would not boot on "
+                            "a fused board")
+    burn = spl_burn_hash(buf)
+    if burn is not None and burn != key_block_hash(buf, lay["hdr"]):
+        problems.append("SPL would burn OTP hash %s but the header presents %s to the "
+                        "BootROM - arming this image bricks the board"
+                        % (burn.hex()[:16], key_block_hash(buf, lay["hdr"]).hex()[:16]))
+    if ldr_release_time_ok(buf) is False:
+        problems.append("LDR releaseTime %04d-%02d-%02d is before %04d-%02d-%02d; a fused board "
+                        "refuses it at Download Boot" % (ldr_release_time(buf)[:3]
+                                                         + LDR_RELEASE_FLOOR[:3]))
+    return problems
+
+
 def swap_pka_constants(buf, old_n, new_n):
     """Rewrite `rsa,np` and `hash@np` after a modulus change. Returns hits.
 
@@ -723,55 +904,76 @@ def swap_pka_constants(buf, old_n, new_n):
     return hits
 
 
+def _rekey_spl_dtb(buf, old, n):
+    """Swap the SPL DTB's copy of the key and its derived constants. Returns hits.
+
+    The DTB carries the modulus big-endian plus rsa,n0-inverse, rsa,r-squared
+    (when present), rsa,np and hash@np, all derived from the modulus. Found by
+    byte search, so this is a no-op on buffers that do not contain them.
+    """
+    hits = 0
+    old_be = old.to_bytes(SIG_LEN, "big")
+    new_be = n.to_bytes(SIG_LEN, "big")
+    at = bytes(buf).find(old_be)
+    while at >= 0:
+        buf[at:at + SIG_LEN] = new_be
+        hits += 1
+        at = bytes(buf).find(old_be, at + SIG_LEN)
+    old_n0 = (-pow(old, -1, 1 << 32)) % (1 << 32)
+    new_n0 = (-pow(n, -1, 1 << 32)) % (1 << 32)
+    at = bytes(buf).find(struct.pack(">I", old_n0))
+    if at >= 0:
+        struct.pack_into(">I", buf, at, new_n0)
+        hits += 1
+    old_r2 = pow(2, 2 * 2048, old).to_bytes(SIG_LEN, "big")
+    new_r2 = pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big")
+    at = bytes(buf).find(old_r2)
+    if at >= 0:
+        buf[at:at + SIG_LEN] = new_r2
+        hits += 1
+    # The SKE engine's Barrett constant and the OTP-burn pin derive from the
+    # modulus too; without these a re-keyed loader fails on-device with
+    # "invalid pss padding (0xbc is missing)" while software verifiers pass.
+    hits += swap_pka_constants(buf, old, n)
+    return hits
+
+
 def set_pubkey(buf, lay, n):
     """Re-embed public key `n`, clearing the now-meaningless signature.
 
-    Returns the number of locations rewritten. Also updates the big-endian copy
-    in idblock's SPL DTB and the derived Montgomery/PKA constants (see
-    swap_pka_constants).
+    Returns the number of locations rewritten. Rewrites the header key block
+    (N, E and C - see write_key_block), the SPL DTB's copy of the key and its
+    derived constants (_rekey_spl_dtb), and, in download.bin, the same things
+    inside the RC4-obfuscated flashhead.
     """
     old = read_modulus(buf, lay)
-    off, _ = lay["mod"]
-    buf[off:off + SIG_LEN] = n.to_bytes(SIG_LEN, "little")
+    # The whole header key block, not just N: the BootROM hashes N||E||C, and
+    # C derives from the modulus.
+    write_key_block(buf, lay["hdr"], n)
     replaced = 1
     if old:
-        old_be = old.to_bytes(SIG_LEN, "big")
-        new_be = n.to_bytes(SIG_LEN, "big")
-        at = bytes(buf).find(old_be)
-        while at >= 0:
-            buf[at:at + SIG_LEN] = new_be
-            replaced += 1
-            at = bytes(buf).find(old_be, at + SIG_LEN)
-        old_n0 = (-pow(old, -1, 1 << 32)) % (1 << 32)
-        new_n0 = (-pow(n, -1, 1 << 32)) % (1 << 32)
-        at = bytes(buf).find(struct.pack(">I", old_n0))
-        if at >= 0:
-            struct.pack_into(">I", buf, at, new_n0)
-            replaced += 1
-        old_r2 = pow(2, 2 * 2048, old).to_bytes(SIG_LEN, "big")
-        new_r2 = pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big")
-        at = bytes(buf).find(old_r2)
-        if at >= 0:
-            buf[at:at + SIG_LEN] = new_r2
-            replaced += 1
-        # The SKE engine's Barrett constant and the OTP-burn pin derive from the
-        # modulus too; without these a re-keyed loader fails on-device with
-        # "invalid pss padding (0xbc is missing)" while software verifiers pass.
-        replaced += swap_pka_constants(buf, old, n)
-    # The embedded flashhead carries its own little-endian copy of the modulus,
-    # RC4-obfuscated so the byte searches above cannot reach it. Rewrite it in
-    # plaintext space or a re-keyed download.bin would verify here and fail on
-    # device (the inner header vouches for the OLD key).
+        replaced += _rekey_spl_dtb(buf, old, n)
+    # The embedded flashhead is a full idblock image - header key block AND an
+    # SPL DTB - RC4-obfuscated so the byte searches above cannot reach it.
+    # Re-key it in plaintext space. With only the header rewritten, the flashhead
+    # would still carry the old key in its SPL DTB, so any tool that writes it
+    # to NAND as the idblock (upgrade_tool ul, an update.img Upgrade) installs an
+    # SPL that rejects the re-keyed uboot.img. Its component hashes cover that
+    # DTB, so refresh them; resign_flashhead() signs the header afterwards.
     reg = flashhead_region(buf)
     if reg is not None:
         start, size = reg
         pt = bytearray(_flashhead_xor(bytes(buf[start:start + size])))
-        pt[MOD_OFF:MOD_OFF + SIG_LEN] = n.to_bytes(SIG_LEN, "little")
-        buf[start:start + size] = _flashhead_xor(bytes(pt))
+        write_key_block(pt, 0, n)
         replaced += 1
+        if old:
+            replaced += _rekey_spl_dtb(pt, old, n)
+        rehash_components(pt, {"hdr": 0})
+        buf[start:start + size] = _flashhead_xor(bytes(pt))
     soff, _ = lay["sig"]
     buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
     buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
+    pin_ldr_release_time(buf)
     refresh_ldr_trailer(buf)
     return replaced
 
@@ -828,6 +1030,15 @@ def cmd_verify(a):
         # or one signed with a different key than `n`.
         print("FAIL: %s verifies but its embedded flashhead signature is invalid "
               "for this key" % a.image)
+        return 2
+    problems = fused_boot_problems(buf)
+    if problems:
+        # Signatures are fine but a fused board would still refuse this image.
+        # None of these show up on an unfused board, which is exactly why they
+        # have to fail here.
+        print("FAIL: %s verifies in software but a FUSED board would reject it:" % a.image)
+        for p in problems:
+            print("   %s" % p)
         return 2
     extra = "" if fh_ok is None else " + flashhead signature"
     print("OK: %s verifies (RSA-PSS header signature%s + %d component hash(es))"
@@ -1013,6 +1224,39 @@ def cmd_setburn(a):
     return 0
 
 
+def _zero_key_material(buf, n):
+    """Zero the SPL DTB's key-dependent fields for modulus n. Returns hits.
+
+    idblock.img (and the flashhead copy inside download.bin) carries the key
+    big-endian in its SPL DTB, plus the derived Montgomery/PKA constants and
+    the OTP burn pin. All of them are key-dependent, so all of them have to go
+    or two images signed with different keys will not canonicalise to the
+    same bytes.
+    """
+    zeroed = 0
+    for blob in (n.to_bytes(SIG_LEN, "big"),
+                 pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big"),
+                 pka_barrett_np(n).to_bytes(SIG_LEN, "big")):
+        at = bytes(buf).find(blob)
+        while at >= 0:
+            buf[at:at + SIG_LEN] = b"\x00" * SIG_LEN
+            zeroed += 1
+            at = bytes(buf).find(blob, at + SIG_LEN)
+    n0 = struct.pack(">I", (-pow(n, -1, 1 << 32)) % (1 << 32))
+    at = bytes(buf).find(n0)
+    if at >= 0:
+        struct.pack_into(">I", buf, at, 0)
+        zeroed += 1
+    # the OTP burn pin is a sha256 over the key material - key-dependent too
+    bh = burn_key_hash(n.to_bytes(SIG_LEN, "big"))
+    at = bytes(buf).find(bh)
+    while at >= 0:
+        buf[at:at + len(bh)] = b"\x00" * len(bh)
+        zeroed += 1
+        at = bytes(buf).find(bh, at + len(bh))
+    return zeroed
+
+
 def cmd_canonicalise(a):
     """Zero every byte a rebuild cannot reproduce: the signature and the key.
 
@@ -1026,44 +1270,27 @@ def cmd_canonicalise(a):
     n = read_modulus(buf, lay)
     buf[soff:soff + SIG_LEN] = b"\x00" * SIG_LEN
     buf[moff:moff + SIG_LEN] = b"\x00" * SIG_LEN
-    zeroed = 1
-    # idblock.img also carries the key big-endian in its SPL DTB, plus the
-    # derived Montgomery constants. All of them are key-dependent, so all of
-    # them have to go or two images signed with different keys will not
-    # canonicalise to the same bytes.
+    # the header key block's C field derives from the modulus
+    buf[lay["hdr"] + PKA_C_OFF:lay["hdr"] + PKA_C_OFF + PKA_C_LEN] = b"\x00" * PKA_C_LEN
+    zeroed = 2
     if n:
-        for blob in (n.to_bytes(SIG_LEN, "big"),
-                     pow(2, 2 * 2048, n).to_bytes(SIG_LEN, "big"),
-                     pka_barrett_np(n).to_bytes(SIG_LEN, "big")):
-            at = bytes(buf).find(blob)
-            while at >= 0:
-                buf[at:at + SIG_LEN] = b"\x00" * SIG_LEN
-                zeroed += 1
-                at = bytes(buf).find(blob, at + SIG_LEN)
-        n0 = struct.pack(">I", (-pow(n, -1, 1 << 32)) % (1 << 32))
-        at = bytes(buf).find(n0)
-        if at >= 0:
-            struct.pack_into(">I", buf, at, 0)
-            zeroed += 1
-        # the OTP burn pin is a sha256 over the key material - key-dependent too
-        bh = burn_key_hash(n.to_bytes(SIG_LEN, "big"))
-        at = bytes(buf).find(bh)
-        while at >= 0:
-            buf[at:at + len(bh)] = b"\x00" * len(bh)
-            zeroed += 1
-            at = bytes(buf).find(bh, at + len(bh))
+        zeroed += _zero_key_material(buf, n)
     buf[lay["hdr"]:lay["hdr"] + 4] = MAGIC_UNSIGNED
-    # The embedded flashhead carries its own copy of the signature and modulus,
-    # RC4-obfuscated - zero those too or two images signed with different keys
-    # canonicalise to different ciphertext.
+    # The embedded flashhead carries its own copy of the signature, the key
+    # block and the SPL DTB's key material, RC4-obfuscated - zero those too or
+    # two images signed with different keys canonicalise to different
+    # ciphertext.
     reg = flashhead_region(buf)
     if reg is not None:
         start, size = reg
         pt = bytearray(_flashhead_xor(bytes(buf[start:start + size])))
         pt[HDR_LEN:HDR_LEN + SIG_LEN] = b"\x00" * SIG_LEN
         pt[MOD_OFF:MOD_OFF + SIG_LEN] = b"\x00" * SIG_LEN
+        pt[PKA_C_OFF:PKA_C_OFF + PKA_C_LEN] = b"\x00" * PKA_C_LEN
+        zeroed += 3
+        if n:
+            zeroed += _zero_key_material(pt, n)
         buf[start:start + size] = _flashhead_xor(bytes(pt))
-        zeroed += 2
     # The trailer covers the zeroed key bytes too; refreshing keeps canonical
     # output independent of which key signed it.
     refresh_ldr_trailer(buf)

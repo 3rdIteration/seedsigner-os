@@ -16,7 +16,7 @@ python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
         [--rsa-pubkey F] [--rootfs-pubkey F] [--no-check]
 ```
 
-One command per card round-trip with the device's **Sign Digest** action (or any other signer):
+One command per card round-trip with the device's **Sign Digests on Card** action (or any other signer):
 `digests` writes `<card>/seedsigner-release-sign/` with a manifest and one `.digest` per artifact;
 the device signs them and also drops the public halves of whatever keys it used into that folder as
 `release-rsa.pub` / `release-rootfs.pub`; `splice` verifies and splices every returned signature back
@@ -24,13 +24,13 @@ into the bundle, injects a tier-C `.minisig` into `boot.img`'s initramfs (before
 covers that ramdisk), fixes any sd_update.txt write lengths the rework changed, and finishes with a
 full release check. Because the card carries its own public keys, `splice` needs no `--*-pubkey`
 flags in the normal case — they are only there to override the folder's copies (e.g. when signing was
-done by something other than Sign Digest). The rootfs digest is UBI-aware — on NAND bundles it hashes
+done by something other than Sign Digests on Card). The rootfs digest is UBI-aware — on NAND bundles it hashes
 the logical volume exactly as the device streams it, not the raw file bytes.
 
 `rekey` is round 0 of an air-gap **re-key** (moving a release off its current boot key): it embeds the
 new RSA public key into `download.bin`, `idblock.img` and `uboot.img` using only the public halves —
 the private key never touches this machine. It reads `release-rsa.pub` from the card (written by the
-device's **Export Pubkeys** or a previous **Sign Digest**), clears the loaders' signatures, refreshes
+device's **Air-Gap Signing Round 0** or a previous **Sign Digests on Card**), clears the loaders' signatures, refreshes
 idblock's component hashes and uboot's payload hash, removes the stale `update.img`, and leaves
 `boot.img` alone — its initramfs holds the rootfs key pair, which `splice` replaces via the tier-C
 injection (that also sets `/init`'s pass-screen key classes). A full re-key then takes **two** signing
@@ -42,13 +42,13 @@ python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
 
 # round 1 - rootfs first, so boot.digest is taken over the FINAL initramfs
 python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard --only rootfs
-# ... device: Sign Digest ...
+# ... device: Sign Digests on Card ...
 python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard --only rootfs --no-check
 
 # round 2 - everything else, over the re-keyed images and the injected ramdisk
 python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard \
         --only download,idblock,uboot,boot
-# ... device: Sign Digest ...
+# ... device: Sign Digests on Card ...
 python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard   # must print RESULT: VALID
 ```
 

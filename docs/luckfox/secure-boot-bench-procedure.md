@@ -1,12 +1,14 @@
 # Luckfox secure boot — bench procedure
 
 A runnable checklist for testing Rockchip secure boot on a **sacrificial**
-RV1103/RV1106 board. Read [`secure-boot.md`](secure-boot.md) first for what
-secure boot does and does not protect, and the consequences of the fuse.
+RV1103/RV1106 board. Read [`secure-boot.md`](secure-boot.md) first — §1 for what
+secure boot does and does not protect, §2 for the ways to sign a release, and §3
+for arming, the consequences of the fuse, and recovery. This document is the
+step-by-step bench version of §3.
 
 Everything up to Stage D is reversible (reflash). **Stage D burns a one-time
 fuse and cannot be undone.** Do Stages 0–C on a board you have *not* fused, and
-answer the recovery question in [§Recovery](#recovery-answer-this-before-stage-d)
+answer the recovery question in [§Recovery](#recovery--answer-this-before-stage-d)
 before burning anything.
 
 Commands below were validated in WSL against `rkbin` @ `3rdIteration/rkbin` and a
@@ -69,14 +71,14 @@ The signing key is then reproducible from the BIP39 seed + derivation path — t
 whole backup advantage.
 
 > **Use a dedicated seed (or at least a dedicated index) for firmware signing.**
-> This key carries the custody weight described in `secure-boot.md` §7: whoever
+> This key carries the custody weight described in `secure-boot.md` §1.1: whoever
 > holds the seed can regenerate it and sign firmware your fused devices trust. Do
 > not reuse a wallet seed.
 
-> **Size:** 2048 matches the shipped `sha256,rsa2048` FITs and the documented
-> BootROM size. `rk_sign_tool` signs and verifies 4096 too, but whether the
-> RV1106 BootROM accepts 4096 for the **loader** is unverified in silicon — a
-> mismatch is only discovered *after* the fuse. Test 4096 on a spare board first.
+> **Size: use 2048.** `rk_sign_tool` signs and verifies 4096 too, but the SPL's
+> hardware-crypto verify is hardcoded to RSA-2048 and rejects anything else with
+> `-EINVAL` before the BootROM is ever reached (bench-confirmed 2026-09-12,
+> `secure-boot.md` §7.6). **Do not fuse a 4096 hash.**
 
 ### Sign + verify + see the OTP hash
 
@@ -95,7 +97,8 @@ Expected (validated) — both verifies pass and the OTP hash is printed:
     dc ac a7 a1 77 59 3b 69 d5 18 73 5b df 12 94 31
 ```
 
-Record that hash. After fusing there is no way to read it back to compare.
+Record that hash. After fusing, Linux cannot read it back; the only other
+record is the burning idblock's SPL `hash@np` (`secure-boot.md` §3.5).
 
 ---
 
@@ -243,6 +246,34 @@ prompt at `bootdelay=0` — bench-confirmed — so a fused production build also
 > `.img`). So a board fused to the public dev key is fully recoverable — the
 > committed dev key is public, so anyone can produce a loader it accepts.
 
+> **Re-signed (non-dev) keys (2026-09-21).** A board fused to a re-signed key
+> went straight to maskrom after the burn and refused every `download.bin`,
+> until two defects were fixed. Neither one shows on an unfused board:
+> a stale PKA constant in the re-keyed loader header, and a 1970-01-01
+> `releaseTime` in every CI `download.bin`
+> ([secure-boot.md §7.8](secure-boot.md#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
+> Before Stage 4, every one of these must pass on the exact files you will flash:
+>
+> ```sh
+> python3 "$SB/rkloader.py" inspect idblock.img     # "OTP key hash" == "SPL burns", no "!! FUSED BOARD"
+> python3 "$SB/rkloader.py" verify  download.bin --pubkey your.pub
+> python3 "$SB/luckfox_release.py" check <release folder>
+> ```
+>
+> Also keep a `download.bin` for the new key on hand, one that `rkloader.py verify`
+> passes, before burning. If the board ever sits in maskrom, recover it with
+> [soctoolkit-cli.md](soctoolkit-cli.md) (`db`, then `wl`).
+
+> **MicroSD-only boards (2026-09-22).** A board with no NAND is armed by *writing
+> an armed card*, not by flashing over USB, and the recovery question above has a
+> different answer: maskrom cannot help, because Download mode never writes the
+> card — but rewriting the card with an image signed for the fused key always
+> does. Build the armed and unarmed cards from one folder, boot the unarmed one
+> first, and keep it. Steps:
+> [secure-boot.md §3.2, *Arming a board that boots from MicroSD*](secure-boot.md#32-ways-to-arm);
+> bench run: [§7.9](secure-boot.md#79-bench-re-signed-microsd-image-2026-09-22).
+> Stages 1–4 below are the NAND/USB path.
+
 ## Stage 4 — the burn (irreversible)
 
 ```sh
@@ -281,12 +312,12 @@ boots, the fuse did not take — the worst state, looking protected while not.
 ## Stage 6 — rootfs verification (initramfs verifier)
 
 With `SEEDSIGNER_FIT_SIGNATURE=1`, the signed `boot.img` carries a verifier
-initramfs that minisign-checks the rootfs volume before mounting it (§6.7 in
+initramfs that minisign-checks the rootfs volume before mounting it (§5.2 in
 `secure-boot.md`). One image covers both board states — test all three:
 
 **Fused board.** LCD: orange *Verifying rootfs Signature* → pass screen. The
 pass screen's colour and text depend on which keys signed this build (see
-**Dev-key indicator** in §6.7 of `secure-boot.md`): with the committed PUBLIC
+**Dev-key indicator** in §5.2 of `secure-boot.md`): with the committed PUBLIC
 dev keys it is yellow *PASSED / FIT: dev / rootfs: dev*; only a build signed
 with real secret keys shows green *PASSED / rootfs signature valid*. UART
 (`rootfs-verify:` prefix): `verifying minisign signature (streaming …)`, then
@@ -297,7 +328,7 @@ full-volume read, not a hang.
 enabled*, held ~5 s, then normal boot. UART: `secure boot NOT fused
 (fuse.programmed=0 on cmdline, no =1) — skipping rootfs verification`. If a
 *fused* board shows this instead, the fuse state is being misread — stop and
-investigate (see §13.3 E4 for how the first attempt failed exactly this way).
+investigate (see `secure-boot.md` §7.7, row E4, for how the first attempt failed exactly this way).
 
 **Tamper test (dev build, ADB).** Flip a few bytes in the volume, reboot:
 
@@ -315,41 +346,25 @@ rootfs`. Restore by reflashing the `rootfs` partition from the build output.
 
 ---
 
-## Airgapped signing on a SeedSigner (design + status)
+## Airgapped signing on a SeedSigner
 
-The goal: never let the private key touch the build machine — sign on an
-air-gapped SeedSigner using a BIP85-derived key, via `rk_sign_tool`'s
-extract/inject flow.
+Implemented. The private key can stay on a SeedSigner (BIP85-derived) for every
+tier: the PC writes 32–64-byte digests to a MicroSD card, the device signs them
+(Sign Digests on Card, or the guided Air-Gap Signing rounds), and `tools/airgap-sign.py` splices
+the signatures back. See [secure-boot.md §2.4](secure-boot.md#24-air-gapped-signing)
+for the procedure and [airgapped-signing.md](airgapped-signing.md) for the formats.
 
-**Validated so far:**
+This section used to record the attempt to finish `rk_sign_tool`'s
+extract/inject route (the `.sign.rsa` encoding). That route became unnecessary
+once the loader signature format was recovered directly (RSA-PSS, saltLen 32,
+little-endian — `secure-boot.md` §7.2, Q16), and `rkloader.py` now does the
+digest and splice itself.
 
-- `ss --extract` then `sl`/`sb` emit the data to be signed as **bare 32-byte
-  SHA-256 digests** (`si_usb_head.bin`, `si_flash_head.bin`, `si_idb_head.bin`).
-  32 bytes each — trivially a QR code.
-- `ss --inject` reads the signature back from a sibling file named
-  `<digest>.sign.rsa` (confirmed: it finds and validates that file).
-- The BIP85 RSA key can produce the signature (PyCryptodome / `cryptography`
-  can PSS-sign a precomputed digest).
+## See also
 
-So the shape works: **build machine emits digests → SeedSigner signs them with
-the BIP85 key → build machine injects.** Digests in, 256-byte signatures out,
-both small enough for QR.
-
-**Not yet cracked — the exact `.sign.rsa` encoding.** Every externally-produced
-signature so far was rejected by inject as "invalid signature". Reverse-
-engineering a tool-made signature showed **why, and the path to fix it**:
-
-- The loader stores the pubkey modulus N **little-endian** (found at offset
-  `0x3bc`, byte-for-byte equal to the key's N reversed). Rockchip uses
-  little-endian bignums throughout, so the signature is almost certainly
-  little-endian too — my attempts wrote it big-endian.
-- Signing is randomized, i.e. genuinely **RSA-PSS** (two tool signatures of the
-  same input differ), MGF1-SHA256.
-- Remaining unknowns: the PSS **salt length** the tool expects, whether the
-  `.sign.rsa` file is the bare little-endian signature or carries a small header,
-  and confirming the digest is signed as-is (not byte-reversed first).
-
-This is a bounded reverse-engineering task, not a fundamental blocker. Finishing
-it turns "sign on the build host" into "sign on an air-gapped SeedSigner", which
-is the ideal custody model for this key. Tracked as an open item; see
-`secure-boot.md` §10.
+- [secure-boot.md](secure-boot.md) — the hub: background, signing a release (all four methods),
+  burning the fuse and recovery, future work, findings. Its
+  [§8 Links and resources](secure-boot.md#8-links-and-resources) lists every related document,
+  tool and external reference.
+- [airgapped-signing.md](airgapped-signing.md) — signature formats and signers.
+- [soctoolkit-cli.md](soctoolkit-cli.md) — recovering a board with `upgrade_tool`.

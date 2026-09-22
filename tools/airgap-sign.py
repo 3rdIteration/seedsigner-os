@@ -16,7 +16,7 @@ One command per card round-trip:
 
   digests <bundle> --card <dir> [--only a,b,c]
       Write <card>/seedsigner-release-sign/ with manifest.txt and one .digest
-      per requested artifact, ready for the device's Sign Digest action (or any
+      per requested artifact, ready for the device's Sign Digests on Card action (or any
       other signer). The rootfs digest is UBI-aware: on NAND bundles it hashes
       the logical volume exactly as the device streams it from /dev/ubi0_0, not
       the raw file bytes.
@@ -27,7 +27,7 @@ One command per card round-trip:
       too heavy for small boards such as the Pico Mini). Reworks boot.img's
       initramfs in place (adds or removes /force-rootfs-verify), drops any stale
       update.img, and leaves boot.digest on the card. Sign it with the device's
-      Sign Digest, then `splice` puts the signature back and runs the full check.
+      Sign Digests on Card, then `splice` puts the signature back and runs the full check.
 
   splice <bundle> --card <dir> [--rsa-pubkey F] [--rootfs-pubkey F] [--no-check]
       Splice every signature the card carries back into the bundle: tier A and B
@@ -39,7 +39,7 @@ One command per card round-trip:
       --no-check skips that final step for intermediate round-trips, where the
       bundle is expected to be unsigned until the last splice lands.
 
-      The device's Sign Digest writes release-rsa.pub / release-rootfs.pub into
+      The device's Sign Digests on Card writes release-rsa.pub / release-rootfs.pub into
       the card folder alongside the signatures; when present they are used for
       verification automatically and the --*-pubkey flags are not needed (they
       still win if given).
@@ -63,8 +63,8 @@ import fitsign as fs             # noqa: E402
 import minisign as ms            # noqa: E402
 import luckfox_release as lr     # noqa: E402
 
-CARD_DIRNAME = "seedsigner-release-sign"   # Sign Digest writes here (digests, sigs, pubkeys)
-KEYS_DIRNAME = "seedsigner-release-keys"   # Export Pubkeys writes here (pubkeys + README)
+CARD_DIRNAME = "seedsigner-release-sign"   # Sign Digests on Card writes here (digests, sigs, pubkeys)
+KEYS_DIRNAME = "seedsigner-release-keys"   # Re-Key Round 0 writes here (pubkeys + README)
 
 # name -> (tier, kind). kind: "ldr" = rkloader image, "fit" = U-Boot FIT,
 # "rootfs" = the minisigned payload.
@@ -131,7 +131,7 @@ def _emit_digest(d, name, bundle):
 
 def _card_ready(card_dir_path):
     print("\ncard ready at %s - insert it into the SeedSigner and run" % card_dir_path)
-    print("Tools -> Luckfox Build Tools -> Sign Digest")
+    print("Tools -> Luckfox Build Tools -> Air-Gap Signing -> Sign Digests on Card")
 
 
 def cmd_digests(a):
@@ -216,6 +216,47 @@ def _splice_ldr(path, sig_path):
     print("%s: spliced (verified against the embedded key)" % os.path.basename(path))
 
 
+def _splice_flashhead(dl_path, idblock_sig_path):
+    """Sign download.bin's embedded flashhead with the device's idblock.sig.
+
+    The flashhead (the RC4-obfuscated idblock copy that `upgrade_tool ul` and
+    update.img upgrades write to flash) has its own inner header signature.
+    The air-gap flow has no digest for it. But after a re-key its header is
+    byte-identical to idblock.img's (unless idblock.img was armed afterwards),
+    so the signature the device made for idblock.digest signs it too. It is
+    verified before being written. If it does not verify, say so, because
+    `check` fails a download.bin whose flashhead is not signed by its key.
+    """
+    buf = rk.read(dl_path)
+    reg = rk.flashhead_region(buf)
+    if reg is None:
+        return
+    n = rk.read_modulus(buf, rk.layout(buf))
+    if rk.flashhead_sig_ok(buf, n):
+        print("download.bin flashhead: already signed by the embedded key")
+        return
+    with open(idblock_sig_path, "rb") as f:
+        sig = f.read()
+    if len(sig) in (rk.SIG_LEN * 2, rk.SIG_LEN * 2 + 1):
+        sig = bytes.fromhex(sig.decode().strip())
+    start, size = reg
+    pt = bytearray(rk._flashhead_xor(bytes(buf[start:start + size])))
+    inner = {"hdr": 0, "msg": (0, rk.HDR_LEN), "sig": (rk.HDR_LEN, rk.SIG_LEN)}
+    rk.prepare_for_signing(pt, inner)
+    if len(sig) != rk.SIG_LEN or not rk.rsa_verify_digest(
+            rk.msg_digest(pt, inner), int.from_bytes(sig, "little"), n):
+        print("  ! download.bin flashhead: idblock.sig does not sign it (its header differs "
+              "from idblock.img's - was idblock.img armed or re-keyed separately?). "
+              "The flashhead stays unsigned for this key.", file=sys.stderr)
+        return
+    pt[rk.HDR_LEN:rk.HDR_LEN + rk.SIG_LEN] = sig
+    buf[start:start + size] = rk._flashhead_xor(bytes(pt))
+    rk.refresh_ldr_trailer(buf)
+    with open(dl_path, "wb") as f:
+        f.write(buf)
+    print("download.bin flashhead: spliced idblock.sig (verified - same header as idblock.img)")
+
+
 def _splice_fit(path, sig_path, rsa_pubkey=None):
     buf = rk.read(path)
     node = fs.signature_node(buf)
@@ -235,7 +276,7 @@ def _splice_fit(path, sig_path, rsa_pubkey=None):
 
 
 def _pubkey(cli_value, card, filename):
-    """The CLI flag wins; otherwise the key on the card (Sign Digest's folder first, then Export Pubkeys')."""
+    """The CLI flag wins; otherwise the key on the card (Sign Digests on Card's folder first, then Round 0's)."""
     if cli_value:
         return cli_value
     for dirname in (CARD_DIRNAME, KEYS_DIRNAME):
@@ -248,7 +289,7 @@ def _pubkey(cli_value, card, filename):
 def cmd_rekey(a):
     rsa_pubkey = _pubkey(a.rsa_pubkey, a.card, "release-rsa.pub")
     if not rsa_pubkey:
-        sys.exit("no release-rsa.pub found (Export Pubkeys or Sign Digest writes it) - pass --rsa-pubkey")
+        sys.exit("no release-rsa.pub found (Air-Gap Signing Round 0 or Sign Digests on Card writes it) - pass --rsa-pubkey")
 
     new_n = rk.load_pubkey(rsa_pubkey)[0]
 
@@ -310,9 +351,9 @@ def cmd_rekey(a):
     # splice replaces via the tier-C injection (that also sets /init's key classes).
     print("\nboot.img left alone - its re-key happens at `splice` time (tier-C injection)")
     print("next steps for a full re-key:")
-    print("  digests --only rootfs            -> Sign Digest on the device")
+    print("  digests --only rootfs            -> Sign Digests on Card on the device")
     print("  splice --only rootfs --no-check  (injects; boot.img stays unsigned)")
-    print("  digests --only download,idblock,uboot,boot   -> Sign Digest")
+    print("  digests --only download,idblock,uboot,boot   -> Sign Digests on Card")
     print("  splice                           (final check_release must pass)")
 
 
@@ -331,7 +372,7 @@ def cmd_splice(a):
     if "rootfs" in names and os.path.isfile(minisig):
         if not rootfs_pubkey:
             sys.exit("rootfs.minisig is present but no release-rootfs.pub on the card "
-                     "(Sign Digest writes it) - pass --rootfs-pubkey")
+                     "(Sign Digests on Card writes it) - pass --rootfs-pubkey")
         boot = os.path.join(a.bundle, "boot.img")
         new_buf, done = lr.inject_rootfs_sig(rk.read(boot), folder=a.bundle,
                                              minisig_path=minisig, pubkey_path=rootfs_pubkey,
@@ -357,7 +398,20 @@ def cmd_splice(a):
         else:
             _splice_fit(path, sig, rsa_pubkey)
 
+    # download.bin's embedded idblock copy is signed with idblock.sig; see
+    # _splice_flashhead. It sits outside the outer header's components, so
+    # doing it after the outer splice changes nothing that splice verified.
+    dl, idsig = os.path.join(a.bundle, "download.bin"), os.path.join(d, "idblock.sig")
+    if "download" in names and os.path.isfile(dl) and os.path.isfile(idsig):
+        _splice_flashhead(dl, idsig)
+
     # The rework changes image sizes; keep the auto-flash script honest.
+    # A MicroSD/eMMC bundle ships a copy of the rootfs signature next to the
+    # rootfs; after a re-sign it would otherwise still hold the old one.
+    note = lr.refresh_rootfs_sidecar(a.bundle)
+    if note:
+        print(note)
+
     res = lr.sd_update_check(a.bundle, fix=True)
     for line in res["fixed"]:
         print("sd_update.txt fixed: %s" % line)
@@ -383,7 +437,7 @@ def main():
     s.add_argument("bundle", help="release folder to re-key in place")
     s.add_argument("--card", required=True,
                    help="MicroSD mount point holding release-rsa.pub "
-                        "(from Export Pubkeys or a previous Sign Digest), or any directory")
+                        "(from Air-Gap Signing Round 0 or a previous Sign Digests on Card), or any directory")
     s.add_argument("--rsa-pubkey", help="RSA public key (PEM) to embed; default: release-rsa.pub from the card")
     s.set_defaults(func=cmd_rekey)
 
@@ -395,7 +449,7 @@ def main():
 
     s = sub.add_parser(
         "force",
-        help="toggle the forced rootfs check via a Sign Digest round-trip (no private key needed here)")
+        help="toggle the forced rootfs check via a Sign Digests on Card round-trip (no private key needed here)")
     s.add_argument("bundle", help="release folder to rework in place")
     s.add_argument("--card", required=True, help="MicroSD mount point (or any directory)")
     s.add_argument("--off", action="store_true",

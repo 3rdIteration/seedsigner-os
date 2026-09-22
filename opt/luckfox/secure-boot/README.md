@@ -15,8 +15,11 @@ never set by CI.
 |---|---|
 | `make-dev-keys.sh`, `patch-mkfs-ubi-signing.sh`, `patch-mkfs-squashfs-signing.sh`, `dev-keys*/`, `initramfs*/`, `build-initramfs-binaries.sh` | `sign-secure-boot.sh`, `enable-fit-signature.sh`, `verify-fit-payloads.py` |
 
-Start with the process doc: [`docs/luckfox/secure-boot-bench-procedure.md`](../../../docs/luckfox/secure-boot-bench-procedure.md).
-Background, threat model and consequences: [`docs/luckfox/secure-boot.md`](../../../docs/luckfox/secure-boot.md).
+Start with [`docs/luckfox/secure-boot.md`](../../../docs/luckfox/secure-boot.md) — background, and
+§2 for the four ways to sign a release: build-time (this directory, in-build), re-sign on a PC
+(`rkloader.py` / `fitsign.py` / `minisign.py` with `tools/airgap-sign.py`), re-sign on a SeedSigner
+(Resign Release), or air-gapped (`tools/airgap-sign.py` + Sign Digests on Card). The fuse-burn bench steps are
+[`docs/luckfox/secure-boot-bench-procedure.md`](../../../docs/luckfox/secure-boot-bench-procedure.md).
 
 ## Contents
 

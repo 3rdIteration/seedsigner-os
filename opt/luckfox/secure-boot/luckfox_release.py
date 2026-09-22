@@ -24,10 +24,24 @@ reassembles volume 0 from the image; the first ROOTFS_SIGNED_SIZE bytes of it ar
 exactly what the device streams from /dev/ubi0_0, which was confirmed by
 verifying a real bundle's embedded signature against them.
 
+A MICROSD RELEASE IS THE SAME FOLDER, plus a flashable whole-card image built
+from it. The build's `blkenvflash` writes each <name>.img at its offset from
+env.img's `blkdevparts=mmcblk1:...` table, zero between them, and stops at the
+end of rootfs.img (the rootfs partition is not padded out to its declared size).
+build_sd_image() reproduces that byte-for-byte, so re-signing a MicroSD release
+is: re-sign the folder exactly like a NAND bundle, then rebuild the image.
+
+Such a folder also ships a `rootfs.img.minisig` sidecar, which is a copy of the
+signature inside boot.img (byte-identical to the initramfs's /rootfs.sig). The
+device never reads it - it verifies against boot.img - but a stale copy would
+mislead anyone checking the folder by hand, so refresh_rootfs_sidecar() rewrites
+it after a re-sign and check_release() reports it when it is stale.
+
 Pure stdlib, like the three signers it builds on.
 
   identify   <folder>              hardware, boot medium, serial console, DDR blob
   check      <folder>              every signature, key and known pitfall
+  sd-image   <folder> -o <img>     rebuild the flashable MicroSD/eMMC .img from the folder
   sd-update  <folder> [--fix]      check (and repair) the MicroSD auto-flash script
   inject     <folder> --minisig F --pubkey F [--fit-pubkey F]
                                        replace boot.img's embedded rootfs signature
@@ -512,6 +526,14 @@ def identify(folder):
             info["medium"] = "emmc"
         elif "mmcblk1" in args:
             info["medium"] = "sd"
+    if info["rootfs"] is None:
+        # SD/eMMC put the rootfs straight in a partition, so the image itself says
+        # what it is (NAND's is inside UBI, which the bootargs above describe).
+        kind = rootfs_kind(folder)
+        if kind == "squashfs":
+            info["rootfs"] = "squashfs (read-only)"
+        elif kind == "ubi":
+            info["rootfs"] = info["rootfs"] or "ubi"
     if info["medium"] is None:
         # Unsigned builds do not bake root= into the DTB; fall back to the script.
         sd = os.path.join(folder, "sd_update.txt")
@@ -628,6 +650,129 @@ def sd_update_check(folder, profile=None, fix=False, script="sd_update.txt"):
     return res
 
 
+# --- the rootfs signature sidecar -----------------------------------------------
+#
+# MicroSD/eMMC releases ship `rootfs.img.minisig` next to the rootfs: a copy of
+# what the build signed, byte-identical to boot.img's initramfs member
+# `/rootfs.sig`. Nothing on the device reads it (the verifier uses boot.img), but
+# it is what a person would check by hand, so it must not be left behind by a
+# re-sign.
+
+ROOTFS_SIDECAR = "rootfs.img.minisig"
+
+
+def rootfs_sidecar_state(folder, boot_buf=None):
+    """(present, current) for the folder's .minisig sidecar.
+
+    `current` is True when it matches the signature inside boot.img, False when it
+    is stale, and None when there is nothing to compare against.
+    """
+    path = os.path.join(folder, ROOTFS_SIDECAR)
+    if not os.path.isfile(path):
+        return False, None
+    boot = os.path.join(folder, "boot.img")
+    if boot_buf is None:
+        if not os.path.isfile(boot):
+            return True, None
+        boot_buf = rk.read(boot)
+    try:
+        embedded = initramfs_members(boot_buf).get("rootfs.sig")
+    except ReleaseError:
+        return True, None
+    if embedded is None:
+        return True, None
+    with open(path, "rb") as f:
+        return True, f.read() == embedded
+
+
+def refresh_rootfs_sidecar(folder, boot_buf=None):
+    """Rewrite the sidecar from boot.img's embedded signature. Returns a note or None.
+
+    A no-op when the folder has no sidecar (NAND bundles) or it is already current.
+    """
+    present, current = rootfs_sidecar_state(folder, boot_buf)
+    if not present or current is not False:
+        return None
+    boot = os.path.join(folder, "boot.img")
+    if boot_buf is None:
+        boot_buf = rk.read(boot)
+    embedded = initramfs_members(boot_buf)["rootfs.sig"]
+    with open(os.path.join(folder, ROOTFS_SIDECAR), "wb") as f:
+        f.write(embedded)
+    return "%s refreshed from boot.img" % ROOTFS_SIDECAR
+
+
+# --- the flashable MicroSD / eMMC image ------------------------------------------
+#
+# `opt/luckfox/blkenvflash` (the build's image writer) reads
+# `blkdevparts=mmcblk1:32K(env),512K@32K(idblock),...` out of the environment and
+# dd's each <name>.img to the running offset - the declared sizes, in order, NOT
+# the `@offset` some entries carry. The image ends at the end of the last
+# partition's file rather than at its declared size, which is why a 6G rootfs
+# partition yields an ~890MB image. Reproduced here so a re-signed folder can be
+# turned back into a flashable card image without the SDK or the build container.
+# Verified byte-for-byte against a CI SD artifact (2026-09-22).
+
+_BLKDEVPARTS = re.compile(rb"blkdevparts=mmcblk\d+:([^\x00\s]+)")
+_PART = re.compile(r"(\d+[KMG])(?:@(\d+[KMG]))?\((\w+)\)")
+_UNITS = {"K": 1024, "M": 1024 * 1024, "G": 1024 * 1024 * 1024}
+
+
+def _part_size(text):
+    return int(text[:-1]) * _UNITS[text[-1]]
+
+
+def sd_image_layout(folder):
+    """[(name, offset, size)] from env.img's partition table, in flashing order."""
+    env = os.path.join(folder, "env.img")
+    if not os.path.isfile(env):
+        raise ReleaseError("no env.img in %s - cannot read the partition table" % folder)
+    with open(env, "rb") as f:
+        m = _BLKDEVPARTS.search(f.read())
+    if not m:
+        raise ReleaseError("env.img carries no blkdevparts= table (is this an SD/eMMC release?)")
+    out, off = [], 0
+    for entry in m.group(1).decode("latin1").split(","):
+        mm = _PART.match(entry)
+        if not mm:
+            raise ReleaseError("cannot parse partition entry %r" % entry)
+        size = _part_size(mm.group(1))
+        out.append((mm.group(3), off, size))
+        off += size
+    return out
+
+
+def build_sd_image(folder, out_path):
+    """Write the flashable whole-card image. Returns [(name, offset, file size)].
+
+    Every partition in the table must have its <name>.img in the folder and fit in
+    its slot; anything else is a mistake worth failing on rather than producing an
+    image that boots to nothing.
+    """
+    layout = sd_image_layout(folder)
+    written = []
+    with open(out_path, "wb") as out:
+        for name, off, size in layout:
+            src = os.path.join(folder, name + ".img")
+            if not os.path.isfile(src):
+                raise ReleaseError("%s.img is missing from %s" % (name, folder))
+            length = os.path.getsize(src)
+            if length > size:
+                raise ReleaseError("%s.img is %d bytes, larger than its %d-byte partition"
+                                   % (name, length, size))
+            out.seek(off)
+            with open(src, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            written.append((name, off, length))
+        last_name, last_off, last_len = written[-1]
+        out.truncate(last_off + last_len)
+    return written
+
+
 # --- the whole-release check ----------------------------------------------------
 
 class Report:
@@ -675,10 +820,17 @@ def check_release(folder, profile=None):
         # flashing tools verify it on load and reject a stale one.
         trail = rk.ldr_trailer_ok(buf)
         detail = "signature %s, components %s" % ("ok" if sig else "BAD", "ok" if comp else "STALE")
+        # What a FUSED board checks beyond the signature: the header key block
+        # it hashes against OTP, what an armed SPL would burn, and download.bin's
+        # releaseTime. All of these pass on an unfused board, and getting any of
+        # them wrong strands a fused one in maskrom.
+        fused = rk.fused_boot_problems(buf) if key else []
         if key != n:
             rep.add(name, False, "embeds a DIFFERENT key from idblock.img")
         elif trail is False:
             rep.add(name, False, detail + ", trailer CRC STALE - flashing tools will reject this file")
+        elif fused:
+            rep.add(name, False, detail + "; FUSED BOARD WOULD REJECT: " + "; ".join(fused))
         else:
             rep.add(name, sig and comp, detail)
         if name == "idblock.img":
@@ -734,6 +886,11 @@ def check_release(folder, profile=None):
         rep.warnings.append("rootfs is signed with the PUBLISHED dev key - no protection")
     if rep.armed:
         rep.warnings.append("idblock.img is ARMED: booting it burns the secure-boot fuse")
+    present, current = rootfs_sidecar_state(folder)
+    if present and current is False:
+        rep.warnings.append(
+            "%s does not match the signature inside boot.img - it is stale (the device "
+            "ignores it; refresh it with `sd-image` or the re-sign tools)" % ROOTFS_SIDECAR)
     if os.path.isfile(os.path.join(folder, "update.img")):
         rep.warnings.append("update.img is present; if this release was re-signed it still "
                             "carries the old chain")
@@ -778,6 +935,11 @@ def main(argv=None):
     for name in ("identify", "check"):
         s = sub.add_parser(name)
         s.add_argument("folder")
+    s = sub.add_parser("sd-image")
+    s.add_argument("folder")
+    s.add_argument("-o", "--out", required=True, help="the .img to write")
+    s.add_argument("--no-refresh-sidecar", action="store_true",
+                   help="leave a stale rootfs.img.minisig alone")
     s = sub.add_parser("sd-update")
     s.add_argument("folder")
     s.add_argument("--profile", choices=sorted(BOARDS))
@@ -815,6 +977,16 @@ def main(argv=None):
             for line in done:
                 print(line)
             print("boot.img rewritten and UNSIGNED - FIT-sign it next (fitsign.py sign)")
+            return 0
+        if a.cmd == "sd-image":
+            if not a.no_refresh_sidecar:
+                note = refresh_rootfs_sidecar(a.folder)
+                if note:
+                    print(note)
+            written = build_sd_image(a.folder, a.out)
+            for name, off, length in written:
+                print("  %-9s @ 0x%09x  %d bytes" % (name, off, length))
+            print("wrote %s (%d bytes)" % (a.out, os.path.getsize(a.out)))
             return 0
         profile = None if a.lengths_only else (a.profile or identify(a.folder).get("profile"))
         res = sd_update_check(a.folder, profile, a.fix, a.script)

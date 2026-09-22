@@ -1,18 +1,25 @@
-# Air-gapped signing
+# Signing formats and tools (reference)
 
-Signing the Luckfox boot chain without the private key ever touching the build
-host. Three signature tiers, three cadences, one pattern: **the build host emits
-a digest, something else signs it, the build host splices the signature back.**
+The reference half of Luckfox secure boot: the signature formats, the pure-Python
+signers, and exactly what each operation rewrites. **For how to sign a release —
+build-time, re-sign on a PC, re-sign on the device, or air-gapped — start with
+[secure-boot.md §2](secure-boot.md#2-signing-a-release).** This document is where
+those recipes point for detail.
 
+Three signature tiers, three cadences, one pattern: **the build host emits a
+digest, something else signs it, the build host splices the signature back.**
 Nothing here needs `rk_sign_tool`, `mkimage`, `minisign`, the Rockchip SDK or a
 build tree — the three signers are pure-Python stdlib and run anywhere, which is
 what makes a SeedSigner viable as the signer.
 
 > **Status.** The formats are validated against every signed artifact this repo
-> produces (and, for minisign, byte-for-byte against the vendor binary). An
-> offline-re-signed image has **not yet been booted on hardware.** Do that on a
-> sacrificial, **unfused** board before trusting any of it. Nothing in this
-> document burns a fuse.
+> produces (and, for minisign, byte-for-byte against the vendor binary). Re-signed
+> releases have been booted on hardware, including a Pico Mini **fused** to a
+> re-signed BIP85 key (2026-09-21). That run found two defects that only a fused
+> board shows (the header key block, and `download.bin`'s `releaseTime`), both now
+> fixed and checked by `verify`/`check` — see
+> [The header key block](#the-header-key-block-what-the-bootrom-checks). Nothing
+> in this document burns a fuse except [Arming the OTP burn](#arming-the-otp-burn).
 
 ## The three tiers
 
@@ -81,13 +88,14 @@ image.
 
 ### tools/airgap-sign.py
 
-The PC half of the device **Sign Digest** flow (and of the raw commands above),
+The PC half of the device **Sign Digests on Card** flow (and of the raw commands above),
 in one command per direction:
 
 ```bash
 # (only when moving off the bundle's current boot key) round 0: embed the new
 # RSA public key into download.bin / idblock.img / uboot.img - public halves
-# only, read from release-rsa.pub on the card (Export Pubkeys or Sign Digest).
+# only, read from release-rsa.pub on the card (Air-Gap Signing Round 0, or a
+# previous Sign Digests on Card).
 python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
 
 # prepare the card for the signer (writes <card>/seedsigner-release-sign/)
@@ -100,7 +108,7 @@ python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard [--only a,b,c
 python3 tools/airgap-sign.py force   <bundle> --card /media/sdcard [--off]
 
 # after the device has written the signatures back: splice everything, verify.
-# Sign Digest also wrote release-rsa.pub / release-rootfs.pub into the folder, so
+# Sign Digests on Card also wrote release-rsa.pub / release-rootfs.pub into the folder, so
 # no --*-pubkey flags are needed; they only override those copies.
 python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
         [--rsa-pubkey F] [--rootfs-pubkey F] [--no-check]
@@ -110,22 +118,13 @@ python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard \
 NAND bundles). `splice` performs the tier-A/B splices, the tier-C injection and
 re-seal, fixes any sd_update.txt write lengths the rework changed, and finishes
 with a full `check_release` — it exits non-zero if anything does not verify.
-`force` is one such round-trip scoped to boot.img: after its Sign Digest pass,
+`force` is one such round-trip scoped to boot.img: after its Sign Digests on Card pass,
 a plain `splice` (no flags) splices the signature back and must come out VALID,
 since only that image changed.
 
-**A re-key takes two signing round-trips**, in this order:
-
-```bash
-python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
-python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard --only rootfs
-# ... device: Sign Digest ...
-python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard --only rootfs --no-check
-python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard \
-        --only download,idblock,uboot,boot
-# ... device: Sign Digest ...
-python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard   # RESULT: VALID
-```
+**A re-key takes two signing round-trips** (rootfs first, then the boot chain);
+the step-by-step sequence is in [secure-boot.md §2.4](secure-boot.md#24-air-gapped-signing),
+and the same flow with the key on the PC is §2.2.
 
 `rekey` clears the loaders' signatures and removes `update.img` (it packs a copy
 of the old chain); mid-flow bundles are expected to fail `check_release`, which
@@ -163,6 +162,10 @@ from `minisign -G` will have a random one.
 
 ## Swapping the chain to a new key
 
+The full, validated re-key recipe (including the rootfs) is
+[secure-boot.md §2.2](secure-boot.md#22-re-sign-an-existing-release-on-a-pc);
+these are the lower-level commands it is built from.
+
 Needed once, when moving off the published dev key. If the private key must not
 touch this machine at all, use the air-gap form instead: `tools/airgap-sign.py
 rekey` does exactly the public-key half of what is below (setkey + rehash on the
@@ -190,9 +193,14 @@ python3 $SB/fitsign.py sign   boot.img  --key new.key   # embeds no key itself
 Then confirm the whole chain verifies under the new key **and is rejected under
 the old one**.
 
-> `rkloader.py setkey` rewrites fields in the 0x600 header that are **not fully
-> characterised** beyond the modulus. This is the least-proven step here. Test
-> unfused.
+> **An unfused board proves nothing about the loader.** An unfused BootROM
+> checks nothing, so a loader with a broken header key block boots perfectly
+> until the fuse is burned, and after that the board goes straight to maskrom.
+> That happened on 2026-09-21 (see
+> [The header key block](#the-header-key-block-what-the-bootrom-checks)).
+> Before arming, `rkloader.py verify` must pass: it now fails any image a fused
+> board would reject. `rkloader.py inspect idblock.img` must also show
+> **OTP key hash == SPL burns**.
 
 Re-keying `idblock.img` changes the SPL DTB, which lives inside a hashed
 component, so the component hash has to be refreshed before the header is
@@ -279,6 +287,94 @@ these properties when it signs, and `fit-sign.sh` minimises them afterwards
 (zeroing `rsa,c`/`hash@c` for non-V1 HW builds — note it leaves `rsa,np` in
 place). The Kconfig sizes come from the SDK's `configs/rv1106_defconfig`.
 
+### The header key block (what the BootROM checks)
+
+The SPL DTB is what the **SPL** reads. The **BootROM** reads the loader's own
+0x600-byte RKSS header, which carries a second copy of the key:
+
+| Header offset | Field | Size | Contents |
+|---|---|---|---|
+| `0x200` | N | 0x200 | modulus, little-endian, zero-padded past 256 bytes |
+| `0x400` | E | 0x10 | public exponent, little-endian (65537) |
+| `0x410` | C | 0x20 | low 32 bytes, little-endian, of `pka_barrett_np(n)`, the same constant the DTB stores big-endian as `rsa,np` |
+
+`sha256(hdr[0x200:0x430])` is what a fused BootROM compares against OTP. It
+is byte-for-byte the buffer `rsa_burn_key_hash()` hashes (same order and sizes
+as `burn_key_hash()` above). On every vendor-signed image
+`sha256(hdr[0x200:0x430]) == burn_key_hash(n)`, and it is the value
+`rk_sign_tool otp --loader <download.bin> --hash` prints as the OTP payload.
+`rkloader.py inspect` shows it as **OTP key hash**.
+
+**C derives from the modulus, so a re-key must rewrite it.** Before
+2026-09-21, `set_pubkey()` rewrote N only. A re-keyed loader then carried the
+new modulus next to the *old* key's C:
+
+- every software verifier passed, `rk_sign_tool vl`/`vb` included, because
+  the signature does not depend on C;
+- unfused boards booted, because an unfused BootROM checks nothing;
+- the armed SPL burned the correct hash, because the SPL reads the (correct)
+  DTB, not the header;
+- on the next power-on, BootROM hashed the header, got a different value from
+  OTP, and dropped to maskrom **without printing anything but `RKUART`**. Every
+  `download.bin` made the same way was then refused over USB for the same
+  reason.
+
+`rkloader.write_key_block()` now writes N, E and C together. `set_pubkey()`
+uses it for the outer header and for the flashhead's inner header, and
+`fused_boot_problems()` fails any image whose header key block does not match
+its modulus. The same check also catches an idblock whose SPL would burn a
+different hash from the one its header presents to the BootROM, i.e. an image
+that would brick the board on the boot after the burn.
+
+### The flashhead is a second idblock
+
+`download.bin` embeds an RC4-obfuscated copy of the whole idblock (header,
+SPL, and **SPL DTB**; see `rkloader.py`'s flashhead notes). Tools that write
+the loader itself to NAND (`upgrade_tool ul`, an `update.img` upgrade) install
+that copy, not `idblock.img`. `set_pubkey()` now re-keys the copy's header key
+block and its SPL DTB (modulus, `rsa,np`, `hash@np`, n0/r²) and refreshes its
+component hashes. Before the fix, the copy's DTB kept the old key, so an SPL
+written that way would reject the re-keyed `uboot.img`.
+
+The flashhead also has its own inner signature, and the air-gap flow has no
+digest for it. After a re-key its header is byte-identical to `idblock.img`'s
+(as long as `idblock.img` is not armed), so `airgap-sign.py splice` writes the
+device's `idblock.sig` into the flashhead as well, verifying it first. Before
+2026-09-22, splice signed only the outer header, which left the flashhead
+carrying the dev key's signature. `rkloader.py verify` and `check` now fail
+that.
+
+> **Run the air-gap tools from a checkout that has these fixes.**
+> `airgap-sign.py` imports `rkloader` from its own checkout, so running
+> `rekey` from an older checkout still produces the stale-C loaders, whatever
+> version the device runs. A re-key done that way cannot be repaired in place:
+> the flashhead's DTB can only be re-keyed by searching for the key it
+> currently holds. Start again from a fresh copy of the CI bundle.
+
+### `download.bin`'s releaseTime
+
+The LDR container that wraps `download.bin` has a `releaseTime` (offset 14,
+`rk_time`). It sits outside every signature and is covered only by the trailer
+CRC. A **fused** board refuses a `download.bin` dated **1970-01-01 00:00:00**
+at Download Boot, even when it is correctly signed with the fused key. That is
+exactly the date `ss-fs-normalise.sh bootimg` used to pin (SOURCE_DATE_EPOCH=0)
+for reproducibility.
+
+This was confirmed on a fused Mini by changing only this field (and its CRC):
+1970-01-01 failed, and 2025-01-01 00:00:00 and a live 2026 date both passed.
+Which part of the chain checks the date is not known.
+
+- The build now floors it at 2025-01-01 00:00:00 (`RELEASE_FLOOR_EPOCH` in
+  `ss-fs-normalise.sh`). It is still a constant, so builds stay reproducible.
+- `rkloader.prepare_for_signing()` applies the same floor
+  (`LDR_RELEASE_FLOOR`), so re-signing an older release, whether with
+  `sign`/`sign_buf`, `splice`, the air-gap tool's splice or the device's
+  Resign Release, repairs it too.
+- `verify` and `luckfox_release.py check` fail a pre-2025 `download.bin`.
+
+Unfused boards accept any date, which is why every CI build since the pin
+worked on the bench.
+
 ## Arming the OTP burn
 
 A loader whose SPL DTB carries `burn-key-hash = <1>` writes the public-key hash
@@ -307,6 +403,22 @@ Arming works on re-signed images too: `set_pubkey()` refreshes `hash@np` for
 the new modulus (see above), so an armed BIP85 loader burns *your* key hash —
 not the dev key's, and not a mismatch that would reject boot.
 
+**Check before you arm.** The hash the SPL burns and the hash the BootROM will
+compute from the header must be the same value:
+
+```bash
+python3 $SB/rkloader.py inspect idblock.img    # "OTP key hash" must equal "SPL burns"
+python3 $SB/rkloader.py verify  idblock.img --pubkey your.pub
+python3 $SB/rkloader.py verify  download.bin --pubkey your.pub
+python3 $SB/luckfox_release.py check <release folder>
+```
+
+Any `!! FUSED BOARD` line from `inspect`, or a `verify`/`check` failure,
+means **do not arm**. The device's Arm eFuse Burn runs the same check twice:
+through `check_release` before arming, and again on the armed image before
+anything is written. For recovering a board that has already burned, see
+[soctoolkit-cli.md](soctoolkit-cli.md#troubleshooting).
+
 ## Changing the rootfs key
 
 The rootfs signature, the Ed25519 key that checks it, and the signed size all
@@ -321,7 +433,9 @@ tool does both keys in one **Resign Release**.
 
 Detaching the signature from the initramfs, so routine releases need only an
 Ed25519 signature, remains possible but is not implemented; it would change the
-on-device format and need a fresh bench run.
+on-device format and need a fresh bench run. The design for it — key slots and a
+signing quorum in `boot.img`, with the signatures carried by the rootfs itself —
+is in [secure-boot.md §6.9](secure-boot.md#69-decoupling-the-rootfs-from-bootimg-key-slots-and-a-signing-quorum).
 
 ## Smartcards
 
@@ -352,7 +466,7 @@ where a ~225 MB image bundle can be staged:
   stdlib and every heavy path streams, so a full mini-bundle re-sign peaks at
   ~14 MB of Python heap (measured in-memory against a production bundle). The
   app warns when free memory is low before running the heavy actions and points
-  at Sign Digest as the fallback.
+  at Sign Digests on Card as the fallback.
 - **Any board, any time** — the *digest signer* role needs no storage at all:
   a few dozen bytes in, one signature out (below).
 
@@ -373,9 +487,9 @@ key (`minisign -G -W`, or `minisign.py keygen -s`), a PKCS#8 PEM/DER Ed25519 key
 characters). Passphrase-protected minisign keys are refused on the device:
 minisign's default scrypt parameters need about 1 GiB of RAM.
 
-### Sign Digest — signing without a bundle
+### Sign Digests on Card — signing without a bundle
 
-**Tools → Luckfox Build Tools → Sign Digest** signs bare digests instead of a
+**Tools → Luckfox Build Tools → Air-Gap Signing → Sign Digests on Card** signs bare digests instead of a
 bundle, so any board can act as the signer with no storage at all (the digest
 signer role from the air-gap table above). The PC lays the digests on a MicroSD
 card; the device writes the signatures back into the same folder. Insert the card
@@ -399,7 +513,7 @@ before powering the board on — these images do not detect hot-swapped cards (s
   rootfs.minisig      # minisign text format (~200 B)
 
 # also written back by the device - the public halves of whatever keys it used,
-# so the card is self-contained for `splice` (same names/formats as Export Pubkeys):
+# so the card is self-contained for `splice` (same names/formats as Round 0's export):
   release-rsa.pub     # PEM RSA-2048, only if a tier A/B digest was signed
   release-rootfs.pub  # minisign public key, only if rootfs.digest was signed
 ```
@@ -415,13 +529,16 @@ so re-signing is idempotent; tier C carries a third-party minisign key's stored
 On the PC side, `tools/airgap-sign.py` does both halves in one command each:
 `digests <bundle> --card <mount>` writes the folder above; `splice <bundle>
 --card <mount>` splices every returned signature back and verifies the whole
-chain against the public keys. Because Sign Digest drops those keys into the
+chain against the public keys. Because Sign Digests on Card drops those keys into the
 folder itself, `splice` needs no `--*-pubkey` flags in the normal case — it reads
 `release-rsa.pub` / `release-rootfs.pub` from the card; the flags remain as an
 override for cards signed by something else (e.g. a hand-run CLI signer).
 
 ## See also
 
+- [secure-boot.md](secure-boot.md) — start here: background, how to sign a release (all four
+  methods), burning the fuse and recovery, technical notes and bench history; its
+  [§8 Links and resources](secure-boot.md#8-links-and-resources) collects every reference
 - [verifying-a-release.md](verifying-a-release.md) — the other side: checking a distributed image
-- [secure-boot.md](secure-boot.md) — design, threat model, consequences, bench results
 - [secure-boot-bench-procedure.md](secure-boot-bench-procedure.md) — the staged hardware procedure
+- [soctoolkit-cli.md](soctoolkit-cli.md) — flashing and recovering boards with `upgrade_tool`

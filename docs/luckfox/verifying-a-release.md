@@ -126,10 +126,19 @@ the kernel command line into the DTB (see `apply_signed_nand_bootargs`).
 ## Limits
 
 - This verifies files, not a running device. It cannot tell you whether a board
-  has actually been fused, or what key it was fused to — the OTP hash cannot be
-  read back after burning.
+  has actually been fused, or what key it was fused to — Linux cannot read the OTP
+  hash back (see [secure-boot.md §3.5](secure-boot.md#35-which-key-is-a-fused-board-expecting)
+  for the ways that do work).
 - `update.img` is a repack of the other images; verify the components, not the
   bundle.
 - These verifiers have been validated against every signed artifact this repo
   has produced, and against RFC 8032 / the vendor binaries where applicable.
   They have **not** yet been used to gate a release.
+
+## See also
+
+- [secure-boot.md](secure-boot.md) — the hub: background, signing a release (all four methods),
+  burning the fuse and recovery, future work, findings. Its
+  [§8 Links and resources](secure-boot.md#8-links-and-resources) lists every related document,
+  tool and external reference.
+- [airgapped-signing.md](airgapped-signing.md) — the signature formats being verified.
