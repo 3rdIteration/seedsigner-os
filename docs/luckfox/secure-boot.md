@@ -509,7 +509,8 @@ predates that feature.)
 Burning it would remove the recovery failover configured by
 [`opt/luckfox/uboot-recovery-config.sh`](../../opt/luckfox/uboot-recovery-config.sh) and described
 in [README.md](README.md), and the maskrom recovery in §3.4. **Recommend leaving it alone** even if
-secure boot is adopted: it turns every future firmware bug into a dead board.
+secure boot is adopted: it turns every future firmware bug into a dead board. Its status and
+trade-offs as possible future work are in [§6.10](#610-disabling-the-maskrom-download-interface).
 
 ---
 
@@ -1096,6 +1097,8 @@ note elsewhere in this document for a shipped feature.
 | Hardening removable media (`sd_update.txt`) | **Not done.** The update script still auto-runs unsigned | [§6.6](#66-hardening-removable-media) |
 | Hardware-held signing keys (HSM/PKCS#11) | **Untested.** The air-gapped SeedSigner signer is the supported custody path | [§6.7](#67-hardware-held-signing-keys) |
 | Recording the OTP hash when arming | **Not done.** Only the burn-time UART log and the NAND idblock record it | [§6.8](#68-recording-the-otp-hash-at-arm-time) |
+| Rootfs signatures independent of `boot.img` (key slots + quorum) | **Not implemented.** One key and one expected signature are baked into the signed `boot.img`, so every rootfs change means rebuilding and reflashing `boot.img` | [§6.9](#69-decoupling-the-rootfs-from-bootimg-key-slots-and-a-signing-quorum) |
+| Disabling the maskrom (USB download) interface | **Not implemented or tested** — per Rockchip's release notes the shipped DDR blob predates support. The BOOT button still enters maskrom on a fused board | [§6.10](#610-disabling-the-maskrom-download-interface) |
 
 ### 6.1 Device identity: PIN and anti-phishing words
 
@@ -1366,6 +1369,94 @@ for a root/delegate key hierarchy (Q10).
 burning idblock on NAND or found by trial ([§3.5](#35-which-key-is-a-fused-board-expecting)). The app's
 Arm eFuse Burn could write the "SPL burns" hash next to the release (for example `otp-key-hash.txt`) and
 show it on screen, so every fused board has a record of the key it expects.
+
+### 6.9 Decoupling the rootfs from `boot.img`: key slots and a signing quorum
+
+**Status: not implemented.** Today the rootfs trust is a single key and a single expected signature,
+both baked into the signed `boot.img` ([§5.2](#52-rootfs-verification-implementation)): the
+initramfs carries `/pubkey`, `/rootfs.sig` and the signed size (`ROOTFS_SIGNED_SIZE` in `/init`), and
+`rootfs.img` carries no signature at all. Consequences:
+
+- **Any rootfs change means a new `boot.img`.** Even with the rootfs key unchanged, the new signature
+  and size have to go into the initramfs, so `boot.img` is rebuilt, RSA re-signed (tier B) and
+  reflashed alongside `rootfs.img`. A rootfs-only update is impossible.
+- **The RSA key is needed for every release**, not just for kernel or bootloader changes.
+- **One key is a single point of failure.** Whoever holds the rootfs key alone decides what rootfs a
+  fused board runs; there is no way to require agreement between several signers.
+
+**The goal:** `boot.img` pins a *policy*, not a signature. The rootfs carries its own signatures, and
+it can be replaced without touching `boot.img`, as long as it is signed by a valid quorum under that
+policy. This extends "pin a key, not a hash" ([§5.1](#51-rootfs-verification-design)) from one key to
+a set of keys.
+
+**Sketch:**
+
+1. **Key slots and a threshold in `boot.img`.** The signed initramfs carries *N* public-key slots and a
+   threshold *M* (e.g. 2-of-3), instead of one `/pubkey`. The slots and threshold are covered by the
+   `boot.img` signature, so changing the policy itself still needs the RSA key and a new `boot.img` —
+   that is the point. Empty slots allow keys to be added later by the same route.
+2. **Signatures travel with the rootfs.** A small signature block stored next to the rootfs holds up to
+   *N* signatures, each naming its key. Where it lives depends on the medium:
+   - on MicroSD/eMMC, a trailer after the signed squashfs prefix inside the rootfs partition, which is
+     padding today;
+   - on NAND, a second small UBI volume, or a trailer inside the rootfs volume after the signed length.
+
+   Either way, `rootfs.img` becomes self-contained.
+3. **What each signature covers.** A small manifest, not just the image digest: the image digest
+   (BLAKE2b-512, as today), the signed size (which today comes from `/init`), a version number (for
+   anti-rollback, [§6.2](#62-anti-rollback)), and a domain tag, so a signature can't be replayed
+   elsewhere. Everything the verifier trusts about the rootfs then comes from signed data, not from
+   `boot.img`.
+4. **Verification.** `/init` streams the rootfs once (as today) to get the digest, reads the
+   manifest, and checks every signature against the slots. It counts **distinct keys** with a valid
+   signature over *this* manifest and boots only if the count reaches the threshold. The failure
+   policy stays the same: red screen, halt, physical escape key.
+5. **Tooling.** Re-signing a rootfs becomes: compute the manifest, have each quorum member sign it
+   (air-gapped SeedSigners are a natural fit — each signer is one Sign Digest round-trip), and splice
+   the signatures into the block. `boot.img` and the RSA key are not involved. `check` reports how many
+   valid signatures are present against the threshold.
+
+**Things to get right:**
+
+- **Pre-boot attack surface.** The signature block is parsed before the rootfs is verified, so the
+  format must be trivial and fixed-size (no general-purpose container parser), in keeping with the
+  minisign-over-GnuPG reasoning in [§5.1](#51-rootfs-verification-design).
+- **Scheme choice.** Several minisign/Ed25519 signatures are the smallest change from today. Bitcoin
+  signed messages were the other candidate in §5.1 and make m-of-n natural for this audience.
+- **Anti-rollback.** A quorum does not stop an *old* quorum-signed rootfs from being flashed. The
+  version in the manifest only helps once there is a floor to compare it with ([§6.2](#62-anti-rollback)).
+- **Key rotation and revocation.** Rotating a quorum member still needs a new `boot.img`, since the
+  slots live there. Keeping spare slots and a threshold below *N* lets a lost key be tolerated
+  without re-signing `boot.img` immediately.
+- **The dev-key indicator** (yellow/green PASSED) and the re-sign tools, which rewrite `/pubkey` and
+  `/rootfs.sig` today, would move to per-slot key classes and to editing the signature block.
+- **Compatibility.** It changes the on-device format, so the verifier would have to handle (or clearly
+  refuse) releases in the current single-signature layout, and it needs a fresh bench run on fused
+  and unfused boards.
+
+### 6.10 Disabling the maskrom (download) interface
+
+**Status: not implemented or tested — and, per Rockchip's release notes, the DDR blob the build ships
+predates support for it.** The BOOT button
+enters maskrom on every board, fused or not (bench row C6), and maskrom accepts a USB download
+(`upgrade_tool db`) of any loader whose header matches the fused key.
+
+- **The mechanism.** Rockchip added *"Support disabling download function through OTP"* in
+  `rv1106_ddr` **v1.16** (`rkbin/doc/release/RV1106_EN.md`) — a separate, irreversible fuse. The
+  SeedSigner build ships the SDK's pinned DDR blob, **v1.15** (`fwver: v1.15` in every boot log),
+  which predates it according to those notes (not verified on hardware). Using it would mean moving
+to v1.16 or later (rkbin master has
+  `rv1106_ddr_924MHz_v1.16.bin`), validating that blob on every board, and then finding out how the
+  fuse is armed and burned — none of which has been tried.
+- **What it would buy.** On a fused board maskrom already refuses loaders signed with any other key,
+  so disabling it mainly removes a way to flash an *older, correctly signed* release (see
+  [§6.2](#62-anti-rollback)) and closes the BootROM's USB stack as an attack surface.
+- **What it would cost.** Maskrom is the only recovery path once a fused board's NAND idblock is
+  broken ([§3.4](#34-recovery)) — the 2026-09-21 recovery ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21))
+  relied on it entirely. With download disabled, any bad flash or firmware bug on a fused board is a
+  dead board, and it also removes the failover `uboot-recovery-config.sh` configures. That is why
+  [§3.6](#36-the-download-disable-fuse) recommends leaving it alone. If it is ever adopted, it should
+  come after anti-rollback and a proven signed update path that never needs maskrom.
 
 ---
 

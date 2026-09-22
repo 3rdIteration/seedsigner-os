@@ -432,7 +432,9 @@ tool does both keys in one **Resign Release**.
 
 Detaching the signature from the initramfs, so routine releases need only an
 Ed25519 signature, remains possible but is not implemented; it would change the
-on-device format and need a fresh bench run.
+on-device format and need a fresh bench run. The design for it — key slots and a
+signing quorum in `boot.img`, with the signatures carried by the rootfs itself —
+is in [secure-boot.md §6.9](secure-boot.md#69-decoupling-the-rootfs-from-bootimg-key-slots-and-a-signing-quorum).
 
 ## Smartcards
 
