@@ -333,6 +333,21 @@ block and its SPL DTB (modulus, `rsa,np`, `hash@np`, n0/r²) and refreshes its
 component hashes. Before the fix, the copy's DTB kept the old key, so an SPL
 written that way would reject the re-keyed `uboot.img`.
 
+The flashhead also has its own inner signature, and the air-gap flow has no
+digest for it. After a re-key its header is byte-identical to `idblock.img`'s
+(as long as `idblock.img` is not armed), so `airgap-sign.py splice` writes the
+device's `idblock.sig` into the flashhead as well, verifying it first. Before
+2026-09-22, splice signed only the outer header, which left the flashhead
+carrying the dev key's signature. `rkloader.py verify` and `check` now fail
+that.
+
+> **Run the air-gap tools from a checkout that has these fixes.**
+> `airgap-sign.py` imports `rkloader` from its own checkout, so running
+> `rekey` from an older checkout still produces the stale-C loaders, whatever
+> version the device runs. A re-key done that way cannot be repaired in place:
+> the flashhead's DTB can only be re-keyed by searching for the key it
+> currently holds. Start again from a fresh copy of the CI bundle.
+
 ### `download.bin`'s releaseTime
 
 The LDR container that wraps `download.bin` has a `releaseTime` (offset 14,

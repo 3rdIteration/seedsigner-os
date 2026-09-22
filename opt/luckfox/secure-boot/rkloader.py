@@ -860,6 +860,12 @@ def fused_boot_problems(buf):
         if key_block_hash(pt, 0) != want:
             problems.append("flashhead key block does not match the modulus (stale C inside "
                             "the RC4 copy); the loader it writes would not boot on a fused board")
+        if not flashhead_sig_ok(buf, n):
+            # e.g. an air-gap re-sign that spliced only the outer signature and
+            # left the vendor's dev-key signature on the embedded copy.
+            problems.append("flashhead inner signature is not valid for the embedded key; the "
+                            "idblock it writes (upgrade_tool ul / update.img) would not boot on "
+                            "a fused board")
     burn = spl_burn_hash(buf)
     if burn is not None and burn != key_block_hash(buf, lay["hdr"]):
         problems.append("SPL would burn OTP hash %s but the header presents %s to the "

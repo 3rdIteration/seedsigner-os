@@ -216,6 +216,47 @@ def _splice_ldr(path, sig_path):
     print("%s: spliced (verified against the embedded key)" % os.path.basename(path))
 
 
+def _splice_flashhead(dl_path, idblock_sig_path):
+    """Sign download.bin's embedded flashhead with the device's idblock.sig.
+
+    The flashhead (the RC4-obfuscated idblock copy that `upgrade_tool ul` and
+    update.img upgrades write to flash) has its own inner header signature.
+    The air-gap flow has no digest for it. But after a re-key its header is
+    byte-identical to idblock.img's (unless idblock.img was armed afterwards),
+    so the signature the device made for idblock.digest signs it too. It is
+    verified before being written. If it does not verify, say so, because
+    `check` fails a download.bin whose flashhead is not signed by its key.
+    """
+    buf = rk.read(dl_path)
+    reg = rk.flashhead_region(buf)
+    if reg is None:
+        return
+    n = rk.read_modulus(buf, rk.layout(buf))
+    if rk.flashhead_sig_ok(buf, n):
+        print("download.bin flashhead: already signed by the embedded key")
+        return
+    with open(idblock_sig_path, "rb") as f:
+        sig = f.read()
+    if len(sig) in (rk.SIG_LEN * 2, rk.SIG_LEN * 2 + 1):
+        sig = bytes.fromhex(sig.decode().strip())
+    start, size = reg
+    pt = bytearray(rk._flashhead_xor(bytes(buf[start:start + size])))
+    inner = {"hdr": 0, "msg": (0, rk.HDR_LEN), "sig": (rk.HDR_LEN, rk.SIG_LEN)}
+    rk.prepare_for_signing(pt, inner)
+    if len(sig) != rk.SIG_LEN or not rk.rsa_verify_digest(
+            rk.msg_digest(pt, inner), int.from_bytes(sig, "little"), n):
+        print("  ! download.bin flashhead: idblock.sig does not sign it (its header differs "
+              "from idblock.img's - was idblock.img armed or re-keyed separately?). "
+              "The flashhead stays unsigned for this key.", file=sys.stderr)
+        return
+    pt[rk.HDR_LEN:rk.HDR_LEN + rk.SIG_LEN] = sig
+    buf[start:start + size] = rk._flashhead_xor(bytes(pt))
+    rk.refresh_ldr_trailer(buf)
+    with open(dl_path, "wb") as f:
+        f.write(buf)
+    print("download.bin flashhead: spliced idblock.sig (verified - same header as idblock.img)")
+
+
 def _splice_fit(path, sig_path, rsa_pubkey=None):
     buf = rk.read(path)
     node = fs.signature_node(buf)
@@ -356,6 +397,13 @@ def cmd_splice(a):
             _splice_ldr(path, sig)
         else:
             _splice_fit(path, sig, rsa_pubkey)
+
+    # download.bin's embedded idblock copy is signed with idblock.sig; see
+    # _splice_flashhead. It sits outside the outer header's components, so
+    # doing it after the outer splice changes nothing that splice verified.
+    dl, idsig = os.path.join(a.bundle, "download.bin"), os.path.join(d, "idblock.sig")
+    if "download" in names and os.path.isfile(dl) and os.path.isfile(idsig):
+        _splice_flashhead(dl, idsig)
 
     # The rework changes image sizes; keep the auto-flash script honest.
     res = lr.sd_update_check(a.bundle, fix=True)

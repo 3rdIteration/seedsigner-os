@@ -205,5 +205,51 @@ class DigestsSpliceRefactor(unittest.TestCase):
         self.assertTrue(fs.verify_buf(rk.read(os.path.join(self.bundle, "boot.img")), N))
 
 
+class FlashheadSplice(unittest.TestCase):
+    """Regression (2026-09-22): the air-gap flow signed download.bin's outer
+    header only, so its embedded idblock copy (the flashhead) kept a signature
+    from the old key. After a re-key the flashhead header is byte-identical to
+    idblock.img's, so splice now reuses idblock.sig for it."""
+
+    def test_idblock_sig_signs_the_flashhead_after_a_rekey(self):
+        import glob
+        try:
+            from Cryptodome.PublicKey import RSA
+        except ImportError:
+            self.skipTest("Cryptodome not available (needed for a second test key)")
+        dirs = [d for d in glob.glob(os.path.join(REPO, "opt", "luckfox", "build-output",
+                                                  "*signed-devkey*"))
+                if os.path.isfile(os.path.join(d, "download.bin"))
+                and os.path.isfile(os.path.join(d, "idblock.img"))]
+        if not dirs:
+            self.skipTest("no signed build with both loaders under opt/luckfox/build-output/")
+        key = RSA.generate(2048)
+        n1, d1 = int(key.n), int(key.d)
+        for src in dirs:
+            with self.subTest(d=os.path.basename(src)), tempfile.TemporaryDirectory() as tmp:
+                paths = {}
+                for name in ("download.bin", "idblock.img"):
+                    buf = rk.read(os.path.join(src, name))
+                    lay = rk.layout(buf)
+                    rk.set_pubkey(buf, lay, n1)
+                    rk.rehash_components(buf, lay)
+                    rk.prepare_for_signing(buf, lay)
+                    # the device signs the outer header digest only
+                    sig = rk.rsa_sign_digest(rk.msg_digest(buf, lay), n1, d1)
+                    buf[lay["sig"][0]:lay["sig"][0] + rk.SIG_LEN] = sig
+                    rk.refresh_ldr_trailer(buf)
+                    paths[name] = os.path.join(tmp, name)
+                    rk.write_out(buf, paths[name], None)
+                    if name == "idblock.img":
+                        with open(os.path.join(tmp, "idblock.sig"), "wb") as f:
+                            f.write(sig)
+                self.assertFalse(rk.flashhead_sig_ok(rk.read(paths["download.bin"]), n1))
+                ags._splice_flashhead(paths["download.bin"], os.path.join(tmp, "idblock.sig"))
+                dl = rk.read(paths["download.bin"])
+                self.assertTrue(rk.flashhead_sig_ok(dl, n1))
+                self.assertTrue(rk.ldr_trailer_ok(dl))
+                self.assertEqual(rk.fused_boot_problems(dl), [])
+
+
 if __name__ == "__main__":
     unittest.main()

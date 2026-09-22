@@ -864,6 +864,15 @@ class FusedBoard(unittest.TestCase):
         self.assertTrue(rk.ldr_trailer_ok(buf))
         self.assertEqual(rk.fused_boot_problems(buf), [])
 
+    def test_unsigned_flashhead_is_a_fused_board_problem(self):
+        """The air-gap splice used to sign only the outer header, which left
+        the embedded copy with a signature from a different key."""
+        buf = make_flashhead_container(self.n)          # inner signature is zeroed
+        problems = rk.fused_boot_problems(buf)
+        self.assertTrue(any("flashhead inner signature" in p for p in problems), problems)
+        rk.resign_flashhead(buf, self.n, self.d)
+        self.assertFalse(any("flashhead" in p for p in rk.fused_boot_problems(buf)))
+
     def test_newer_release_time_is_left_alone(self):
         buf = make_container(self.n, hdr_off=0x1bc, ldr=True)
         struct.pack_into("<HBBBBB", buf, rk.LDR_RELEASE_OFF, 2026, 9, 21, 23, 4, 55)
