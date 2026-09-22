@@ -10,12 +10,15 @@ and hardware-proven**:
   ways ([§2](#2-signing-a-release)).
 - **The fuse is always opt-in.** Burning the one-time fuse that makes a board enforce your key
   ([§3](#3-burning-the-fuse-and-recovery)) is never done by a build.
+- **Not implemented yet** ([§6](#6-possible-future-work)): recognising the physical device
+  (anti-phishing words / device PIN), anti-rollback (a fused board still boots an older genuine
+  release), and full lockdown of the U-Boot console, the kernel command line and `sd_update.txt`.
 - **Proven on silicon:**
   - 2026-09-12: a Mini fused to the dev key.
   - 2026-09-14: the rootfs verifier on fused and unfused boards.
   - 2026-09-21: a Mini fused to a BIP85-derived key after an on-device re-sign. That run also
     found, fixed and documented two defects that only a fused board shows
-    ([§6.8](#68-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
+    ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
 
 **Where to start**
 
@@ -26,7 +29,8 @@ and hardware-proven**:
 | Burn the fuse, or recover a fused board | [§3](#3-burning-the-fuse-and-recovery), then [the bench procedure](secure-boot-bench-procedure.md) and [soctoolkit-cli.md](soctoolkit-cli.md) |
 | Check someone else's release | [verifying-a-release.md](verifying-a-release.md) |
 | The signature formats and pure-Python signers in depth | [airgapped-signing.md](airgapped-signing.md) |
-| Why something is the way it is | [§4 Technical notes](#4-technical-notes), [§5 Implementation notes](#5-implementation-notes), [§6 Findings and history](#6-findings-open-questions-and-history) |
+| What is not implemented yet | [§6 Possible future work](#6-possible-future-work) |
+| Why something is the way it is | [§4 Technical notes](#4-technical-notes), [§5 Implementation notes](#5-implementation-notes), [§6 Findings and history](#7-findings-open-questions-and-history) |
 
 > **Burning the fuse cannot be undone.** A board fused to your key boots and flashes only firmware
 > signed by that key, for the rest of its life. Lose the key and the board can never be updated.
@@ -47,9 +51,11 @@ and hardware-proven**:
 | Does it work on SD-boot boards with no NAND? | Yes, identically: the fuse is in the SoC, not the storage ([§1.5](#15-boot-media-nand-sd-and-emmc)). |
 | Can it be tested without burning a fuse? | **Yes.** A signed build boots unfused (`Verified-boot: 0`) with the software checks live, so keys, signing and boot are all rehearsed before the fuse ([§3.1](#31-before-you-arm)). Only the BootROM step needs the fuse. |
 | Can the private key stay offline? | Yes. Every tier can be signed air-gapped on a SeedSigner from a BIP85 seed, with nothing but 32–64-byte digests crossing the gap ([§2.4](#24-air-gapped-signing)). |
-| Does it stop someone swapping in a look-alike device? | **No.** Secure boot verifies software, not hardware. Anti-phishing words close that gap ([§5.3](#53-device-pin-and-anti-phishing-words-design-not-implemented)). |
-| Is the kernel command line trusted? | Mostly. On signed builds `root=` is baked into the signed DTB and the env partition cannot set `sys_bootargs`; `mtdparts`/`blkdevparts` remain importable, and `CONFIG_CMDLINE_FORCE=y` is the outstanding full fix ([§4.6](#46-the-kernel-command-line-envf-and-autoboot)). |
-| What key size? | **RSA-2048 only** for the boot chain, which is enforced in the SPL ([§6.6](#66-bench-rsa-4096-probe-2026-09-12-unfused-board)). Ed25519 (minisign) for the rootfs. |
+| Does it stop someone swapping in a look-alike device? | **No.** Secure boot verifies software, not hardware. Anti-phishing words would close that gap, but they are **not implemented** — design only ([§6.1](#61-device-identity-pin-and-anti-phishing-words)). |
+| Does it stop someone flashing an older, genuine release (downgrade)? | **No — anti-rollback is not implemented at any stage.** A fused board boots anything signed with its key ([§6.2](#62-anti-rollback)). |
+| Does it stop someone at the UART getting a U-Boot prompt? | **No, not yet.** `CONFIG_BOOTDELAY=0` is interruptible ([§6.5](#65-locking-the-u-boot-console)). |
+| Is the kernel command line trusted? | Mostly. On signed builds `root=` is baked into the signed DTB and the env partition cannot set `sys_bootargs`; `mtdparts`/`blkdevparts` remain importable, and `CONFIG_CMDLINE_FORCE=y` is the outstanding full fix ([§4.6](#46-the-kernel-command-line-envf-and-autoboot), [§6.4](#64-full-kernel-command-line-lockdown)). |
+| What key size? | **RSA-2048 only** for the boot chain, which is enforced in the SPL ([§7.6](#76-bench-rsa-4096-probe-2026-09-12-unfused-board)). Ed25519 (minisign) for the rootfs. |
 
 **Consequences to decide before touching a fuse:**
 
@@ -91,7 +97,7 @@ hash in OTP                                                            + initram
    the rootfs before `pivot_root`.
 
 **What "the public key from the loader" means in bytes** (hardware-confirmed 2026-09-21,
-[§6.8](#68-bench-first-fuse-to-a-re-signed-key-2026-09-21)): the BootROM hashes the RKSS header's key
+[§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)): the BootROM hashes the RKSS header's key
 block, `hdr[0x200:0x430]` = N (0x200, LE) ‖ E (0x10) ‖ C (0x20, the low bytes of the PKA Barrett
 constant), and compares that with OTP. The SPL burns the same layout computed from its DTB. The
 two only agree if the header's C matches the modulus, which a re-key has to rewrite
@@ -204,7 +210,7 @@ every one ends with the same check ([§2.5](#25-checking-a-signed-release)).
 > **Run the PC-side tools from a checkout that has the fused-board fixes** (PR #128 or later).
 > `tools/airgap-sign.py` and the `secure-boot/*.py` signers import each other from their own
 > checkout, so an older checkout re-keys loaders with a stale header constant that only a fused
-> board rejects ([§6.8](#68-bench-first-fuse-to-a-re-signed-key-2026-09-21)). A re-key done that way
+> board rejects ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)). A re-key done that way
 > cannot be repaired in place — start again from a fresh copy of the CI bundle.
 
 ### 2.1 Build it signed on a PC
@@ -416,7 +422,7 @@ The runnable, staged version of this (keys, build, flash, burn, confirm) is the
 
 > **What cannot be rehearsed.** BootROM enforcement itself — it is only observable after the fuse is
 > burned. Two defects that only it catches were found that way
-> ([§6.8](#68-bench-first-fuse-to-a-re-signed-key-2026-09-21)); both are now checked in software.
+> ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)); both are now checked in software.
 
 ### 3.2 Ways to arm
 
@@ -432,7 +438,7 @@ boot on its first boot. Three ways to produce one:
 
 Only `idblock.img` is armed; SocToolkit's Download mode writes it to NAND. **What does not work on
 this SoC:** the legacy `sign_flag=0x20` / `ss --flag 0x20` loader flag (V1.9 §6.6's `config.ini` edit;
-Q2 in [§6.2](#62-answered-questions)),
+Q2 in [§7.2](#72-answered-questions)),
 and the standalone `rkbin/fit-sign.sh --burn-key-hash` re-sign flow, which needs
 `fit_signcfg/sign.readonly_config` that this SDK never generates (Q3).
 
@@ -606,7 +612,7 @@ true RV1103B entry; untested against hardware.) Running it needs `setting.ini` a
 to the binary.
 
 **Keys.** `rk_sign_tool kk --bits 2048|3072|4096 --out .` (e.g. `kk --bits 4096`) generates
-`private_key.pem` + `public_key.pem` (all three sizes work in the tool; the chain accepts only 2048, [§6.6](#66-bench-rsa-4096-probe-2026-09-12-unfused-board)).
+`private_key.pem` + `public_key.pem` (all three sizes work in the tool; the chain accepts only 2048, [§7.6](#76-bench-rsa-4096-probe-2026-09-12-unfused-board)).
 `--sm2` / `--ec` exist but are not on the documented BootROM path. `lk --key <priv> --pubkey <pub>`
 loads an existing (e.g. OpenSSL- or BIP85-generated) keypair.
 
@@ -694,7 +700,7 @@ The shipped DTB has `otp@ff3d0000` (`rockchip,rv1106-otp`) enabled and the kerne
 `CONFIG_ROCKCHIP_OTP=y`. It is used only for chip identity — `cpu_code`, `otp_id`, `cpu_leakage` —
 surfaced as the `Serial` line in `/proc/cpuinfo`. The Linux driver is **read-only on RV1106**:
 `rv1106_data` in `drivers/nvmem/rockchip-otp.c` sets `.size = 0x80` and has no `.reg_write`, and those
-128 bytes already hold factory cells ([§5.3](#53-device-pin-and-anti-phishing-words-design-not-implemented)).
+128 bytes already hold factory cells ([§6.1](#61-device-identity-pin-and-anti-phishing-words)).
 
 This nvmem device exposes a **non-secure view** that does *not* contain the secure-boot enable flag
 or the key hash — the SPL reads those through a separate hardware path (the
@@ -706,7 +712,8 @@ undocumented, so nothing depends on it; trust U-Boot's `fuse.programmed` kernel-
 ([§5.2](#52-rootfs-verification-implementation)).
 
 The only other known secure-OTP allocation is the rollback counter at `0xe0`
-(`OTP_UBOOT_ROLLBACK_OFFSET`, 8 bytes), read and written by the SPL.
+(`OTP_UBOOT_ROLLBACK_OFFSET`, 8 bytes), which the SPL can read and write — unused by this build, which
+sets no rollback index ([§6.2](#62-anti-rollback)).
 
 ### 4.6 The kernel command line, ENVF and autoboot
 
@@ -787,7 +794,8 @@ memory read/write and control of the environment. Rockchip also extended the abo
 `|| env_get("cli")`, so a `cli` environment variable reaches the prompt with no keypress at all. A
 locked-down build needs `CONFIG_BOOTDELAY=-2` (which the env partition cannot undo, see above) and
 `CONFIG_CONSOLE_DISABLE_CLI=y`, since upstream U-Boot still drops into its CLI when `bootcmd` fails.
-Check on hardware what a failed boot actually does.
+Check on hardware what a failed boot actually does. **Neither is set today** — the build uses
+`CONFIG_BOOTDELAY=0` ([§6.5](#65-locking-the-u-boot-console)).
 
 ### 4.7 Removable media: `sd_update.txt`, signed images, and rollback
 
@@ -827,16 +835,19 @@ only when four things are true:
    signed image is data U-Boot *verifies*. If flashing NAND from a card has to stay, verify each
    image's signature before writing it, and never write the env partition. (`rk_sign_tool sf`/`vf`
    also sign and verify whole `update.img` packages.)
-4. **Old signed images have to be refused, and for `boot.img` that currently needs OP-TEE.** A
+4. **Old signed images have to be refused** — not implemented today ([§6.2](#62-anti-rollback)),
+   and for `boot.img` it currently needs OP-TEE. A
    genuine but outdated `boot.img` passes the signature check. U-Boot proper has
    `CONFIG_FIT_ROLLBACK_PROTECT` (enforced in `common/image-fit.c`), but `fit-sign.sh` refuses a
    `boot.img` rollback index unless `CONFIG_OPTEE_CLIENT` is enabled too: *"Don't support
    --rollback-index ... due to CONFIG_FIT_ROLLBACK_PROTECT=y but CONFIG_OPTEE_CLIENT=n"*. Only the
-   SPL → `uboot.img` step is rollback-protected directly from secure OTP. In U-Boot proper,
+   SPL → `uboot.img` step can be rollback-protected directly from secure OTP (supported by the SDK,
+   **not enabled in this build** — no stage is rollback-protected today, [§6.2](#62-anti-rollback)).
+   In U-Boot proper,
    `fit_read_otp_rollback_index()` (`arch/arm/mach-rockchip/board.c`) calls
    `trusty_read_rollback_index()`, which is an OP-TEE client call despite the name; SPL's function of
    the same name reads secure OTP directly. Without OP-TEE, a `boot.img` floor has to be anchored in
-   the rollback-protected `uboot.img` instead (Q14).
+   a rollback-protected `uboot.img` instead (Q14).
 
 With all four in place, a card holding a signed `uboot.img` and `boot.img` (initramfs included) plus
 `rootfs.img` is a complete, verifiable firmware medium, on SD-only boards and as an update path for
@@ -935,7 +946,7 @@ wear levelling rewrites LEBs, so a block offset that verified yesterday points a
 today. The **logical** volume contents are stable (what `/dev/ubi0_0` / `/dev/ubiblock0_0` expose), but
 not their physical location. On eMMC (Pico Pi) a raw block root could use dm-verity; on NAND the only
 sound scheme is signing the logical contents and checking them in full at boot — one full SPI-NAND
-read of the volume per power-on (a few seconds, bench §6.7), while the device is otherwise idle.
+read of the volume per power-on (a few seconds, bench §7.7), while the device is otherwise idle.
 
 ### 5.2 Rootfs verification: implementation
 
@@ -1066,7 +1077,31 @@ but `CONFIG_CMDLINE_FORCE` remains the outstanding piece for full lockdown. The 
 deliberate, physical-access-gated exception to fail-closed behaviour — it exists so a bad flash does not
 lock out the only recovery path on a fused board.
 
-### 5.3 Device PIN and anti-phishing words (design, not implemented)
+---
+
+## 6. Possible future work
+
+Secure boot as implemented answers one question: *is the firmware on this board signed by the key it
+was fused to?* Several related protections are **not implemented yet**. They are collected here with
+what exists today, what the platform offers, and where the details are, so nobody mistakes a design
+note elsewhere in this document for a shipped feature.
+
+| Protection | Status today | Section |
+|---|---|---|
+| Recognising the physical device (anti-phishing words, device PIN) | **Not implemented.** A look-alike running its own correctly signed firmware is not detected | [§6.1](#61-device-identity-pin-and-anti-phishing-words) |
+| Anti-rollback (refusing an older genuine release) | **Not implemented at any stage.** A fused board boots any release signed with its key, including an old one | [§6.2](#62-anti-rollback) |
+| OP-TEE (on-die secret, `boot.img` rollback) | **Not shipped.** The blob is in the SDK; nothing packs or enables it | [§6.3](#63-op-tee) |
+| Full kernel command-line lockdown | **Partial.** `root=` is signed; `mtdparts`/`blkdevparts` are still importable from the env partition | [§6.4](#64-full-kernel-command-line-lockdown) |
+| Locking the U-Boot console | **Not done.** `CONFIG_BOOTDELAY=0` is interruptible from the UART | [§6.5](#65-locking-the-u-boot-console) |
+| Hardening removable media (`sd_update.txt`) | **Not done.** The update script still auto-runs unsigned | [§6.6](#66-hardening-removable-media) |
+| Hardware-held signing keys (HSM/PKCS#11) | **Untested.** The air-gapped SeedSigner signer is the supported custody path | [§6.7](#67-hardware-held-signing-keys) |
+| Recording the OTP hash when arming | **Not done.** Only the burn-time UART log and the NAND idblock record it | [§6.8](#68-recording-the-otp-hash-at-arm-time) |
+
+### 6.1 Device identity: PIN and anti-phishing words
+
+**Status: design only — nothing in the app or OS implements this.** Nothing today lets a user tell
+their own SeedSigner from a look-alike built by someone else and running that person's own, correctly
+signed firmware. The design below is how it could be done on this hardware.
 
 #### The gap they close
 
@@ -1076,13 +1111,13 @@ SeedSigner for a look-alike: their own board and firmware inside your case. That
 *own* boot chain perfectly well, so nothing in §1.2 notices. It can capture a seed as you enter or scan
 it, or show a doctored transaction summary, and leak data later through a QR code.
 
-Anti-phishing words close that gap. The genuine device shows words only it can compute; a look-alike
-can't produce them. The two mechanisms depend on each other:
+Anti-phishing words would close that gap. The genuine device would show words only it can compute; a
+look-alike couldn't produce them. The two mechanisms depend on each other:
 
 | Attack | Stopped by |
 |---|---|
 | Tampered firmware on *your* device | Secure boot |
-| A look-alike device swapped in for yours | Anti-phishing words |
+| A look-alike device swapped in for yours | Anti-phishing words (not implemented) |
 
 Without secure boot the attacker doesn't need a look-alike. They reflash *your* device with firmware
 that reads the real secret, shows the real words, then steals the seed.
@@ -1165,7 +1200,7 @@ Everything above depends on the secret staying on the device, and RV1106 makes t
    defeats a pre-built look-alike from someone who never had your device, which is the common swap. It
    doesn't defeat someone who had your device long enough to copy the secret. Say so plainly in the UI
    and the docs.
-2. **Then move the secret into OP-TEE's Protected OEM Zone** ([§5.4](#54-op-tee-design-not-implemented)).
+2. **Then move the secret into OP-TEE's Protected OEM Zone** ([§6.3](#63-op-tee)).
    This is the documented route to an on-die secret that normal-world code can never read. Compute the
    words inside a trusted app (TA), so the secret never enters Linux memory and the TA enforces the slow
    derivation itself. The same integration delivers `boot.img` rollback protection
@@ -1176,10 +1211,10 @@ Everything above depends on the secret staying on the device, and RV1106 makes t
 
 #### What the PIN itself protects
 
-SeedSigner stores no seed at rest, so the full PIN mainly gates the UI and carries the anti-phishing
-check. A failure counter needs storage that can only count upward. A counter on a writable partition
+SeedSigner stores no seed at rest, so in this design the full PIN would mainly gate the UI and carry
+the anti-phishing check. A failure counter needs storage that can only count upward. A counter on a writable partition
 can be reset by anyone who can write that storage, so it deters a casual finder, not a determined
-attacker. OP-TEE doesn't fully fix this on NAND or SD boards (§5.4). If encrypted persistent settings
+attacker. OP-TEE doesn't fully fix this on NAND or SD boards (§6.3). If encrypted persistent settings
 are added later, derive their key from the full PIN and `device_secret`; then the PIN protects real
 data.
 
@@ -1187,14 +1222,43 @@ To slow down prefix enumeration without a persistent counter, cap prefix attempt
 three), then force a reboot. At ~15 s per reboot, trying all 10^6 prefixes takes about two months.
 That helps whenever the secret can't be copied off the device.
 
-### 5.4 OP-TEE (design, not implemented)
+### 6.2 Anti-rollback
+
+**Status: not implemented at any stage.** A fused board boots any release signed with its key —
+including a genuine but older one with known bugs. Anyone who can flash the device (maskrom, or
+`sd_update.txt`, §6.6) can downgrade it to such a release. Nothing in the build sets a rollback index.
+
+What the platform offers, per stage:
+
+- **SPL → `uboot.img`: supported by the SDK, unused.** The SPL can enforce a rollback index read
+  directly from secure OTP (the counter at `0xe0`, `OTP_UBOOT_ROLLBACK_OFFSET`, 8 bytes), and
+  `fit-sign.sh --rollback-index uboot.img <n>` writes `rollback-index = <n>` into the ITS (Q11). The
+  counter is a one-way fuse with 64 increments: raising it is irreversible, and every older
+  `uboot.img` is refused afterwards — so the recovery images you keep must be kept current too.
+- **U-Boot → `boot.img`: needs OP-TEE or a patch.** `CONFIG_FIT_ROLLBACK_PROTECT` exists, but U-Boot
+  proper reads the index through an OP-TEE client call, and `fit-sign.sh` refuses a `boot.img` index
+  without `CONFIG_OPTEE_CLIENT` ([§4.7](#47-removable-media-sd_updatetxt-signed-images-and-rollback)).
+  Options: adopt OP-TEE ([§6.3](#63-op-tee)), or patch U-Boot to compare the FIT index against a floor
+  compiled into a rollback-protected `uboot.img` (Q14).
+- **initramfs → rootfs: nothing yet.** The verifier accepts any rootfs signed with the pinned key. A
+  version floor could live in the signed initramfs and be compared against a version carried in the
+  minisign trusted comment (which the signature covers) — an unexplored idea.
+
+Whatever is chosen, the re-sign tools ([§2](#2-signing-a-release)) would need to carry the indexes
+through, and a device-side check should refuse to arm a release whose index would lock out the
+recovery images.
+
+### 6.3 OP-TEE
+
+**Status: not shipped.** Nothing packs, enables or uses it today; this is a design for adopting it.
+
 
 Earlier revisions recorded OP-TEE as considered and rejected. It is **now worth adopting**, because it
 does two jobs nothing else on this chip does as well:
 
 - **An on-die device secret for anti-phishing words** that normal-world code can never read: the
-  Protected OEM Zone (§5.3). Without OP-TEE, Linux can't write any RV1106 OTP region at all.
-- **`boot.img` rollback protection**, which stock U-Boot enforces only through OP-TEE (§4.7).
+  Protected OEM Zone (§6.1). Without OP-TEE, Linux can't write any RV1106 OTP region at all.
+- **`boot.img` rollback protection**, which stock U-Boot enforces only through OP-TEE (§4.7, §6.2).
 
 The trade-off hasn't gone away: this puts a **closed-source secure-OS blob, running at higher privilege
 than the kernel,** on a device whose selling point is auditability. It would be accepted knowingly, for
@@ -1261,15 +1325,57 @@ release notes before switching. `RKTRUST/RV1106TOS.ini` points at it
 - **Trusted UI is still unavailable** for the SPI display. The TEE protects the secret, not what the
   screen shows.
 
+### 6.4 Full kernel command-line lockdown
+
+**Status: partial.** On signed builds `root=` and the rootfs arguments are baked into the signed DTB and
+the env partition cannot set `sys_bootargs`, but `mtdparts`/`blkdevparts` are still imported from the
+unsigned env partition and merged into the command line. A redefined layout cannot make an unsigned
+rootfs verify, but the residual is not zero. The full fix is `CONFIG_CMDLINE_FORCE=y` (untested on the
+5.10 kernel), or stripping those names from `CONFIG_ENVF_LIST` — mitigations and history in
+[§4.6](#46-the-kernel-command-line-envf-and-autoboot); open question Q13.
+
+### 6.5 Locking the U-Boot console
+
+**Status: not done.** The build sets `CONFIG_BOOTDELAY=0` (`opt/luckfox/uboot-recovery-config.sh`),
+which is still interruptible: holding CTRL+C on the UART at power-on reaches a U-Boot prompt, even on a
+fused board (bench row B1), and that prompt can read and write memory. A locked-down build needs
+`CONFIG_BOOTDELAY=-2` and `CONFIG_CONSOLE_DISABLE_CLI=y`
+([§4.6](#46-the-kernel-command-line-envf-and-autoboot)), checked on hardware against the recovery
+failover that `uboot-recovery-config.sh` configures.
+
+### 6.6 Hardening removable media
+
+**Status: not done.** U-Boot still auto-runs `sd_update.txt` from any inserted card before the kernel
+loads. It is how *Provision MicroSD* updates work, and it is unsigned code execution: on a fused board it
+cannot make unsigned firmware boot, but it can erase or overwrite any partition. A hardened build would
+drop the auto-run, or require a signed script, and only ever load, verify and then write signed images —
+never the env partition ([§4.7](#47-removable-media-sd_updatetxt-signed-images-and-rollback)).
+
+### 6.7 Hardware-held signing keys
+
+**Status: untested.** The supported way to keep the key off a networked machine is the air-gapped
+SeedSigner signer ([§2.4](#24-air-gapped-signing)). Other routes the tools allow but nobody has
+exercised: `rk_sign_tool`'s native HSM settings (Q8b), upstream `mkimage -N pkcs11` for the FITs (Q6),
+a PIV/PKCS#11 token exposing raw RSA through the digest boundary
+([airgapped-signing.md](airgapped-signing.md#smartcards)), and `rk_sign_tool`'s secondary certificates
+for a root/delegate key hierarchy (Q10).
+
+### 6.8 Recording the OTP hash at arm time
+
+**Status: not done.** Once a board is fused, the key hash it expects can only be recovered from the
+burning idblock on NAND or found by trial ([§3.5](#35-which-key-is-a-fused-board-expecting)). The app's
+Arm eFuse Burn could write the "SPL burns" hash next to the release (for example `otp-key-hash.txt`) and
+show it on screen, so every fused board has a record of the key it expects.
+
 ---
 
-## 6. Findings, open questions and history
+## 7. Findings, open questions and history
 
 Everything learned along the way, kept so the reasoning behind the current design is not lost.
 Question numbers (Q1–Q17) are the original ones from when this document was a feasibility report;
 other docs and commits refer to them.
 
-### 6.1 Open questions
+### 7.1 Open questions
 
 - **Q4.** Is the OTP public-key-hash region on RV1106 write-locked independently, and does burning it
   affect the OTP regions the `cpuinfo` driver reads?
@@ -1295,13 +1401,13 @@ other docs and commits refer to them.
   the only known allocation is the rollback counter at `0xe0`.
 - **New (2026-09-21).** Why does a fused board refuse a `download.bin` whose LDR `releaseTime` is
   1970-01-01? The field is outside every signature; only the effect is known
-  ([§6.8](#68-bench-first-fuse-to-a-re-signed-key-2026-09-21)). And does `upgrade_tool rsm` report the
+  ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)). And does `upgrade_tool rsm` report the
   secure-boot state?
 - **New.** Should the app record the OTP hash at arm time (e.g. an `otp-key-hash.txt` next to the
   release), so every fused board carries a record of which key it expects
   ([§3.5](#35-which-key-is-a-fused-board-expecting))?
 
-### 6.2 Answered questions
+### 7.2 Answered questions
 
 - **Q1 — the `rk_sign_tool` chip identifier.** `1106`. Plain `1103` is rejected by v1.49; the Mini signs
   as `1106` because it builds with the RV1106 U-Boot defconfig ([§4.3](#43-rk_sign_tool-field-notes)).
@@ -1324,7 +1430,7 @@ other docs and commits refer to them.
   The BOOT button still enters Maskrom on a fused board; an **unsigned** (wrong-key) image is
   **rejected** (won't boot or flash); a correctly signed image flashes and boots. So recovery survives,
   but only with an image signed by the fused key. Refined 2026-09-21: the loader must also have a correct
-  header key block and a post-1970 `releaseTime` ([§6.8](#68-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
+  header key block and a post-1970 `releaseTime` ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
 - **Q7 — does signing run before or after `normalise_boot_images()`, and does that invalidate a
   signature?** `boot.img` is signed after the firmware build but **before** `normalise_boot_images()`,
   which only rewrites `download.bin` and `update.img` (their `releaseTime` and trailers, outside the
@@ -1335,7 +1441,7 @@ other docs and commits refer to them.
   `si_flash_head.bin e73153ec45740feffd77587b4396ac33add7f35ad1acfe4f3629b4d1cb58e9f6`. Two digests
   because the loader carries separate USB-boot and flash-boot headers — the second is the flashhead.
 - **Q9 / Q17 — RSA-4096?** **2048-only, and it fails in software before the BootROM question arises**
-  ([§6.6](#66-bench-rsa-4096-probe-2026-09-12-unfused-board)). The SPL HW-crypto verify hardcodes
+  ([§7.6](#76-bench-rsa-4096-probe-2026-09-12-unfused-board)). The SPL HW-crypto verify hardcodes
   `key_len != RSA2048_BYTES → -EINVAL`. **Do not fuse a 4096 hash.**
 - **Q11 — does `ss --version` drive the rollback index?** No — `fit-sign.sh` takes a separate
   `--rollback-index <img> <n>`, writes `rollback-index = <n>` into the ITS, and reads it back with
@@ -1347,7 +1453,7 @@ other docs and commits refer to them.
 - **Q13 — is the kernel command line trusted on signed builds?** Partly: `root=` (plus `ubi.mtd`,
   `rootfstype`, `rk_dma_heap_cma`) is baked into the signed DTB `/chosen` by
   `apply_signed_nand_bootargs`, found the hard way when the first fused build hung at
-  `Waiting for root device /dev/mmcblk1p7` with 32M CMA (bench row C7). Remainder in §6.1.
+  `Waiting for root device /dev/mmcblk1p7` with 32M CMA (bench row C7). Remainder in §7.1.
 - **Q16 — the loader/idblock signature format (2026-09-17), which made `rk_sign_tool` unnecessary.**
   Recovered directly from shipped artifacts: scan a signed image for a 256-byte window that RSA-verifies
   (under the committed dev pubkey) to a *structurally valid* PSS block — trailer `0xbc`, and after MGF1
@@ -1360,7 +1466,7 @@ other docs and commits refer to them.
   hashes; plus `download.bin`'s flashhead (RC4, key recovered from `rk_sign_tool`) and LDR trailer
   ([airgapped-signing.md](airgapped-signing.md)).
 
-### 6.3 Corrections log
+### 7.3 Corrections log
 
 Things this document once stated that turned out to be wrong — kept because the wrong turns are
 instructive.
@@ -1368,27 +1474,27 @@ instructive.
 | Once believed | Actually | Found |
 |---|---|---|
 | `rk_sign_tool` cannot keep the key in hardware | It has native HSM/PKCS#11 settings in `setting.ini` ([§4.3](#43-rk_sign_tool-field-notes)) | reading `setting.ini` |
-| The smartcard is the best home for the anti-phishing secret | It authenticates the *card*, not the device (§5.3) | design review |
-| The Non-Protected OTP zone is reachable from Linux today | It is reached through OP-TEE; Linux cannot write any RV1106 OTP (§5.3) | OTP guide §3.1 |
+| The smartcard is the best home for the anti-phishing secret | It authenticates the *card*, not the device (§6.1) | design review |
+| The Non-Protected OTP zone is reachable from Linux today | It is reached through OP-TEE; Linux cannot write any RV1106 OTP (§6.1) | OTP guide §3.1 |
 | Sign a dm-verity root hash for lazy rootfs checks | dm-verity cannot work on UBI (§5.1) | 2026-09-13 |
 | `CONFIG_CRYPTO_DEV_ROCKCHIP=y` gives hardware crypto | The driver isn't built (§4.9) | bench |
 | The nvmem OTP blob shows the secure-boot fuse | It is a non-secure view; byte 0x80 is the chip id on every board (§4.5) | bench row E4 |
 | RV1106 arms the burn with `sign_flag=0x20` | Only the FIT `burn-key-hash` path burns (Q2) | 2026-09 bench |
 | `sys_bootargs` is still merged after the baked `/chosen` on signed builds | `envf.c` ignores it when `CONFIG_FIT_SIGNATURE=y` (§4.6) | 2026-09-14 source read |
-| `rkloader.py setkey` rewrites fields "not fully characterised"; test unfused | An unfused board cannot catch a bad key block at all; the stale C bricked a fused board (§6.8) | 2026-09-21 |
+| `rkloader.py setkey` rewrites fields "not fully characterised"; test unfused | An unfused board cannot catch a bad key block at all; the stale C bricked a fused board (§7.8) | 2026-09-21 |
 | `otp --loader --hash` output cannot be compared after the burn | Still true for reading OTP, but the burned value equals the burning idblock's `hash@np`, so it can be recovered from NAND (§3.5) | 2026-09-22 |
 | `fit-sign.sh --burn-key-hash` is how to arm on RV1106 | Its re-sign flow is unusable on this SDK; arm in-build, with `setburn`, or from the app (§3.2) | Q3 |
 | The chain stops at `boot.img`; the rootfs is unsigned | Implemented on signed builds (§5.2) | 2026-09-14 |
 
-### 6.4 Bench: unsigned baseline (stock image)
+### 7.4 Bench: unsigned baseline (stock image)
 
 Run over ADB (Linux) and UART @ 115200 (U-Boot) on the stock `Luckfox_Pico_Mini_Flash_250607` image.
 
 | # | Test | Result | Bearing |
 |---|---|---|---|
 | A1 | Read `/sys/bus/nvmem/.../rockchip-otp0/nvmem` | 128 B, readable | OTP present |
-| A1 | Write same node (`dd`) | **Permission denied** | Read-only from Linux, confirming §4.5 / §5.3 |
-| A2 | `otp_id@0x0a` vs `/proc/cpuinfo` Serial | `M4T961...` vs `d6d9fb7e70873741` — **differ** | Serial is *derived*, not the raw cell (§5.3 corrected) |
+| A1 | Write same node (`dd`) | **Permission denied** | Read-only from Linux, confirming §4.5 / §6.1 |
+| A2 | `otp_id@0x0a` vs `/proc/cpuinfo` Serial | `M4T961...` vs `d6d9fb7e70873741` — **differ** | Serial is *derived*, not the raw cell (§6.1 corrected) |
 | A3 | `hw_random/rng_current` | `rockchip` | Hardware TRNG bound |
 | A3 | `[hwrng]` kthread | **running (pid 41)** | Kernel credits TRNG entropy — confirms `docs/hwrng.md` for Luckfox |
 | A3 | `rngd` | **not running** | Stock image only; the SeedSigner build adds `rng-tools` |
@@ -1413,7 +1519,7 @@ FIT: no signed, no conf required                      <- U-Boot: FIT signature n
 **Note on the boot medium:** this is a NAND Mini (`root=ubi0:rootfs`, `ubi.mtd=6`), not the SD layout
 shown in §1.5. The `mtd0`→cmdline path is identical in mechanism.
 
-### 6.5 Bench: signed + fused run (2026-09-12, committed public dev key)
+### 7.5 Bench: signed + fused run (2026-09-12, committed public dev key)
 
 The full signed/fused chain was exercised on a sacrificial Mini, built with
 `SEEDSIGNER_FIT_SIGNATURE=1` (+ `SEEDSIGNER_FIT_BURN_KEY_HASH=1` for the burn). All confirmed on UART:
@@ -1443,7 +1549,7 @@ The staged rehearsal this run followed originally used Rockchip's V1.9 stage nam
 verification, sign, verify offline with `rk_sign_tool vi`), B (the negative test), C (sign the loader
 unarmed), D (burn), E (confirm enforcement). They are now §3.1–3.3 and the bench procedure.
 
-### 6.6 Bench: RSA-4096 probe (2026-09-12, unfused board)
+### 7.6 Bench: RSA-4096 probe (2026-09-12, unfused board)
 
 To answer Q9/Q17, a `SEEDSIGNER_FIT_BITS=4096` build (a secondary committed public 4096 dev key; the knob
 was added for this probe and **reverted after the result**) was flashed to an *unfused* Mini — the
@@ -1478,7 +1584,7 @@ HW-crypto driver — against a PKA silicon and mask ROM that may not physically 
 for a device whose real trust anchor is the seed. `CONFIG_RSA_N_SIZE=0x200` only sizes the key-block
 field. RSA-2048 + SHA-256 is the supported key size on this platform, full stop.
 
-### 6.7 Bench: rootfs verifier (2026-09-14)
+### 7.7 Bench: rootfs verifier (2026-09-14)
 
 The initramfs verifier was exercised on both a fused and an unfused Mini (dev variant, app ref
 `eabace45`, `SEEDSIGNER_FIT_SIGNATURE=1`). All confirmed on UART + LCD:
@@ -1494,7 +1600,7 @@ The rootfs link works end-to-end (E1), degrades gracefully on unfused hardware (
 against tampering (E3). The nvmem approach is retired; no kernel patch for OTP readability ships with
 signed builds.
 
-### 6.8 Bench: first fuse to a re-signed key (2026-09-21)
+### 7.8 Bench: first fuse to a re-signed key (2026-09-21)
 
 A CI production bundle was re-signed on-device to a BIP85-derived key (Resign Release), armed (Arm
 eFuse Burn), and flashed to a Mini through SocToolkit's Download mode. The SPL printed
@@ -1524,7 +1630,7 @@ unfused BootROM checks neither. Both are now checked in software, and arming ref
 fails. Keep rehearsing on a sacrificial board. When a fused board sits in maskrom, work from SocToolkit's
 own log, `rk_sign_tool otp`, and a clean rkbin loader before concluding it is dead.
 
-### 6.9 Provenance and references
+### 7.9 Provenance and references
 
 This work started as a feasibility study because **no public Rockchip secure boot document covers
 RV1103/RV1106**. Three were reviewed:
@@ -1536,7 +1642,7 @@ RV1103/RV1106**. Three were reviewed:
 | `rkbin/doc/release/RV1106_EN.md` | current | RV1106 — but contains **no** secure boot or signing section |
 
 RV1106 launched after both guides; their flows were treated as *the mechanism*, not as an RV1106
-procedure, then confirmed or corrected on hardware (§6.4–6.8). Facts in this document were **verified
+procedure, then confirmed or corrected on hardware (§7.4–6.8). Facts in this document were **verified
 directly** against the pinned SDK (`opt/luckfox/SDK_COMMIT` =
 `0b5c1f30ca6333b7ec5af70d26511da9ef8d39af`), shipped build artifacts, `rk_sign_tool` v1.49's own help
 output, and sacrificial hardware.

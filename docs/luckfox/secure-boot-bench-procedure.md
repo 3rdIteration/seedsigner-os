@@ -78,7 +78,7 @@ whole backup advantage.
 > **Size: use 2048.** `rk_sign_tool` signs and verifies 4096 too, but the SPL's
 > hardware-crypto verify is hardcoded to RSA-2048 and rejects anything else with
 > `-EINVAL` before the BootROM is ever reached (bench-confirmed 2026-09-12,
-> `secure-boot.md` §6.6). **Do not fuse a 4096 hash.**
+> `secure-boot.md` §7.6). **Do not fuse a 4096 hash.**
 
 ### Sign + verify + see the OTP hash
 
@@ -251,7 +251,7 @@ prompt at `bootdelay=0` — bench-confirmed — so a fused production build also
 > until two defects were fixed. Neither one shows on an unfused board:
 > a stale PKA constant in the re-keyed loader header, and a 1970-01-01
 > `releaseTime` in every CI `download.bin`
-> ([secure-boot.md §6.8](secure-boot.md#68-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
+> ([secure-boot.md §7.8](secure-boot.md#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
 > Before Stage 4, every one of these must pass on the exact files you will flash:
 >
 > ```sh
@@ -318,7 +318,7 @@ full-volume read, not a hang.
 enabled*, held ~5 s, then normal boot. UART: `secure boot NOT fused
 (fuse.programmed=0 on cmdline, no =1) — skipping rootfs verification`. If a
 *fused* board shows this instead, the fuse state is being misread — stop and
-investigate (see `secure-boot.md` §6.7, row E4, for how the first attempt failed exactly this way).
+investigate (see `secure-boot.md` §7.7, row E4, for how the first attempt failed exactly this way).
 
 **Tamper test (dev build, ADB).** Flip a few bytes in the volume, reboot:
 
@@ -347,5 +347,5 @@ for the procedure and [airgapped-signing.md](airgapped-signing.md) for the forma
 This section used to record the attempt to finish `rk_sign_tool`'s
 extract/inject route (the `.sign.rsa` encoding). That route became unnecessary
 once the loader signature format was recovered directly (RSA-PSS, saltLen 32,
-little-endian — `secure-boot.md` §6.2, Q16), and `rkloader.py` now does the
+little-endian — `secure-boot.md` §7.2, Q16), and `rkloader.py` now does the
 digest and splice itself.
