@@ -470,13 +470,14 @@ Notes:
 
 ## Other reference docs in this folder
 
-- [secure-boot.md](secure-boot.md) — secure boot design, rationale and bench results. **FIT + rootfs
-  signing is enabled and is the CI default** (`signing: on`), using the committed *public* dev keys;
-  the OTP fuse burn remains opt-in and off.
+- [secure-boot.md](secure-boot.md) — **start here for secure boot**: what it protects, how to sign a
+  release (build-time, re-sign on a PC, re-sign on the device, or air-gapped), burning the fuse and
+  recovery, and the technical notes and bench history. Every build is signed by default
+  (`signing: on`) with the committed *public* dev keys; the OTP fuse burn is always opt-in.
+- [airgapped-signing.md](airgapped-signing.md) — reference for the signature formats and the
+  pure-Python signers: digests out, signatures in, BIP85-derived keys, and what a re-key rewrites.
 - [secure-boot-bench-procedure.md](secure-boot-bench-procedure.md) — runnable staged procedure for
   signing, flashing and (last, irreversibly) burning the fuse on sacrificial hardware.
-- [airgapped-signing.md](airgapped-signing.md) — signing the chain without the private key ever
-  reaching the build host: digests out, signatures in, BIP85-derived keys.
 - [verifying-a-release.md](verifying-a-release.md) — how anyone can check a distributed image for
   authenticity and reproducibility, with no keys and no vendor tools.
 - [soctoolkit-cli.md](soctoolkit-cli.md) — driving SocToolkit's `upgrade_tool` directly: flashing,

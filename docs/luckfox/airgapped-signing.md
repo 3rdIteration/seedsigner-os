@@ -1,18 +1,25 @@
-# Air-gapped signing
+# Signing formats and tools (reference)
 
-Signing the Luckfox boot chain without the private key ever touching the build
-host. Three signature tiers, three cadences, one pattern: **the build host emits
-a digest, something else signs it, the build host splices the signature back.**
+The reference half of Luckfox secure boot: the signature formats, the pure-Python
+signers, and exactly what each operation rewrites. **For how to sign a release —
+build-time, re-sign on a PC, re-sign on the device, or air-gapped — start with
+[secure-boot.md §2](secure-boot.md#2-signing-a-release).** This document is where
+those recipes point for detail.
 
+Three signature tiers, three cadences, one pattern: **the build host emits a
+digest, something else signs it, the build host splices the signature back.**
 Nothing here needs `rk_sign_tool`, `mkimage`, `minisign`, the Rockchip SDK or a
 build tree — the three signers are pure-Python stdlib and run anywhere, which is
 what makes a SeedSigner viable as the signer.
 
 > **Status.** The formats are validated against every signed artifact this repo
-> produces (and, for minisign, byte-for-byte against the vendor binary). An
-> offline-re-signed image has **not yet been booted on hardware.** Do that on a
-> sacrificial, **unfused** board before trusting any of it. Nothing in this
-> document burns a fuse.
+> produces (and, for minisign, byte-for-byte against the vendor binary). Re-signed
+> releases have been booted on hardware, including a Pico Mini **fused** to a
+> re-signed BIP85 key (2026-09-21). That run found two defects that only a fused
+> board shows (the header key block, and `download.bin`'s `releaseTime`), both now
+> fixed and checked by `verify`/`check` — see
+> [The header key block](#the-header-key-block-what-the-bootrom-checks). Nothing
+> in this document burns a fuse except [Arming the OTP burn](#arming-the-otp-burn).
 
 ## The three tiers
 
@@ -114,18 +121,9 @@ with a full `check_release` — it exits non-zero if anything does not verify.
 a plain `splice` (no flags) splices the signature back and must come out VALID,
 since only that image changed.
 
-**A re-key takes two signing round-trips**, in this order:
-
-```bash
-python3 tools/airgap-sign.py rekey   <bundle> --card /media/sdcard
-python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard --only rootfs
-# ... device: Sign Digest ...
-python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard --only rootfs --no-check
-python3 tools/airgap-sign.py digests <bundle> --card /media/sdcard \
-        --only download,idblock,uboot,boot
-# ... device: Sign Digest ...
-python3 tools/airgap-sign.py splice  <bundle> --card /media/sdcard   # RESULT: VALID
-```
+**A re-key takes two signing round-trips** (rootfs first, then the boot chain);
+the step-by-step sequence is in [secure-boot.md §2.4](secure-boot.md#24-air-gapped-signing),
+and the same flow with the key on the PC is §2.2.
 
 `rekey` clears the loaders' signatures and removes `update.img` (it packs a copy
 of the old chain); mid-flow bundles are expected to fail `check_release`, which
@@ -162,6 +160,10 @@ public key rather than random, which is what makes this reproducible; a keypair
 from `minisign -G` will have a random one.
 
 ## Swapping the chain to a new key
+
+The full, validated re-key recipe (including the rootfs) is
+[secure-boot.md §2.2](secure-boot.md#22-re-sign-an-existing-release-on-a-pc);
+these are the lower-level commands it is built from.
 
 Needed once, when moving off the published dev key. If the private key must not
 touch this machine at all, use the air-gap form instead: `tools/airgap-sign.py
@@ -531,6 +533,8 @@ override for cards signed by something else (e.g. a hand-run CLI signer).
 
 ## See also
 
+- [secure-boot.md](secure-boot.md) — start here: background, how to sign a release (all four
+  methods), burning the fuse and recovery, technical notes and bench history
 - [verifying-a-release.md](verifying-a-release.md) — the other side: checking a distributed image
-- [secure-boot.md](secure-boot.md) — design, threat model, consequences, bench results
 - [secure-boot-bench-procedure.md](secure-boot-bench-procedure.md) — the staged hardware procedure
+- [soctoolkit-cli.md](soctoolkit-cli.md) — flashing and recovering boards with `upgrade_tool`
