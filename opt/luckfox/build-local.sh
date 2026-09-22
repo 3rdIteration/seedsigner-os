@@ -28,6 +28,47 @@ SEEDSIGNER_BOOT_LOG="${SEEDSIGNER_BOOT_LOG:-off}"
 SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner.git}"
 SEEDSIGNER_REF="${SEEDSIGNER_REF:-${SEEDSIGNER_BRANCH:-dev}}"
 
+# Secure boot (opt-in, OFF by default): SEEDSIGNER_FIT_SIGNATURE=1 enables FIT
+# signature enforcement in U-Boot, signs the rootfs volume at build time and
+# embeds a verifying initramfs into boot.img. Every step is a no-op unless it
+# is set, so unsigned builds are byte-for-byte unchanged (commit 33c8681).
+SEEDSIGNER_FIT_SIGNATURE="${SEEDSIGNER_FIT_SIGNATURE:-0}"
+export SEEDSIGNER_FIT_SIGNATURE
+# IRREVERSIBLE: when 1, the built loader burns the FIT pubkey hash to OTP on
+# first boot and turns secure boot on permanently. Never set in CI or a normal
+# build; see arm_fit_burn_key_hash below.
+SEEDSIGNER_FIT_BURN_KEY_HASH="${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}"
+export SEEDSIGNER_FIT_BURN_KEY_HASH
+# Dir holding a real dev.{key,pubkey,crt} FIT signing triple; default: the
+# committed PUBLIC dev key in secure-boot/dev-keys/ (placeholder, no protection).
+SEEDSIGNER_FIT_KEY_DIR="${SEEDSIGNER_FIT_KEY_DIR:-}"
+export SEEDSIGNER_FIT_KEY_DIR
+# Rootfs verification (only with SEEDSIGNER_FIT_SIGNATURE=1): dir holding a
+# minisign dev.key/dev.pubkey pair used to sign the rootfs volume's logical
+# UBIFS contents at build time. Default: the committed PUBLIC dev keypair in
+# secure-boot/dev-keys-rootfs/ (see its README — grants no protection, keeps
+# signed builds reproducible and the failure mode recoverable).
+SEEDSIGNER_ROOTFS_KEY_DIR="${SEEDSIGNER_ROOTFS_KEY_DIR:-}"
+export SEEDSIGNER_ROOTFS_KEY_DIR
+# Passphrase for that secret key. The committed dev key uses the documented
+# public passphrase "seedsigner-dev"; a real key via SEEDSIGNER_ROOTFS_KEY_DIR
+# must set this explicitly (no default — an empty prompt would hang the build).
+SEEDSIGNER_ROOTFS_KEY_PASSPHRASE="${SEEDSIGNER_ROOTFS_KEY_PASSPHRASE:-}"
+export SEEDSIGNER_ROOTFS_KEY_PASSPHRASE
+# Rebuild the four vendored initramfs binaries from source at build time and
+# overwrite the committed copies before their SHA-256 pins are checked. Off by
+# default: the committed binaries ARE the reviewed, pinned artifacts (see
+# secure-boot/initramfs-binaries/README.md). When on, a rebuild that does not
+# reproduce the pinned bytes exactly fails the build loudly — the pins act as
+# a live determinism canary, so they must never be auto-updated. Requires
+# network access for the checksum-pinned source downloads.
+SEEDSIGNER_REBUILD_INITRAMFS_BINARIES="${SEEDSIGNER_REBUILD_INITRAMFS_BINARIES:-0}"
+export SEEDSIGNER_REBUILD_INITRAMFS_BINARIES
+# Mini CMA size baked into the signed bootargs (matches apply_mini_cma_config's
+# 1M pin); overridable for testing.
+MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
+export MINI_CMA_SIZE
+
 # Default Python version for buildroot (used if detection fails)
 DEFAULT_PYTHON_VERSION="3.12"
 DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-1}"
@@ -41,6 +82,32 @@ print_success() { echo -e "${GREEN}[SUCCESS] $1${NC}"; }
 print_warning() { echo -e "${YELLOW}[WARNING] $1${NC}"; }
 print_error() { echo -e "${RED}[ERROR] $1${NC}"; }
 print_info() { echo -e "${YELLOW}[INFO] $1${NC}"; }
+# Alias for os-build.sh's print_step (ported secure-boot functions call it).
+print_step() { print_info "$*"; }
+
+# Artifact name tag: <appref>-os<develop|production>-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>.
+# MUST match os-build.sh's artifact naming byte-for-byte, so a legacy local build and a
+# Docker/CI build of the same inputs produce comparable filenames. The variant is spelled
+# develop/production (NOT dev/nondev) to avoid colliding with an app ref of "dev"; the
+# secure-boot token is safety-relevant: "burnable" images write the OTP fuses on first
+# boot -- irreversibly. Computed at call time so CLI-parsed SEEDSIGNER_REF / BUILD_VARIANT
+# (set later in main) are honoured.
+artifact_tag() {
+    local variant_tag sb_state
+    case "$BUILD_VARIANT" in
+        dev)     variant_tag="develop" ;;
+        non-dev) variant_tag="production" ;;
+        *) print_error "unknown build variant '$BUILD_VARIANT' (expected dev or non-dev)"; exit 1 ;;
+    esac
+    case "${SEEDSIGNER_FIT_SIGNATURE:-0}" in
+        1)
+            if [ "${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" = "1" ]; then sb_state="burnable"; else sb_state="signed"; fi
+            if [ -n "${SEEDSIGNER_FIT_KEY_DIR:-}" ]; then sb_state="${sb_state}-realkey"; else sb_state="${sb_state}-devkey"; fi
+            ;;
+        *) sb_state="unsigned" ;;
+    esac
+    printf '%s' "$(printf '%s' "$SEEDSIGNER_REF" | tr -c 'A-Za-z0-9_.-' '_')-os${variant_tag}-${sb_state}"
+}
 
 debug_uart_bootargs_file() {
     local file_path="$1"
@@ -316,6 +383,18 @@ apply_sdk_patches() {
     # the rootfs became read-only squashfs, nowhere writable at all.
     bash "$SCRIPT_DIR/apply-partition-layout.sh" "$WORK_DIR/luckfox-pico"
 
+    # Rootfs minisign hooks for signed builds: sign the rootfs during `build.sh
+    # firmware` (same pctools-copy constraint as above). No-op unless
+    # SEEDSIGNER_FIT_SIGNATURE=1. The UBI hook covers NAND (squashfs/ubifs packed
+    # into a UBI volume by mkfs_ubi.sh's embedded call); the squashfs hook covers
+    # MicroSD/eMMC, where build_mkimg writes a raw-partition squashfs through
+    # mkfs_squashfs.sh and no UBI is involved. Both write per-image outputs, so a
+    # multi-profile run never clobbers another medium's signature.
+    if [[ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ]]; then
+        bash "$SCRIPT_DIR/secure-boot/patch-mkfs-ubi-signing.sh" "$WORK_DIR/luckfox-pico"
+        bash "$SCRIPT_DIR/secure-boot/patch-mkfs-squashfs-signing.sh" "$WORK_DIR/luckfox-pico"
+    fi
+
     cd "$WORK_DIR"
 }
 
@@ -455,8 +534,8 @@ apply_mini_cma_config() {
     
     print_info "Using board config: $board_config"
     
-    local cma_size="1M"
-    
+    local cma_size="${MINI_CMA_SIZE}"
+
     if grep -q '^export RK_BOOTARGS_CMA_SIZE=' "$board_config"; then
         sed -i "s|^export RK_BOOTARGS_CMA_SIZE=.*|export RK_BOOTARGS_CMA_SIZE=\"${cma_size}\"|" "$board_config"
         print_info "Updated existing CMA size in: $board_config"
@@ -659,7 +738,7 @@ apply_uart2_fiq_kernel_patch() {
     print_success "Kernel FIQ debugger disabled and serial drivers enabled in: $kernel_cfg_file"
 }
 
-apply_hwrng_crypto_kernel_patch() {
+apply_hwrng_kernel_patch() {
     local hardware="$1"
     local boot_medium="$2"
 
@@ -671,7 +750,7 @@ apply_hwrng_crypto_kernel_patch() {
         max)  sdk_hardware="RV1106_Luckfox_Pico_Pro_Max" ;;
         pi)   sdk_hardware="RV1106_Luckfox_Pico_Pi" ;;
         *)
-            print_error "Unknown hardware type for HWRNG/crypto kernel patch: $hardware"
+            print_error "Unknown hardware type for HWRNG kernel patch: $hardware"
             exit 1
             ;;
     esac
@@ -680,7 +759,7 @@ apply_hwrng_crypto_kernel_patch() {
         nand) sdk_boot_medium="SPI_NAND" ;;
         emmc) sdk_boot_medium="EMMC" ;;
         *)
-            print_error "Unknown boot medium for HWRNG/crypto kernel patch: $boot_medium"
+            print_error "Unknown boot medium for HWRNG kernel patch: $boot_medium"
             exit 1
             ;;
     esac
@@ -690,7 +769,7 @@ apply_hwrng_crypto_kernel_patch() {
         board_config="$(readlink -f .BoardConfig.mk)"
     fi
     if [ ! -f "$board_config" ]; then
-        print_error "Board config file not found for HWRNG/crypto kernel patch: $board_config"
+        print_error "Board config file not found for HWRNG kernel patch: $board_config"
         exit 1
     fi
 
@@ -700,25 +779,18 @@ apply_hwrng_crypto_kernel_patch() {
 
     local kernel_cfg_file="sysdrv/source/kernel/arch/arm/configs/${kernel_defconfig}"
     if [ ! -f "$kernel_cfg_file" ]; then
-        print_error "Kernel defconfig not found for HWRNG/crypto patch: $kernel_cfg_file"
+        print_error "Kernel defconfig not found for HWRNG patch: $kernel_cfg_file"
         exit 1
     fi
 
     # Enable hardware random number generator
-    sed -i -E '/^CONFIG_HW_RANDOM(=|_)/d;/^# CONFIG_HW_RANDOM is not set$/d' "$kernel_cfg_file"
-    sed -i -E '/^CONFIG_HW_RANDOM_ROCKCHIP(=|_)/d;/^# CONFIG_HW_RANDOM_ROCKCHIP is not set$/d' "$kernel_cfg_file"
+    sed -i -E '/^CONFIG_HW_RANDOM=/d;/^# CONFIG_HW_RANDOM is not set$/d' "$kernel_cfg_file"
+    sed -i -E '/^CONFIG_HW_RANDOM_ROCKCHIP=/d;/^# CONFIG_HW_RANDOM_ROCKCHIP is not set$/d' "$kernel_cfg_file"
     {
         echo 'CONFIG_HW_RANDOM=y'
         echo 'CONFIG_HW_RANDOM_ROCKCHIP=y'
     } >> "$kernel_cfg_file"
 
-    # Enable Rockchip hardware crypto (crypto v3 for RV1106/RV1103)
-    sed -i -E '/^CONFIG_CRYPTO_DEV_ROCKCHIP(=|_)/d;/^# CONFIG_CRYPTO_DEV_ROCKCHIP is not set$/d' "$kernel_cfg_file"
-    sed -i -E '/^CONFIG_CRYPTO_DEV_ROCKCHIP_DEV(=|_)/d;/^# CONFIG_CRYPTO_DEV_ROCKCHIP_DEV is not set$/d' "$kernel_cfg_file"
-    {
-        echo 'CONFIG_CRYPTO_DEV_ROCKCHIP=y'
-        echo 'CONFIG_CRYPTO_DEV_ROCKCHIP_DEV=y'
-    } >> "$kernel_cfg_file"
 
     if ! grep -Eq '^CONFIG_HW_RANDOM=y$' "$kernel_cfg_file"; then
         print_error "Kernel HWRNG enable verification failed: CONFIG_HW_RANDOM in $kernel_cfg_file"
@@ -728,36 +800,54 @@ apply_hwrng_crypto_kernel_patch() {
         print_error "Kernel HWRNG enable verification failed: CONFIG_HW_RANDOM_ROCKCHIP in $kernel_cfg_file"
         exit 1
     fi
-    if ! grep -Eq '^CONFIG_CRYPTO_DEV_ROCKCHIP=y$' "$kernel_cfg_file"; then
-        print_error "Kernel crypto enable verification failed: CONFIG_CRYPTO_DEV_ROCKCHIP in $kernel_cfg_file"
-        exit 1
-    fi
-    if ! grep -Eq '^CONFIG_CRYPTO_DEV_ROCKCHIP_DEV=y$' "$kernel_cfg_file"; then
-        print_error "Kernel crypto enable verification failed: CONFIG_CRYPTO_DEV_ROCKCHIP_DEV in $kernel_cfg_file"
-        exit 1
-    fi
-    print_success "HWRNG and hardware crypto enabled in kernel defconfig: $kernel_cfg_file"
+    print_success "HWRNG enabled in kernel defconfig: $kernel_cfg_file"
 }
 
-apply_crypto_dts_patch() {
+# Force a DTS node's status to "okay", appending an override when the board DTS
+# does not already reference the node. Returns non-zero if the result cannot be
+# verified afterwards.
+enable_dts_node() {
+    local node="$1"
+    local dts_file="$2"
+
+    if grep -Eq "&${node}[[:space:]]*[{]" "$dts_file"; then
+        sed -i "/&${node}[[:space:]]*{/,/};/ s/status[[:space:]]*=[[:space:]]*\"[^\"]*\"/status = \"okay\"/" "$dts_file"
+    else
+        printf '\n&%s {\n\tstatus = "okay";\n};\n' "$node" >> "$dts_file"
+    fi
+
+    awk -v node="$node" '
+        $0 ~ "&" node "[[:space:]]*[{]" { found = 1 }
+        found && /status[[:space:]]*=[[:space:]]*"okay"/ { ok = 1 }
+        /\};/ { if (found) exit }
+        END { exit !ok }
+    ' "$dts_file"
+}
+
+# rng: TRNG v1. On RV1103/RV1106 this is a SEPARATE IP block (rng@ff448000, its
+#      own HCLK_TRNG_NS clock), not the RNG that lived inside the crypto block on
+#      crypto v1/v2 hardware. rv1106.dtsi ships &rng disabled and it is only
+#      "okay" today because upstream rv1106-evb.dtsi happens to enable it, so pin
+#      it here -- an SDK bump must not silently drop the hardware entropy source.
+#
+# The hardware crypto engine (&crypto / CONFIG_CRYPTO_DEV_ROCKCHIP) is NOT
+# enabled: SeedSigner uses software crypto, and on RV1106 that driver needs the
+# CRYPTO_DEV_ROCKCHIP_V3 sub-option to build at all -- confirmed absent on a
+# flashed image (empty /proc/crypto, unbound crypto node). Pinning only &rng is
+# deliberate; do not re-add &crypto without also building the driver.
+apply_rng_dts_patch() {
     local hardware="$1"
 
-    print_header "Enabling Crypto DTS Node"
+    print_header "Enabling RNG DTS Node"
 
     local dts_file
     dts_file="$(resolve_dts_path_for_hardware "$hardware")"
 
-    if grep -Eq '&crypto[[:space:]]*\{' "$dts_file"; then
-        sed -i '/&crypto[[:space:]]*{/,/};/ s/status[[:space:]]*=[[:space:]]*"[^"]*"/status = "okay"/' "$dts_file"
-    else
-        printf '\n&crypto {\n\tstatus = "okay";\n};\n' >> "$dts_file"
-    fi
-
-    if ! awk '/&crypto[[:space:]]*\{/{found=1} found && /status[[:space:]]*=[[:space:]]*"okay"/{ok=1} /\};/{if(found)exit} END{exit !ok}' "$dts_file"; then
-        print_error "Crypto DTS node enable verification failed in: $dts_file"
+    if ! enable_dts_node rng "$dts_file"; then
+        print_error "rng DTS node enable verification failed in: $dts_file"
         exit 1
     fi
-    print_success "Crypto DTS node enabled in: $dts_file"
+    print_success "rng DTS node enabled in: $dts_file"
 }
 
 apply_kernel_network_strip() {
@@ -868,6 +958,18 @@ apply_readonly_rootfs() {
         # one so the rootfs can be poked at over the serial console.
         *)   if [ "$BUILD_VARIANT" = "non-dev" ]; then SS_RO_ROOTFS=1; else SS_RO_ROOTFS=0; fi ;;
     esac
+    # A signed SD/eMMC build MUST have an immutable root: the initramfs verifier
+    # streams the raw partition bytes and only knows how to mount squashfs there
+    # (a writable ext4 root would stop verifying after the first runtime write,
+    # and /init has no case for it at all). Force it on rather than failing late
+    # in apply_signed_nand_bootargs — dev signed builds then match non-dev's
+    # stack exactly (the debug access lives in userspace: adb/telnet/serial).
+    # NAND is exempt: the verifier handles both squashfs and writable UBIFS.
+    if [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] && { [ "$boot_medium" = "sd" ] || [ "$boot_medium" = "emmc" ]; } \
+       && [ "$SS_RO_ROOTFS" != 1 ]; then
+        print_info "SEEDSIGNER_FIT_SIGNATURE=1 on $boot_medium: forcing read-only squashfs root (the initramfs verifier only supports immutable roots there)"
+        SS_RO_ROOTFS=1
+    fi
     export SS_RO_ROOTFS
     # Recorded for the post-build assertions, which need the same board config.
     export SS_BOARD_CONFIG="$board_config"
@@ -894,6 +996,699 @@ apply_spidev_bufsiz() {
 
     print_header "Pinning spidev.bufsiz (display SPI open)"
     bash "$SCRIPT_DIR/pin-spidev-bufsiz.sh" "$WORK_DIR/luckfox-pico" "$sdk_hardware" 8192
+}
+
+# Extend the RV1106 OTP nvmem region so /init can read the secure-boot enable
+# fuse (offset 0x80) and show "SECURE BOOT not enabled" on unfused boards.
+# Shared with CI via patch-otp-size.sh; applies to every board — all three use
+# rv1106_data in rockchip-otp.c (the Mini's RV1103 includes rv1106.dtsi).
+# No-op unless SEEDSIGNER_FIT_SIGNATURE=1: unsigned builds keep the kernel
+# byte-identical to before this feature.
+apply_otp_size_patch() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    print_header "Extending OTP nvmem region for secure-boot fuse read"
+    bash "$SCRIPT_DIR/patch-otp-size.sh" "$WORK_DIR/luckfox-pico"
+}
+
+# Opt-in secure-boot support (SEEDSIGNER_FIT_SIGNATURE=1), OFF by default so a
+# normal build is byte-for-byte unchanged. Two halves:
+#   apply_fit_signature_config  - turn ON FIT signature ENFORCEMENT in the U-Boot
+#       defconfig BEFORE the U-Boot build, so SPL/U-Boot require a valid signature.
+#   export_fit_sign_tree        - AFTER the build, copy everything fit-sign.sh
+#       needs (the packed images from output/image + a fit_signcfg/ holding the
+#       built u-boot .config as sign.readonly_config) into the image output dir.
+#       Signing then happens on the host with secure-boot/sign-secure-boot.sh
+#       --build-tree <that dir>. The build itself never signs and never burns.
+# See docs/luckfox/secure-boot-bench-procedure.md.
+apply_fit_signature_config() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local ubootdir="$WORK_DIR/luckfox-pico/sysdrv/source/uboot/u-boot"
+    local cfgdir="$ubootdir/configs"
+    print_step "Enabling FIT signature enforcement in U-Boot defconfig (SEEDSIGNER_FIT_SIGNATURE=1)"
+    local f found=0 sym
+    for f in "$cfgdir"/luckfox_rv1106_uboot*defconfig; do
+        [ -f "$f" ] || continue
+        found=1
+        for sym in CONFIG_FIT_SIGNATURE CONFIG_SPL_FIT_SIGNATURE; do
+            sed -i -E "/^# ${sym} is not set\$/d; /^${sym}=/d" "$f"
+            echo "${sym}=y" >> "$f"
+        done
+        print_success "FIT signature enabled in $(basename "$f")"
+    done
+    if [ "$found" != 1 ]; then
+        print_error "SEEDSIGNER_FIT_SIGNATURE=1 but no luckfox_rv1106_uboot*defconfig under $cfgdir"
+        exit 1
+    fi
+    # With CONFIG_FIT_SIGNATURE=y the SDK signs the FIT *during* the build:
+    # scripts/fit-core.sh runs check_rsa_keys and `mkimage -k keys/`, which abort
+    # with "ERROR: No keys/dev.key" unless the dev.{key,pubkey,crt} triple is
+    # present in the u-boot tree. Provide one so the build completes.
+    provision_fit_build_keys "$ubootdir/keys"
+    arm_fit_burn_key_hash "$ubootdir"   # opt-in: SEEDSIGNER_FIT_BURN_KEY_HASH=1 (IRREVERSIBLE fuse)
+}
+
+# IRREVERSIBLE. Arm the OTP key-hash burn. The build's u-boot make.sh never
+# passes --burn-key-hash to the FIT signing, so a normal signed build produces a
+# loader that verifies signatures but NEVER writes OTP (safe to flash forever).
+# When SEEDSIGNER_FIT_BURN_KEY_HASH=1, patch make.sh so pack_fit_image adds
+# --burn-key-hash to the fit.sh call: fit-core.sh then sets `burn-key-hash 0x1`
+# in the SPL DTB (with its own readback check) and re-packs the loader. On first
+# boot that loader writes the FIT pubkey hash to OTP and turns on secure boot --
+# permanently. The pubkey burned is whatever signed this build (the committed
+# PUBLIC dev key unless SEEDSIGNER_FIT_KEY_DIR gave a real one). Off by default;
+# never set in CI or a normal build.
+arm_fit_burn_key_hash() {
+    [ "${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" = "1" ] || return 0
+    local ubootdir="$1"
+    local mk="$ubootdir/make.sh"
+    print_step "ARMING OTP BURN — SEEDSIGNER_FIT_BURN_KEY_HASH=1 (IRREVERSIBLE)"
+    print_success "  the built loader will write the FIT pubkey hash to OTP on first boot and"
+    print_success "  turn on secure boot PERMANENTLY. Flash it only on a board you mean to fuse."
+    [ -f "$mk" ] || { print_error "u-boot make.sh not found at $mk"; exit 1; }
+    # Append --burn-key-hash to the uboot.img FIT signing call inside
+    # pack_fit_image (the `${SCRIPT_FIT} ${ARG_LIST_FIT} --chip ${RKCHIP_LABEL}`
+    # line). Idempotent, and narrow enough not to touch the SCRIPT_DECOMP line.
+    if ! grep -q 'SCRIPT_FIT}.*--chip.*RKCHIP_LABEL}.*--burn-key-hash' "$mk"; then
+        sed -i '/SCRIPT_FIT} .* --chip .*RKCHIP_LABEL}$/ s/$/ --burn-key-hash/' "$mk"
+    fi
+    grep -q 'SCRIPT_FIT}.*--chip.*RKCHIP_LABEL}.*--burn-key-hash' "$mk" \
+        || { print_error "failed to arm --burn-key-hash in $mk (pack_fit_image line not found)"; exit 1; }
+    print_success "armed: pack_fit_image now signs with --burn-key-hash"
+}
+
+# Lay down the dev.{key,pubkey,crt} the in-SDK signing needs. Three sources, in
+# order: an existing triple already in the tree (kept SDK checkout) is reused; a
+# real key supplied via SEEDSIGNER_FIT_KEY_DIR is copied in and its pubkey ends up
+# embedded in the loader (no host resign needed); otherwise the committed PUBLIC
+# dev key (secure-boot/dev-keys/) is used as a placeholder — its pubkey is meant
+# to be replaced on the host by `fit-sign.sh --key-dir <real>` over the exported
+# fit-sign tree.
+#
+# Why the fixed public key rather than a fresh random one: it keeps the signed
+# build reproducible, and it makes the "skipped the re-sign, then burned the OTP"
+# mistake RECOVERABLE — the board fuses to a key everyone has, so it can still be
+# signed/updated, instead of being bricked by a discarded random key. It grants
+# no security (the key is public); real protection needs the Stage 2 re-sign with
+# a secret key. See secure-boot/dev-keys/README.md.
+provision_fit_build_keys() {
+    local keydir="$1" k
+    mkdir -p "$keydir"
+    if [ -f "$keydir/dev.key" ] && [ -f "$keydir/dev.pubkey" ] && [ -f "$keydir/dev.crt" ]; then
+        print_success "reusing existing FIT signing key already in $keydir"
+        return 0
+    fi
+    if [ -n "${SEEDSIGNER_FIT_KEY_DIR:-}" ]; then
+        local s="$SEEDSIGNER_FIT_KEY_DIR"
+        for k in dev.key dev.pubkey dev.crt; do
+            [ -f "$s/$k" ] || { print_error "SEEDSIGNER_FIT_KEY_DIR=$s is missing $k (need dev.key + dev.pubkey + dev.crt; generate with secure-boot/make-dev-keys.sh)"; exit 1; }
+        done
+        cp "$s/dev.key" "$s/dev.pubkey" "$s/dev.crt" "$keydir/"
+        print_success "using supplied FIT signing key from SEEDSIGNER_FIT_KEY_DIR (its pubkey is embedded in the loader; no host resign needed)"
+        return 0
+    fi
+    local devkeys="$SCRIPT_DIR/secure-boot/dev-keys"
+    for k in dev.key dev.pubkey dev.crt; do
+        [ -f "$devkeys/$k" ] || { print_error "committed public dev key missing: $devkeys/$k (stale checkout?)"; exit 1; }
+    done
+    cp "$devkeys/dev.key" "$devkeys/dev.pubkey" "$devkeys/dev.crt" "$keydir/"
+    print_step "Using the committed PUBLIC dev key as the FIT build placeholder"
+    print_success "  this key is NOT secret and grants NO protection — re-sign the exported fit-sign"
+    print_success "  tree with your real secret key (fit-sign.sh --key-dir <real>) before you burn."
+    print_success "  (A burn done with this placeholder is recoverable but unsecurable; see"
+    print_success "   secure-boot/dev-keys/README.md.)"
+}
+
+# When the boot.img FIT is signed, u-boot must NOT rewrite the kernel DTB's
+# /chosen bootargs at runtime (that would break the signature), so the kernel
+# uses whatever root= is BAKED into the DTB. Each board's ipc.dtsi hardcodes its
+# SD/eMMC default (root=/dev/mmcblk1p7 on mini+max, root=/dev/mmcblk0p7 on pi —
+# eMMC is the FIRST block device); on a signed NAND build the SDK's usual
+# runtime injection of root=ubi0:rootfs / ubi.mtd / rootfstype / rk_dma_heap_cma
+# is dropped, so the board hangs at "Waiting for root device" and comes up with
+# the DT-default CMA. Bake the rootfs cmdline (the exact args the SDK computes in
+# parse_partition_file/__GET_BOOTARGS_FROM_BOARD_CFG) into /chosen before the
+# kernel build. Gated on signed builds, so unsigned ones are untouched (u-boot
+# still overrides their /chosen at runtime). This also fixes the
+# attacker-controlled-cmdline gap for signed builds: root is now pinned inside
+# the signed image, not read from the unsigned env partition. A mismatch is not
+# a fallback: it is "Waiting for root device" with no recovery short of a
+# reflash.
+apply_signed_nand_bootargs() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local profile="$1" medium="$2"
+    case "$medium" in
+        nand|sd|emmc) ;;
+        *) print_info "apply_signed_nand_bootargs: no bootargs baking needed for '$medium'"; return 0 ;;
+    esac
+    # Per-board DTSI (the one carrying /chosen/bootargs) and the rootfs block
+    # device. All three boards share the same 7-partition layout
+    # (env,idblock,uboot,boot,oem,userdata,rootfs — apply-partition-layout.sh),
+    # so on NAND rootfs is mtd6 everywhere; SD/SDMMC is mmcblk1, eMMC is mmcblk0.
+    local dtsi root_dev
+    case "$profile" in
+        mini) dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1103-luckfox-pico-ipc.dtsi";      root_dev="mmcblk1p7" ;;
+        max)  dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1106-luckfox-pico-pro-max-ipc.dtsi"; root_dev="mmcblk1p7" ;;
+        pi)   dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1106-luckfox-pico-pi-ipc.dtsi";     root_dev="mmcblk0p7" ;;
+        *) print_error "signed bootargs: unsupported board profile '$profile' (expected mini, max or pi)"; exit 1 ;;
+    esac
+    [ -f "$dtsi" ] || { print_error "signed bootargs: DTS not found: $dtsi"; exit 1; }
+
+    # The CMA size the SDK's env would have injected at runtime (RK_BOOTARGS_CMA_SIZE):
+    # a signed FIT never applies it, so bake exactly that value. For mini this is
+    # $MINI_CMA_SIZE — apply_mini_cma_config already rewrote the board config to
+    # it earlier in main; for max/pi it is the SDK's own 66M. Reading the config
+    # (not a per-board constant) keeps one source of truth: whatever an unsigned
+    # build would have ended up with, the signed bake matches.
+    local cma_size
+    cma_size="$(sed -n 's/^export RK_BOOTARGS_CMA_SIZE="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$SS_BOARD_CONFIG" 2>/dev/null | head -n1)"
+    [ -n "$cma_size" ] \
+        || { print_error "signed bootargs: no RK_BOOTARGS_CMA_SIZE in board config ${SS_BOARD_CONFIG:-missing}"; exit 1; }
+
+    if [ "$medium" = "nand" ]; then
+        # The baked cmdline must match what mkfs_ubi.sh actually built. readonly-
+        # rootfs (resolved by apply_readonly_rootfs, which runs earlier in main)
+        # decides: non-dev packs squashfs into a STATIC UBI volume exposed as
+        # /dev/ubiblock0_0; dev keeps a writable dynamic UBIFS volume at
+        # ubi0:rootfs. Same split the SDK's own __GET_TARGET_PARTITION_FS_TYPE
+        # makes for spi_nand.
+        local baked_root marker
+        if [ "${SS_RO_ROOTFS:-0}" = "1" ]; then
+            baked_root="ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ubi.mtd=6 rk_dma_heap_cma=$cma_size"
+        else
+            baked_root="root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=$cma_size"
+        fi
+        marker="${baked_root%% *}"
+        if grep -qF "$marker" "$dtsi"; then
+            print_success "NAND root already baked in $(basename "$dtsi") ($marker)"
+            return 0
+        fi
+        grep -q "root=/dev/$root_dev" "$dtsi" \
+            || { print_error "signed-NAND bootargs: expected 'root=/dev/$root_dev' in $(basename "$dtsi") — SDK layout changed (or a different root= was already baked)"; exit 1; }
+        # rootfs is mtd6 in our 7-partition NAND layout (env,idblock,uboot,boot,oem,userdata,rootfs).
+        sed -i "s|root=/dev/$root_dev|$baked_root|" "$dtsi"
+        grep -qF "$marker" "$dtsi" || { print_error "signed-NAND bootargs: rewrite failed in $(basename "$dtsi")"; exit 1; }
+        print_success "baked: $baked_root ($profile)"
+    else
+        # MicroSD/eMMC: the stock DTSI already carries root=/dev/$root_dev (the
+        # SDK's own default for these media); what is missing on a signed build
+        # are the two things the SDK would normally append via sys_bootargs —
+        # exactly the env values a signed /chosen ignores:
+        #   rootfstype=squashfs   — the SD/eMMC rootfs is a read-only squashfs in
+        #       both variants (readonly-rootfs.sh only ever switches TO squashfs,
+        #       and apply_readonly_rootfs forces it on for signed builds), and the
+        #       initramfs verifier mounts it as squashfs; assert it rather than
+        #       guess (a non-squashfs rootfs would verify bytes the kernel then
+        #       mounts with a different filesystem). This is a backstop: the force
+        #       above makes an ext4 root unreachable on signed SD/eMMC builds.
+        #   rk_dma_heap_cma=$cma_size — WITHOUT this the DT-default CMA region is
+        #       reserved. On the 64 MB Mini that leaves only ~24 MB usable and
+        #       starves the SeedSigner app: it thrashes in direct reclaim and
+        #       never signals ready, so the boot watchdog reboots in a loop (the
+        #       original reason this bake exists). On max/pi (512 MB) it is not
+        #       fatal, but baking keeps signed == unsigned behaviour exactly. The
+        #       RK_BOOTARGS_CMA_SIZE profile only reaches the runtime-injected
+        #       cmdline, which a signed FIT never applies.
+        local fs_cfg rootfs_fs baked marker
+        fs_cfg="$(grep -E '^[[:space:]]*export[[:space:]]+RK_PARTITION_FS_TYPE_CFG=' "$SS_BOARD_CONFIG" 2>/dev/null | head -n1 || true)"
+        rootfs_fs="$(echo "$fs_cfg" | sed -n 's/.*rootfs@[^@,"]*@\([A-Za-z0-9]*\).*/\1/p')"
+        [ "$rootfs_fs" = "squashfs" ] \
+            || { print_error "signed-$medium bootargs: rootfs fs type is '${rootfs_fs:-<unknown>}' (board config ${SS_BOARD_CONFIG:-missing}) — only squashfs roots are supported by the initramfs verifier"; exit 1; }
+        baked="root=/dev/$root_dev rootfstype=squashfs rk_dma_heap_cma=$cma_size"
+        marker="rootfstype=squashfs rk_dma_heap_cma=$cma_size"
+        if grep -qF "$marker" "$dtsi"; then
+            print_success "SD/eMMC bootargs already baked in $(basename "$dtsi") ($marker)"
+            return 0
+        fi
+        grep -q "root=/dev/$root_dev" "$dtsi" \
+            || { print_error "signed-$medium bootargs: expected 'root=/dev/$root_dev' in $(basename "$dtsi") — SDK layout changed (or different bootargs already baked)"; exit 1; }
+        # The SDK checkout survives between builds, so the DTSI may carry an
+        # EARLIER bake of this same line. Replace root= plus any previously-baked
+        # trailing tokens, not just bare root=: a plain substitution would leave
+        # the old tokens behind, and if the CMA size ever changes the stale
+        # rk_dma_heap_cma would win (the kernel takes the LAST occurrence of a
+        # cmdline param).
+        sed -i -E "s|root=/dev/$root_dev( rootfstype=[A-Za-z0-9]+)?( rk_dma_heap_cma=[A-Za-z0-9]+)?|$baked|" "$dtsi"
+        grep -qF "$baked" "$dtsi" \
+            || { print_error "signed-$medium bootargs: rewrite failed in $(basename "$dtsi")"; exit 1; }
+        print_success "baked: $baked ($profile/$medium)"
+    fi
+}
+
+# Enable the SPI display (spidev0.0) STATICALLY in the kernel DTB, instead of via
+# luckfox-config's runtime device-tree overlay. That overlay is fragile: it needs
+# a __symbols__ label map in the live DTB (absent here) to resolve &spi0, and
+# `luckfox-config` core-dumps `dtc` with "get_node_by_label: label empty",
+# leaving &spi0 disabled -> no /dev/spidev0.0 -> black screen. On a signed FIT the
+# overlay is doubly moot (u-boot can't rewrite the signed DTB). Baking it in makes
+# the display work regardless. NOT gated on SEEDSIGNER_FIT_SIGNATURE: unsigned
+# builds get the same deterministic display bring-up as signed ones.
+apply_spi_display_dts() {
+    local profile="$1"
+    local dts has_fbtft
+    case "$profile" in
+        mini) dts="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1103g-luckfox-pico-mini.dts";      has_fbtft=1 ;;
+        max)  dts="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-luckfox-pico-pro-max.dts"; has_fbtft=1 ;;
+        pi)   dts="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1106g-luckfox-pico-pi.dts";      has_fbtft=0 ;;
+        *) print_error "apply_spi_display_dts: unsupported board profile '$profile' (expected mini, max or pi)"; exit 1 ;;
+    esac
+    [ -f "$dts" ] || { print_error "SPI display DTS not found: $dts"; exit 1; }
+    print_step "Enabling SPI display (spidev0.0) statically in the DTB (${profile})"
+    if grep -q 'ss_fbtft_keep' "$dts"; then
+        print_success "SPI display already enabled in $(basename "$dts")"
+        return 0
+    fi
+    if grep -q 'SEEDSIGNER_SPI_DISPLAY' "$dts"; then
+        # A previous build's block without the fbtft keep-alive reference: Rockchip's
+        # dtc would strip /spi@ff500000/fbtft@0 and luckfox-config breaks at boot.
+        # Refuse rather than append a second &spi0 block.
+        print_error "stale SEEDSIGNER_SPI_DISPLAY block (pre-keep-alive) in $(basename "$dts"); rebuild from a clean SDK checkout"
+        exit 1
+    fi
+    {
+        echo ""
+        echo "/* SEEDSIGNER_SPI_DISPLAY -- enable /dev/spidev0.0 statically (see os-build.sh"
+        echo " * apply_spi_display_dts). pinctrl has NO miso: RK_PC3 must stay a GPIO on the"
+        echo " * mini HAT (panel reset); the panels are 3-wire so no board needs MISO."
+        if [ "$has_fbtft" = 1 ]; then
+            echo " * fbtft@0 shares CS0 with spidev@0 and must be off. It is labelled and"
+            echo " * referenced from an alias because Rockchip's dtc (CONFIG_DTC_OMIT_DISABLED)"
+            echo " * strips every non-okay node that nothing references -- and luckfox-config's"
+            echo " * FBTFT_SPI overlay targets /spi@ff500000/fbtft@0 by path at boot. */"
+        else
+            echo " */"
+        fi
+        echo "&spi0 {"
+        echo -e "\tstatus = \"okay\";"
+        echo -e "\tpinctrl-0 = <&spi0m0_clk &spi0m0_mosi &spi0m0_cs0>;"
+        if [ "$has_fbtft" = 1 ]; then
+            echo -e "\tss_fbtft_keep: fbtft@0 {"
+            echo -e "\t\tstatus = \"disabled\";"
+            echo -e "\t};"
+        fi
+        echo "};"
+        if [ "$has_fbtft" = 1 ]; then
+            # Path reference (not &aliases): this dtc only resolves &name for
+            # LABELS, and the aliases node has none.
+            echo ""
+            echo "&{/aliases} {"
+            echo -e "\tss-fbtft = &ss_fbtft_keep;"
+            echo "};"
+        fi
+    } >> "$dts"
+    grep -q 'SEEDSIGNER_SPI_DISPLAY' "$dts" || { print_error "SPI display enable failed in $dts"; exit 1; }
+    if [ "$has_fbtft" = 1 ]; then
+        print_success "spidev0.0 enabled (SPI0_M0, no MISO, fbtft off) in $(basename "$dts")"
+    else
+        print_success "spidev0.0 enabled (SPI0_M0, no MISO; no fbtft node on this board) in $(basename "$dts")"
+    fi
+}
+
+# Sign the FINAL boot.img (opt-in). The u-boot build signs uboot.img
+# (fit-core.sh, because we enabled CONFIG_FIT_SIGNATURE), but NOTHING in this SDK
+# signs boot.img -- mk-fitimage.sh packs it with the "dev" signature *template*
+# and no `-k`, so an enforcing u-boot rejects it at boot ("Failed to verify
+# required signature 'key-dev'"), which is exactly the bench failure we saw.
+#
+# Sign it with the SDK's own scripts/fit.sh --boot_img: it unpacks the built
+# boot.img to recover its .its, re-signs the FIT with keys/dev.* (placed in the
+# u-boot tree by apply_fit_signature_config) and writes the signed image back to
+# <u-boot>/boot.img. This is the same tested path that signs uboot.img. At
+# runtime u-boot verifies it with the pubkey already embedded in uboot.img, so
+# the whole chain (loader -> uboot.img -> boot.img) is now consistently signed by
+# one key -- the direct build output boots, no host re-sign needed.
+#
+# Runs BEFORE package_firmware's normalise step so the update.img repack embeds
+# the signed boot.img. fit.sh runs fit_check_sign internally and is `set -e`, so
+# a bad sign aborts here rather than shipping an unbootable enforced image.
+sign_boot_image() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local ubootdir="$WORK_DIR/luckfox-pico/sysdrv/source/uboot/u-boot"
+    local img="$WORK_DIR/luckfox-pico/output/image/boot.img"
+    print_step "Signing boot.img with the FIT key (SEEDSIGNER_FIT_SIGNATURE=1)"
+    [ -f "$img" ] || { print_error "boot.img not found at $img"; exit 1; }
+    [ -f "$ubootdir/scripts/fit.sh" ] || { print_error "u-boot fit.sh missing under $ubootdir"; exit 1; }
+    [ -f "$ubootdir/keys/dev.key" ] || { print_error "FIT signing key missing at $ubootdir/keys/dev.key (apply_fit_signature_config should have placed it)"; exit 1; }
+    ( cd "$ubootdir" && ./scripts/fit.sh --boot_img "$img" ) \
+        || { print_error "boot.img signing (fit.sh --boot_img) failed"; exit 1; }
+    # fit_gen_boot_img wrote the signed FIT to <u-boot>/boot.img; copy it back.
+    [ -f "$ubootdir/boot.img" ] && cp -f "$ubootdir/boot.img" "$img"
+    print_success "boot.img signed (whole chain now signed with the FIT key)"
+}
+
+# --- Rootfs verification (SEEDSIGNER_FIT_SIGNATURE=1) -------------------------
+#
+# The rootfs volume's logical UBIFS contents are signed at build time by the
+# minisign hook in mkfs_ubi.sh (secure-boot/patch-mkfs-ubi-signing.sh). These
+# functions:
+#   * verify the vendored initramfs binaries against their pinned hashes,
+#   * resolve the signing key and export it for the fakeroot script,
+#   * make sure the kernel can run a script /init from a gzipped initramfs,
+#   * after `build.sh firmware`, pack the verifier (busybox + minisign + ss-lcd
+#     + pubkey + signature) into an initramfs and embed it in boot.img's FIT
+#     ramdisk slot. The subsequent sign_boot_image() re-signs the whole FIT,
+#     including the new ramdisk image: fit-unpack.sh iterates /images generically
+#     and "ramdisk" is added to sign-images by the repack below.
+
+rebuild_initramfs_binaries() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    [ "${SEEDSIGNER_REBUILD_INITRAMFS_BINARIES:-0}" = "1" ] || return 0
+    # Guarded like os-build.sh's: this block can run more than once per process.
+    [ "${SS_INITRAMFS_BINARIES_REBUILT:-0}" = "1" ] && return 0
+    local tc="$WORK_DIR/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf"
+    print_step "Rebuilding vendored initramfs binaries from source (SEEDSIGNER_REBUILD_INITRAMFS_BINARIES=1)"
+    bash "$SCRIPT_DIR/secure-boot/build-initramfs-binaries.sh" \
+        "$tc" "$SCRIPT_DIR/secure-boot/initramfs-binaries" || exit 1
+    SS_INITRAMFS_BINARIES_REBUILT=1
+}
+
+verify_initramfs_binaries() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local dir="$SCRIPT_DIR/secure-boot/initramfs-binaries" f actual
+    print_step "Verifying vendored initramfs binaries (SHA-256 pins)"
+    # Pinned at commit time; see secure-boot/initramfs-binaries/README.md.
+    local -A pins=(
+        [busybox-arm]=df8256cbb975dd747cb15d0f109c56ccad2ae684310492f2bce0e8bf25f51eb5
+        [minisign-arm]=e2a05519706b3f98457b9db34c4a9cfa8da47acb5856cadd1ab064d3cf1d1dae
+        [ss-lcd]=37bb95f67fd757912db2c72c8662ae7aa86ed2bcdbdbb9b18108379b72737be0
+        [minisign-host]=1f6105515a2feb3f9b2bbda37e5c89c693a8d3c7e5c0899b47553d50ffef7c4f
+    )
+    for f in "${!pins[@]}"; do
+        [ -f "$dir/$f" ] || { print_error "vendored binary missing: $dir/$f (stale checkout?)"; exit 1; }
+        actual="$(sha256sum "$dir/$f" | cut -d' ' -f1)"
+        if [ "$actual" != "${pins[$f]}" ]; then
+            print_error "SHA-256 mismatch for $dir/$f: got $actual, want ${pins[$f]}"; exit 1
+        fi
+    done
+    print_success "initramfs binaries match their pins"
+}
+
+provision_rootfs_signing_key() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local keydir="${SEEDSIGNER_ROOTFS_KEY_DIR:-$SCRIPT_DIR/secure-boot/dev-keys-rootfs}" k
+    for k in dev.key dev.pubkey; do
+        [ -f "$keydir/$k" ] || { print_error "rootfs signing key missing: $keydir/$k (set SEEDSIGNER_ROOTFS_KEY_DIR to a dir with minisign dev.key/dev.pubkey)"; exit 1; }
+    done
+    if [[ -z "${SEEDSIGNER_ROOTFS_KEY_PASSPHRASE:-}" ]]; then
+        if [ "$keydir" = "$SCRIPT_DIR/secure-boot/dev-keys-rootfs" ]; then
+            # The committed dev key's passphrase is public and documented in its
+            # README; defaulting it keeps the plain SEEDSIGNER_FIT_SIGNATURE=1
+            # build unattended. A real key must set it explicitly.
+            export SEEDSIGNER_ROOTFS_KEY_PASSPHRASE="seedsigner-dev"
+        else
+            print_error "SEEDSIGNER_ROOTFS_KEY_DIR is set but SEEDSIGNER_ROOTFS_KEY_PASSPHRASE is empty (the signing step would hang on a prompt)"; exit 1
+        fi
+    fi
+    export SEEDSIGNER_ROOTFS_SIGNING_KEY="$keydir/dev.key"
+    print_success "rootfs signing key: $SEEDSIGNER_ROOTFS_SIGNING_KEY"
+}
+
+apply_initramfs_kernel_config() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local board_profile="$1" boot_medium="$2"
+    # The initramfs /init is a shell script (needs BINFMT_SCRIPT), the cpio is
+    # gzip-compressed (needs RD_GZIP), and /init mounts /proc + /sys to read the
+    # cmdline and wait on UBI (needs PROC_FS/SYSFS). None of these symbols are in
+    # the SDK defconfig, so they rely on Kconfig defaults — pin them explicitly
+    # instead of trusting that (verify against what gets built, not a default).
+    local kernel_defconfig
+    kernel_defconfig="$(sed -n 's/^export RK_KERNEL_DEFCONFIG="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$WORK_DIR/luckfox-pico/.BoardConfig.mk" 2>/dev/null | head -n1)"
+    [[ -n "$kernel_defconfig" ]] || kernel_defconfig="luckfox_rv1106_linux_defconfig"
+    local kernel_cfg_file="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/configs/$kernel_defconfig"
+    if [[ ! -f "$kernel_cfg_file" ]]; then
+        print_error "Kernel defconfig not found for initramfs config: $kernel_cfg_file"
+        exit 1
+    fi
+    local sym
+    for sym in CONFIG_BINFMT_SCRIPT CONFIG_RD_GZIP CONFIG_PROC_FS CONFIG_SYSFS; do
+        sed -i -E "/^${sym}(=|_)/d;/^# ${sym} is not set\$/d" "$kernel_cfg_file"
+        echo "${sym}=y" >> "$kernel_cfg_file"
+    done
+    print_success "pinned BINFMT_SCRIPT/RD_GZIP/PROC_FS/SYSFS =y in $kernel_defconfig (script /init from gzipped initramfs)"
+}
+
+# Pack the rootfs verifier into an initramfs and embed it in boot.img's FIT
+# ramdisk slot — for every medium (NAND, MicroSD, eMMC). Runs after `build.sh
+# firmware` (the signing hook's .minisig/.size outputs exist by then) and before
+# sign_boot_image (which re-signs the whole FIT, ramdisk included). The repack
+# mirrors what scripts/mkimg + fit-core.sh do: unpack the built boot.img with
+# the SDK's own fit-unpack.sh, add a ramdisk image node + config entry (+
+# "ramdisk" in sign-images), and mkimage -E it back.
+embed_rootfs_verifier() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local board_profile="$1" boot_medium="$2"
+    print_step "Embedding rootfs verifier in boot.img initramfs (SEEDSIGNER_FIT_SIGNATURE=1)"
+
+    # Which signing hook produced the signature depends on the medium: NAND
+    # packs squashfs/ubifs into a UBI volume via mkfs_ubi.sh's embedded call
+    # (rootfs.ubifs.*), MicroSD/eMMC write a raw-partition squashfs through
+    # mkfs_squashfs.sh (rootfs.img.*). Same key, same trusted comment — /init
+    # does not care which medium produced the bytes it streams.
+    local imgdir="$WORK_DIR/luckfox-pico/output/image"
+    local sig size_file hook_script
+    case "$boot_medium" in
+        nand)  sig="$imgdir/rootfs.ubifs.minisig";   size_file="$imgdir/rootfs.ubifs.size";   hook_script="mkfs_ubi.sh (patch-mkfs-ubi-signing.sh)" ;;
+        sd|emmc) sig="$imgdir/rootfs.img.minisig";    size_file="$imgdir/rootfs.img.size";     hook_script="mkfs_squashfs.sh (patch-mkfs-squashfs-signing.sh)" ;;
+        *) print_error "embed_rootfs_verifier: unsupported boot medium '$boot_medium' (expected nand, sd or emmc)"; exit 1 ;;
+    esac
+    [ -f "$sig" ] || { print_error "rootfs signature missing at $sig -- the $hook_script signing hook did not run (patch applied? SEEDSIGNER_ROOTFS_SIGNING_KEY exported?)"; exit 1; }
+
+    local ubootdir="$WORK_DIR/luckfox-pico/sysdrv/source/uboot/u-boot"
+    local img="$imgdir/boot.img"
+    [ -f "$img" ] || { print_error "boot.img not found at $img (run 'build.sh firmware' first)"; exit 1; }
+
+    # --- assemble the initramfs staging tree ---------------------------------
+    local bin="$SCRIPT_DIR/secure-boot/initramfs-binaries"
+    local src="$SCRIPT_DIR/secure-boot/initramfs"
+    local keydir="${SEEDSIGNER_ROOTFS_KEY_DIR:-$SCRIPT_DIR/secure-boot/dev-keys-rootfs}"
+    local stage
+    stage="$(mktemp -d)"
+    # Mountpoints MUST exist in the cpio: mount(2) does not create them, and
+    # devtmpfs auto-mount (DEVTMPFS_MOUNT=y) mounts onto an existing /dev —
+    # without it there is no /dev/ubi0_0 or /dev/mmcblk* and the verifier can
+    # never see its root device.
+    mkdir -p "$stage/bin" "$stage/dev" "$stage/mnt" "$stage/proc" "$stage/sys"
+    cp "$bin/busybox-arm"  "$stage/bin/busybox"
+    cp "$bin/minisign-arm" "$stage/bin/minisign"
+    cp "$bin/ss-lcd"       "$stage/bin/ss-lcd"
+    chmod 755 "$stage/bin/"*
+    # /init calls these by name; busybox resolves them through symlinks.
+    local applet
+    for applet in sh mount umount switch_root dd truncate sha256sum ls cat echo sleep \
+                  true false reboot halt poweroff mknod grep head tail dmesg rm mkdir ln cp mv; do
+        ln -s busybox "$stage/bin/$applet"
+    done
+    # /init with the signed image size baked in (the volume/partition is padded
+    # beyond the signed prefix, so /init's streaming read of it must stop at
+    # exactly this many bytes).
+    [ -f "$size_file" ] || { print_error "signed rootfs size missing at $size_file -- the $hook_script signing hook did not run"; exit 1; }
+    local signed_size
+    signed_size="$(cat "$size_file")"
+    [[ "$signed_size" =~ ^[0-9]+$ ]] && [ "$signed_size" -gt 0 ] \
+        || { print_error "signed rootfs size is not a positive integer: '$signed_size'"; exit 1; }
+    # The verification-failure escape-hatch key: GPIO1_C7 is wired to a button
+    # on every variant (io_config.json), so /init's waitkey program is identical
+    # for all boards — only the label shown differs.
+    local waitkey_key_name
+    case "$board_profile" in
+        mini) waitkey_key_name="KEY_DOWN" ;;  # FOX_22
+        max)  waitkey_key_name="KEY1" ;;      # FOX_40
+        pi)   waitkey_key_name="KEY3" ;;      # FOX_PI
+        *)    print_error "unknown board profile for waitkey key name: $board_profile"; exit 1 ;;
+    esac
+    # ss-lcd's display control pins (io_config.json 'display' section): DC/RST
+    # differ per HAT, and on max the DC sits on a different gpiochip than RST.
+    # Without these the boot frames drive the Mini's pins and stay invisible
+    # on the other boards — including the red FAILED screen + escape hatch.
+    local lcd_dc_chip lcd_dc_line lcd_rst_chip lcd_rst_line lcd_bl_chip lcd_bl_line
+    case "$board_profile" in
+        mini) lcd_dc_chip="/dev/gpiochip1"; lcd_dc_line=20;  lcd_rst_chip="/dev/gpiochip1"; lcd_rst_line=19; lcd_bl_chip="";          lcd_bl_line="" ;;  # FOX_22 (no BL pin)
+        max)  lcd_dc_chip="/dev/gpiochip2"; lcd_dc_line=8;   lcd_rst_chip="/dev/gpiochip1"; lcd_rst_line=24; lcd_bl_chip="/dev/gpiochip1"; lcd_bl_line=25 ;;  # FOX_40
+        pi)   lcd_dc_chip="/dev/gpiochip1"; lcd_dc_line=27;  lcd_rst_chip="/dev/gpiochip1"; lcd_rst_line=24; lcd_bl_chip="/dev/gpiochip2"; lcd_bl_line=6  ;;  # FOX_PI
+    esac
+    # Key class for /init's pass screen (the dev-key indicator): compare the
+    # ACTUAL key bytes used for this build against the committed PUBLIC dev
+    # keys by SHA-256 — not by path, so a copy of the dev key under another
+    # name still gets flagged. FIT: $ubootdir/keys/dev.pubkey was laid down by
+    # provision_fit_build_keys (apply_fit_signature_config ran earlier in this
+    # profile's build). Rootfs: $keydir/dev.pubkey is exactly what /init
+    # verifies with (it becomes /pubkey below). "dev" means that signature
+    # grants no protection; the pass screen shows it in yellow.
+    local fit_pub="$ubootdir/keys/dev.pubkey"
+    [ -f "$fit_pub" ] || { print_error "FIT signing pubkey missing at $fit_pub (apply_fit_signature_config did not run?)"; exit 1; }
+    local dev_fit_hash dev_rootfs_hash keyhash fit_key_class rootfs_key_class
+    dev_fit_hash="$(sha256sum "$SCRIPT_DIR/secure-boot/dev-keys/dev.pubkey" | cut -d' ' -f1)"
+    dev_rootfs_hash="$(sha256sum "$SCRIPT_DIR/secure-boot/dev-keys-rootfs/dev.pubkey" | cut -d' ' -f1)"
+    keyhash="$(sha256sum "$fit_pub" | cut -d' ' -f1)"
+    if [ "$keyhash" = "$dev_fit_hash" ]; then fit_key_class="dev"; else fit_key_class="prod"; fi
+    keyhash="$(sha256sum "$keydir/dev.pubkey" | cut -d' ' -f1)"
+    if [ "$keyhash" = "$dev_rootfs_hash" ]; then rootfs_key_class="dev"; else rootfs_key_class="prod"; fi
+    print_info "signature key classes for /init pass screen: FIT=$fit_key_class rootfs=$rootfs_key_class (dev = public dev key, no protection)"
+    sed -e "s/__ROOTFS_SIGNED_SIZE__/$signed_size/" \
+        -e "s/__WAITKEY_KEY_NAME__/$waitkey_key_name/" \
+        -e "s|__LCD_DC_CHIP__|$lcd_dc_chip|" \
+        -e "s/__LCD_DC_LINE__/$lcd_dc_line/" \
+        -e "s|__LCD_RST_CHIP__|$lcd_rst_chip|" \
+        -e "s/__LCD_RST_LINE__/$lcd_rst_line/" \
+        -e "s|__LCD_BL_CHIP__|$lcd_bl_chip|" \
+        -e "s|__LCD_BL_LINE__|$lcd_bl_line|" \
+        -e "s/__FIT_KEY_CLASS__/$fit_key_class/" \
+        -e "s/__ROOTFS_KEY_CLASS__/$rootfs_key_class/" "$src/init" > "$stage/init"
+    chmod 755 "$stage/init"
+    cp "$keydir/dev.pubkey" "$stage/pubkey"
+    cp "$sig"               "$stage/rootfs.sig"
+
+    # --- deterministic cpio.gz ------------------------------------------------
+    # newc headers carry inode + device numbers, which vary with the host's
+    # filesystem allocation order; --reproducible (GNU cpio >= 2.13) zeroes
+    # them along with uid/gid. mtime is pinned to SOURCE_DATE_EPOCH explicitly
+    # (touch), gzip -n drops its timestamp header, and LC_ALL=C sort fixes the
+    # entry order — so two builds of the same commit produce identical bytes.
+    # The archive is written OUTSIDE $stage: it must not appear in the tree
+    # while find is still enumerating it (a pipeline runs all three at once).
+    local work
+    work="$(mktemp -d)"
+    local epoch="${SOURCE_DATE_EPOCH:-0}"
+    (
+        cd "$stage"
+        find . -exec touch -d "@$epoch" {} + 2>/dev/null || true
+        LC_ALL=C find . | LC_ALL=C sort | \
+            cpio -o -H newc --owner=0:0 --reproducible --quiet 2>/dev/null | gzip -9 -n > "$work/ramdisk"
+    )
+    local cpio_size
+    cpio_size="$(stat -c %s "$work/ramdisk")"
+    print_info "initramfs cpio.gz: ${cpio_size} bytes"
+
+    # --- repack boot.img with the ramdisk slot --------------------------------
+    ( cd "$ubootdir" && ./scripts/fit-unpack.sh -f "$img" -o "$work/unpack" ) \
+        || { print_error "fit-unpack of boot.img failed"; exit 1; }
+    cp "$work/ramdisk" "$work/unpack/ramdisk"
+
+    # fit-unpack.sh's gen_its() emits dtc output (tab-indented), so every edit
+    # below is whitespace-tolerant. The conf-level signature node carries
+    # sign-images = "fdt", "kernel", "multi"; — the list mkimage -r signs from,
+    # which is how the new ramdisk gets covered by sign_boot_image's re-sign.
+    local its="$work/unpack/image.its"
+    python3 - "$its" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+s = open(path).read()
+
+if re.search(r'\n\s*ramdisk \{', s):
+    sys.exit("boot.img already contains a ramdisk node (double embed?)")
+
+# image node: before the resource node (order inside /images is irrelevant to
+# u-boot; keeping it last mirrors how fit-core.sh's own ITS templates grow).
+# load = <0xffffff02> is NOT a real address — it is fit-core.sh's
+# RAMDISK_ADDR_PLACEHOLDER, which sign_boot_image's sed fixup replaces with
+# the board's actual ramdisk_addr_r (same convention as fdt=...ff00 /
+# kernel=...ff01 in the vendor template). Do not "fix" it to a real address.
+node = """
+\t\tramdisk {
+\t\t\tdata = /incbin/("ramdisk");
+\t\t\ttype = "ramdisk";
+\t\t\tarch = "arm";
+\t\t\tos = "linux";
+\t\t\tcompression = "gzip";
+\t\t\tload = <0xffffff02>;
+
+\t\t\thash {
+\t\t\t\talgo = "sha256";
+\t\t\t};
+\t\t};
+"""
+m = re.search(r"(\n[ \t]*resource \{)", s)
+if not m:
+    sys.exit("resource node not found in image.its (unexpected FIT layout)")
+s = s[:m.start()] + node + s[m.start():]
+
+# conf entry, next to kernel/fdt/multi.
+m = re.search(r"(kernel = \"kernel\";)", s)
+if not m:
+    sys.exit("conf kernel entry not found in image.its")
+s = s.replace(m.group(1), m.group(1) + "\n\t\t\tramdisk = \"ramdisk\";", 1)
+
+# sign-images: append ramdisk to whatever list is there (do not hardcode the
+# rest — a future ITS change must keep working). U-Boot parses this property as
+# a sequence of NUL-terminated strings, and BOTH source forms compile to that:
+#   hand-written array : "fdt", "kernel", "multi"
+#   dtc re-serialization (what fit-unpack.sh emits): "fdt\0kernel\0multi"
+# so append in whichever form is present.
+m = re.search(r'sign-images\s*=\s*(?:"[^"]*"|\s*"[^"]*"(?:\s*,\s*"[^"]*")*)\s*;', s)
+if not m:
+    sys.exit("sign-images property not found in image.its (unexpected FIT layout)")
+prop = m.group(0).rstrip().rstrip(';')
+body = prop.split('=', 1)[1].strip()
+if re.fullmatch(r'"[^"]*"', body):
+    # single-string (NUL-escaped) form: append \0ramdisk inside the quotes
+    if 'ramdisk' in body:
+        sys.exit("ramdisk already listed in sign-images (double embed?)")
+    new = prop[:-1] + '\\0ramdisk";'   # drop closing quote, add NUL + name
+else:
+    # array form: append , "ramdisk" before the ;
+    if '"ramdisk"' in body:
+        sys.exit("ramdisk already listed in sign-images (double embed?)")
+    new = prop + ', "ramdisk";'        # prop ends at the last element's closing quote
+s = s[:m.start()] + new + s[m.end():]
+
+open(path, "w").write(s)
+PYEOF
+    [ $? -eq 0 ] || { print_error "failed to add ramdisk node to image.its"; exit 1; }
+
+    # Same mkimage invocation fit-core.sh uses for boot FITs (./tools/mkimage in
+    # the u-boot tree, built by the uboot stage): external data at a fixed
+    # offset, no signing here — sign_boot_image does that next. dtc is already
+    # required on PATH by fit-unpack.sh above, so nothing extra to check.
+    local offs="0x1000"
+    if grep -q '^CONFIG_FIT_ENABLE_RSA4096_SUPPORT=y' "$ubootdir/.config" 2>/dev/null; then
+        offs="0x1200"
+    fi
+    local mkimage="$ubootdir/tools/mkimage"
+    [ -x "$mkimage" ] || { print_error "u-boot tools/mkimage not built at $mkimage (run the uboot stage first)"; exit 1; }
+    ( cd "$work/unpack" && "$mkimage" -f image.its -E -p $offs boot.img.new ) \
+        || { print_error "mkimage repack of boot.img failed"; exit 1; }
+
+    # --- assertions before the signed image ships ------------------------------
+    local newimg="$work/unpack/boot.img.new"
+    ( cd "$ubootdir" && ./scripts/fit-unpack.sh -f "$newimg" -o "$work/check" ) >/dev/null \
+        || { print_error "repacked boot.img does not unpack cleanly"; exit 1; }
+    [ -s "$work/check/ramdisk" ] || { print_error "ramdisk missing from repacked boot.img"; exit 1; }
+    cmp -s "$work/check/ramdisk" "$work/ramdisk" \
+        || { print_error "ramdisk in repacked boot.img differs from the built cpio.gz"; exit 1; }
+
+    cp -f "$newimg" "$img"
+    rm -rf "$stage" "$work"
+    print_success "boot.img now carries the rootfs-verifier initramfs (will be signed by sign_boot_image)"
+}
+
+export_fit_sign_tree() {
+    [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
+    local board_profile="$1"
+    local src_img="$WORK_DIR/luckfox-pico/output/image"
+    local uboot_cfg="$WORK_DIR/luckfox-pico/sysdrv/source/uboot/u-boot/.config"
+    local dst="$src_img/fit-sign-tree-${board_profile}"
+    print_step "Exporting fit-sign tree for ${board_profile} -> $dst"
+    [ -d "$src_img" ] || { print_error "output/image missing at $src_img"; exit 1; }
+    rm -rf "$dst"; mkdir -p "$dst/fit_signcfg"
+    cp -a "$src_img/." "$dst/"
+    # fit-sign.sh reads <src-dir>/fit_signcfg/sign.readonly_config (it greps
+    # CONFIG_* from it). Prefer the SDK's own fit_signcfg if the build produced
+    # one; otherwise synthesize it from the built u-boot .config, which carries
+    # the same CONFIG_FIT_SIGNATURE / SPL_FIT_HW_CRYPTO / CHIP_NAME symbols.
+    local sdk_signcfg
+    sdk_signcfg="$(find "$WORK_DIR/luckfox-pico" -type f -name sign.readonly_config 2>/dev/null | head -n1)"
+    if [ -n "$sdk_signcfg" ]; then
+        cp -a "$(dirname "$sdk_signcfg")/." "$dst/fit_signcfg/"
+        print_success "copied SDK fit_signcfg from $(dirname "$sdk_signcfg")"
+    elif [ -f "$uboot_cfg" ]; then
+        cp "$uboot_cfg" "$dst/fit_signcfg/sign.readonly_config"
+        print_success "synthesized fit_signcfg/sign.readonly_config from built u-boot .config"
+    else
+        print_error "cannot find fit_signcfg or u-boot .config ($uboot_cfg) to build the sign tree"
+        exit 1
+    fi
+    print_success "fit-sign tree ready. On the host, sign it with:"
+    print_success "  opt/luckfox/secure-boot/sign-secure-boot.sh sign --keys <dir> \\"
+    print_success "     --images <out> --build-tree $dst --tools <rkbin/tools>"
 }
 
 apply_usb_mode_config() {
@@ -1290,6 +2085,12 @@ build_system() {
         bash "$SCRIPT_DIR/assert-readonly-rootfs.sh" "$WORK_DIR/luckfox-pico" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
 
+    # Secure-boot fuse readability (dev AND non-dev: /init's "SECURE BOOT not
+    # enabled" screen needs it in both). No-op unless FIT signing is on.
+    if [[ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ]]; then
+        bash "$SCRIPT_DIR/assert-otp-size.sh" "$WORK_DIR/luckfox-pico"
+    fi
+
     print_info "Building Rootfs..."
     ./build.sh rootfs
     
@@ -1465,7 +2266,8 @@ install_seedsigner_app() {
     cp -v "$SCRIPT_DIR/files/start-seedsigner.sh" "$rootfs_dir/"
     cp -v "$SCRIPT_DIR/files/configure-gpio.sh" "$rootfs_dir/usr/bin/configure-gpio.sh"
     chmod +x "$rootfs_dir/usr/bin/configure-gpio.sh"
-    # Early boot splash + startup-failure message on the panel.
+    # Startup-failure message on the panel (the "loading" mode is no longer
+    # called at boot; see files/show-screen-message.py).
     cp -v "$SCRIPT_DIR/files/show-screen-message.py" "$rootfs_dir/usr/bin/show-screen-message.py"
     chmod +x "$rootfs_dir/usr/bin/show-screen-message.py"
     # SPI bus-configuration sweep, triggered by a `display-probe` marker file.
@@ -1556,15 +2358,6 @@ install_seedsigner_app() {
     # compileall: the read-only squashfs can never cache __pycache__ at runtime,
     # so every import would otherwise re-compile .py source off xz squashfs on
     # every boot (the Pi profiles precompile at build time for the same reason).
-    # Drop whitespace-named paths from site-packages. mkfs-ext4-deterministic.sh
-    # drives debugfs with space-delimited commands and rejects such names
-    # outright, which fails every ext4 target (SD_CARD/EMMC; SPI_NAND is UBIFS
-    # and unaffected). Runs on BOTH variants — optimize-nondev.sh would have been
-    # the natural home but is non-dev only, and CI builds dev. Shared with CI via
-    # prune-whitespace-names.sh.
-    bash "$SCRIPT_DIR/prune-whitespace-names.sh" "$rootfs_dir" \
-        || print_warning "whitespace-name prune reported an error"
-
     # Runs after hardening/optimization, which prune parts of the python tree.
     # Shared with CI via precompile-bytecode.sh.
     bash "$SCRIPT_DIR/precompile-bytecode.sh" "$rootfs_dir" "$WORK_DIR/luckfox-pico"
@@ -1573,9 +2366,24 @@ install_seedsigner_app() {
 }
 
 package_firmware() {
+    local hardware="$1"
+    local boot_medium="$2"
+
     print_header "Packaging Firmware"
 
     cd "$WORK_DIR/luckfox-pico"
+
+    # Drop whitespace-named entries (test fixtures like setuptools' vendored
+    # jaraco.text `Lorem ipsum.txt`) before build_mkimg packs the ext4 root:
+    # mkfs-ext4-deterministic.sh cannot represent such names and fails the
+    # build. No-op for trees without any; every removal is logged.
+    local rootfs_dir
+    rootfs_dir="$(find output/out -maxdepth 1 -type d -name 'rootfs_uclibc_*' | head -n 1)"
+    if [ -n "$rootfs_dir" ]; then
+        bash "$SCRIPT_DIR/strip-whitespace-filenames.sh" "$rootfs_dir"
+    else
+        print_warning "no rootfs_uclibc_* dir under output/out — skipping whitespace filename strip"
+    fi
 
     # Install the oem iqfiles prune into the SDK's pre-build-OEM hook. The oem
     # tree is assembled by __PACKAGE_OEM inside `build.sh firmware`, so this is
@@ -1593,6 +2401,9 @@ package_firmware() {
     fi
 
     ./build.sh firmware
+
+    embed_rootfs_verifier "$hardware" "$boot_medium"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE sign_boot_image so the FIT signature covers the new ramdisk.
+    sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE normalise so update.img embeds the signed boot.img.
 
     # Pin the wall-clock releaseTime that boot_merger (download.bin) and
     # rkImageMaker (update.img) stamp into their headers, and repair each file's
@@ -1654,8 +2465,8 @@ create_sd_image() {
         *) board_label="unknown" ;;
     esac
     
-    local timestamp=$(date +%Y%m%d_%H%M%S)
-    local image_name="seedsigner-luckfox-pico-${board_label}-sd-${timestamp}.img"
+    local tag="$(artifact_tag)"
+    local image_name="seedsigner-luckfox-pico-${board_label}-sd-${tag}.img"
     
     print_info "Creating image: $image_name"
     
@@ -1689,8 +2500,8 @@ create_nand_bundle() {
         *) board_label="unknown" ;;
     esac
     
-    local timestamp=$(date +%Y%m%d_%H%M%S)
-    local nand_bundle_dir="seedsigner-luckfox-pico-${board_label}-nand-files-${timestamp}"
+    local tag="$(artifact_tag)"
+    local nand_bundle_dir="seedsigner-luckfox-pico-${board_label}-nand-files-${tag}"
     
     mkdir -p "$nand_bundle_dir"
     
@@ -1739,7 +2550,7 @@ https://wiki.luckfox.com/Luckfox-Pico/Linux-MacOS-Burn-Image/
 EOF
     
     # Create tar.gz archive
-    local bundle_name="seedsigner-luckfox-pico-${board_label}-nand-bundle-${timestamp}.tar.gz"
+    local bundle_name="seedsigner-luckfox-pico-${board_label}-nand-bundle-${tag}.tar.gz"
     tar -czf "$bundle_name" "$nand_bundle_dir"
     
     print_success "NAND bundle created: $(pwd)/$bundle_name"
@@ -1764,8 +2575,8 @@ create_emmc_bundle() {
         *) board_label="unknown" ;;
     esac
     
-    local timestamp=$(date +%Y%m%d_%H%M%S)
-    local emmc_bundle_dir="seedsigner-luckfox-pico-${board_label}-emmc-files-${timestamp}"
+    local tag="$(artifact_tag)"
+    local emmc_bundle_dir="seedsigner-luckfox-pico-${board_label}-emmc-files-${tag}"
     
     mkdir -p "$emmc_bundle_dir"
     
@@ -1812,7 +2623,7 @@ https://wiki.luckfox.com/Luckfox-Pico-Plus-Mini/Flash-image
 EOF
     
     # Create tar.gz archive
-    local bundle_name="seedsigner-luckfox-pico-${board_label}-emmc-bundle-${timestamp}.tar.gz"
+    local bundle_name="seedsigner-luckfox-pico-${board_label}-emmc-bundle-${tag}.tar.gz"
     tar -czf "$bundle_name" "$emmc_bundle_dir"
     
     print_success "eMMC bundle created: $(pwd)/$bundle_name"
@@ -1981,13 +2792,33 @@ main() {
     apply_uart2_console_config "$hardware" "$boot_medium"
     apply_uart2_console_dts_patch "$hardware"
     apply_uart2_fiq_kernel_patch "$hardware" "$boot_medium"
-    apply_hwrng_crypto_kernel_patch "$hardware" "$boot_medium"
-    apply_crypto_dts_patch "$hardware"
+    apply_hwrng_kernel_patch "$hardware" "$boot_medium"
+    apply_rng_dts_patch "$hardware"
+    apply_otp_size_patch
     apply_kernel_network_strip "$hardware" "$boot_medium"
     apply_readonly_rootfs "$hardware" "$boot_medium"
     apply_spidev_bufsiz "$hardware"
+    apply_spi_display_dts "$hardware"   # static spidev0.0 in the DTB (all builds; signed FITs cannot use the runtime overlay)
     apply_usb_mode_config "$hardware"
     apply_mini_cma_config "$hardware" "$boot_medium"
+
+    # Secure boot (opt-in, no-op unless SEEDSIGNER_FIT_SIGNATURE=1): enable FIT
+    # signature enforcement in the U-Boot defconfig and bake the rootfs cmdline
+    # into the signed DTB — both must land BEFORE the U-Boot/kernel build. After
+    # apply_readonly_rootfs on purpose: apply_signed_nand_bootargs reads its
+    # SS_RO_ROOTFS/SS_BOARD_CONFIG exports to pick the baked root= args.
+    apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
+    apply_signed_nand_bootargs "$hardware" "$boot_medium"   # signed NAND: bake root=ubi0 into the DTB (no-op otherwise)
+
+    # Rootfs verification setup, all no-ops unless SEEDSIGNER_FIT_SIGNATURE=1.
+    # provision_rootfs_signing_key must run before `build.sh firmware`: the
+    # mkfs_ubi.sh fakeroot script inherits SEEDSIGNER_ROOTFS_SIGNING_KEY from
+    # this environment to sign the rootfs volume's logical UBIFS contents.
+    rebuild_initramfs_binaries   # opt-in: SEEDSIGNER_REBUILD_INITRAMFS_BINARIES=1 (no-op otherwise)
+    verify_initramfs_binaries
+    provision_rootfs_signing_key
+    apply_initramfs_kernel_config "$hardware" "$boot_medium"
+
     prepare_buildroot
     install_seedsigner_packages
     apply_seedsigner_config "$hardware" "$boot_medium"
@@ -1996,7 +2827,7 @@ main() {
     build_system
     
     install_seedsigner_app "$hardware"
-    package_firmware
+    package_firmware "$hardware" "$boot_medium"
     
     # Create output based on boot medium
     if [ "$boot_medium" == "sd" ]; then
@@ -2006,7 +2837,9 @@ main() {
     else
         create_nand_bundle "$hardware"
     fi
-    
+
+    export_fit_sign_tree "$hardware"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
+
     print_header "Build Complete!"
     print_success "Hardware: $hardware"
     print_success "Boot Medium: $boot_medium"
