@@ -420,6 +420,23 @@ ls -l buildroot/external-packages/
 
 ## Additional Resources
 
+### Flashing, recovery and secure boot
+
+- **[`soctoolkit-cli.md`](soctoolkit-cli.md)**: run `upgrade_tool` (SocToolkit's CLI) directly
+  to flash, read back, and diagnose a board. SocToolkit's own log (`<SocToolKit>\Log`)
+  records every command it ran; read it rather than inferring what was flashed. `db` is RAM-only.
+  `wl`/`el`/`ef`/`ul`/`uf` change flash, so confirm with the user before running them.
+- **A board that only prints `RKUART` is BootROM rejecting the NAND idblock, not necessarily a dead
+  board.** Power-cycle between download attempts. On a fused board, compare the loader's OTP hash
+  (`rk_sign_tool otp --loader --hash`, or `rkloader.py inspect`) with what the SPL burned.
+- **Before arming an OTP burn**, `rkloader.py verify` and `luckfox_release.py check` must pass on
+  the exact files being flashed. They catch the two defects an unfused board cannot show (stale
+  header PKA constant; 1970 `releaseTime`), see
+  [`airgapped-signing.md`](airgapped-signing.md#the-header-key-block-what-the-bootrom-checks).
+- **Never commit key material**: no private keys, no mnemonics, and no fingerprints of a user's
+  real keys. For BIP85 examples and tests use the public test mnemonic
+  (`abandon` ×11 + `about`) or the committed dev keys.
+
 ### GPIO Configuration Reference
 
 **For any task related to GPIO pin configuration on the RV1106**, consult:

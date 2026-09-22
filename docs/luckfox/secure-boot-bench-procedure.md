@@ -243,6 +243,24 @@ prompt at `bootdelay=0` — bench-confirmed — so a fused production build also
 > `.img`). So a board fused to the public dev key is fully recoverable — the
 > committed dev key is public, so anyone can produce a loader it accepts.
 
+> **Re-signed (non-dev) keys (2026-09-21).** A board fused to a re-signed key
+> went straight to maskrom after the burn and refused every `download.bin`,
+> until two defects were fixed. Neither one shows on an unfused board:
+> a stale PKA constant in the re-keyed loader header, and a 1970-01-01
+> `releaseTime` in every CI `download.bin`
+> ([secure-boot.md §13.4](secure-boot.md#134-first-fuse-to-a-re-signed-non-dev-key-2026-09-21)).
+> Before Stage 4, every one of these must pass on the exact files you will flash:
+>
+> ```sh
+> python3 "$SB/rkloader.py" inspect idblock.img     # "OTP key hash" == "SPL burns", no "!! FUSED BOARD"
+> python3 "$SB/rkloader.py" verify  download.bin --pubkey your.pub
+> python3 "$SB/luckfox_release.py" check <release folder>
+> ```
+>
+> Also keep a `download.bin` for the new key on hand, one that `rkloader.py verify`
+> passes, before burning. If the board ever sits in maskrom, recover it with
+> [soctoolkit-cli.md](soctoolkit-cli.md) (`db`, then `wl`).
+
 ## Stage 4 — the burn (irreversible)
 
 ```sh

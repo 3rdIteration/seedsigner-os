@@ -190,9 +190,14 @@ python3 $SB/fitsign.py sign   boot.img  --key new.key   # embeds no key itself
 Then confirm the whole chain verifies under the new key **and is rejected under
 the old one**.
 
-> `rkloader.py setkey` rewrites fields in the 0x600 header that are **not fully
-> characterised** beyond the modulus. This is the least-proven step here. Test
-> unfused.
+> **An unfused board proves nothing about the loader.** An unfused BootROM
+> checks nothing, so a loader with a broken header key block boots perfectly
+> until the fuse is burned, and after that the board goes straight to maskrom.
+> That happened on 2026-09-21 (see
+> [The header key block](#the-header-key-block-what-the-bootrom-checks)).
+> Before arming, `rkloader.py verify` must pass: it now fails any image a fused
+> board would reject. `rkloader.py inspect idblock.img` must also show
+> **OTP key hash == SPL burns**.
 
 Re-keying `idblock.img` changes the SPL DTB, which lives inside a hashed
 component, so the component hash has to be refreshed before the header is
@@ -279,6 +284,79 @@ these properties when it signs, and `fit-sign.sh` minimises them afterwards
 (zeroing `rsa,c`/`hash@c` for non-V1 HW builds — note it leaves `rsa,np` in
 place). The Kconfig sizes come from the SDK's `configs/rv1106_defconfig`.
 
+### The header key block (what the BootROM checks)
+
+The SPL DTB is what the **SPL** reads. The **BootROM** reads the loader's own
+0x600-byte RKSS header, which carries a second copy of the key:
+
+| Header offset | Field | Size | Contents |
+|---|---|---|---|
+| `0x200` | N | 0x200 | modulus, little-endian, zero-padded past 256 bytes |
+| `0x400` | E | 0x10 | public exponent, little-endian (65537) |
+| `0x410` | C | 0x20 | low 32 bytes, little-endian, of `pka_barrett_np(n)`, the same constant the DTB stores big-endian as `rsa,np` |
+
+`sha256(hdr[0x200:0x430])` is what a fused BootROM compares against OTP. It
+is byte-for-byte the buffer `rsa_burn_key_hash()` hashes (same order and sizes
+as `burn_key_hash()` above). On every vendor-signed image
+`sha256(hdr[0x200:0x430]) == burn_key_hash(n)`, and it is the value
+`rk_sign_tool otp --loader <download.bin> --hash` prints as the OTP payload.
+`rkloader.py inspect` shows it as **OTP key hash**.
+
+**C derives from the modulus, so a re-key must rewrite it.** Before
+2026-09-21, `set_pubkey()` rewrote N only. A re-keyed loader then carried the
+new modulus next to the *old* key's C:
+
+- every software verifier passed, `rk_sign_tool vl`/`vb` included, because
+  the signature does not depend on C;
+- unfused boards booted, because an unfused BootROM checks nothing;
+- the armed SPL burned the correct hash, because the SPL reads the (correct)
+  DTB, not the header;
+- on the next power-on, BootROM hashed the header, got a different value from
+  OTP, and dropped to maskrom **without printing anything but `RKUART`**. Every
+  `download.bin` made the same way was then refused over USB for the same
+  reason.
+
+`rkloader.write_key_block()` now writes N, E and C together. `set_pubkey()`
+uses it for the outer header and for the flashhead's inner header, and
+`fused_boot_problems()` fails any image whose header key block does not match
+its modulus. The same check also catches an idblock whose SPL would burn a
+different hash from the one its header presents to the BootROM, i.e. an image
+that would brick the board on the boot after the burn.
+
+### The flashhead is a second idblock
+
+`download.bin` embeds an RC4-obfuscated copy of the whole idblock (header,
+SPL, and **SPL DTB**; see `rkloader.py`'s flashhead notes). Tools that write
+the loader itself to NAND (`upgrade_tool ul`, an `update.img` upgrade) install
+that copy, not `idblock.img`. `set_pubkey()` now re-keys the copy's header key
+block and its SPL DTB (modulus, `rsa,np`, `hash@np`, n0/r²) and refreshes its
+component hashes. Before the fix, the copy's DTB kept the old key, so an SPL
+written that way would reject the re-keyed `uboot.img`.
+
+### `download.bin`'s releaseTime
+
+The LDR container that wraps `download.bin` has a `releaseTime` (offset 14,
+`rk_time`). It sits outside every signature and is covered only by the trailer
+CRC. A **fused** board refuses a `download.bin` dated **1970-01-01 00:00:00**
+at Download Boot, even when it is correctly signed with the fused key. That is
+exactly the date `ss-fs-normalise.sh bootimg` used to pin (SOURCE_DATE_EPOCH=0)
+for reproducibility.
+
+This was confirmed on a fused Mini by changing only this field (and its CRC):
+1970-01-01 failed, and 2025-01-01 00:00:00 and a live 2026 date both passed.
+Which part of the chain checks the date is not known.
+
+- The build now floors it at 2025-01-01 00:00:00 (`RELEASE_FLOOR_EPOCH` in
+  `ss-fs-normalise.sh`). It is still a constant, so builds stay reproducible.
+- `rkloader.prepare_for_signing()` applies the same floor
+  (`LDR_RELEASE_FLOOR`), so re-signing an older release, whether with
+  `sign`/`sign_buf`, `splice`, the air-gap tool's splice or the device's
+  Resign Release, repairs it too.
+- `verify` and `luckfox_release.py check` fail a pre-2025 `download.bin`.
+
+Unfused boards accept any date, which is why every CI build since the pin
+worked on the bench.
+
 ## Arming the OTP burn
 
 A loader whose SPL DTB carries `burn-key-hash = <1>` writes the public-key hash
@@ -306,6 +384,22 @@ fused to a key everyone has.**
 Arming works on re-signed images too: `set_pubkey()` refreshes `hash@np` for
 the new modulus (see above), so an armed BIP85 loader burns *your* key hash —
 not the dev key's, and not a mismatch that would reject boot.
+
+**Check before you arm.** The hash the SPL burns and the hash the BootROM will
+compute from the header must be the same value:
+
+```bash
+python3 $SB/rkloader.py inspect idblock.img    # "OTP key hash" must equal "SPL burns"
+python3 $SB/rkloader.py verify  idblock.img --pubkey your.pub
+python3 $SB/rkloader.py verify  download.bin --pubkey your.pub
+python3 $SB/luckfox_release.py check <release folder>
+```
+
+Any `!! FUSED BOARD` line from `inspect`, or a `verify`/`check` failure,
+means **do not arm**. The device's Arm eFuse Burn runs the same check twice:
+through `check_release` before arming, and again on the armed image before
+anything is written. For recovering a board that has already burned, see
+[soctoolkit-cli.md](soctoolkit-cli.md#troubleshooting).
 
 ## Changing the rootfs key
 

@@ -158,6 +158,15 @@ hash in OTP                                                                     
 RV1106 boots via SPL (`rkbin/bin/rv11/rv1106_spl_*.bin`), so the SPL variant of step 1 applies. The
 Next Dev guide defers SPL specifics to the U-Boot Nextdev FIT chapter.
 
+**What "the public key from the loader" means in bytes** (hardware-confirmed 2026-09-21,
+[§13.4](#134-first-fuse-to-a-re-signed-non-dev-key-2026-09-21)): BootROM hashes the RKSS header's key
+block, `hdr[0x200:0x430]` = N (0x200, LE) ‖ E (0x10) ‖ C (0x20, the low bytes of the PKA Barrett
+constant), and compares that with OTP. The SPL burns the same layout computed from its DTB. The
+two only agree if the header's C matches the modulus, which a re-key has to rewrite
+([airgapped-signing.md](airgapped-signing.md#the-header-key-block-what-the-bootrom-checks)). A
+fused board also refuses a `download.bin` whose LDR `releaseTime` is 1970-01-01, which no
+unfused board checks.
+
 **The AVB half of the Next Dev guide does not apply here.** `vbmeta.img`,
 `fastboot oem fuse at-perm-attr` and dm-verity-via-`fs_mgr` are Android mechanisms; this is a
 Buildroot system with no fastboot and no `fs_mgr`.
@@ -1484,4 +1493,30 @@ The §6.7 initramfs verifier was exercised on both a fused and an unfused Mini (
 unfused hardware (E2), and fails closed against tampering (E3). The nvmem approach is retired; no
 kernel patch for OTP readability ships with signed builds anymore. **Still not done:** a real
 (non-public) signing key, and a non-dev (squashfs/readonly-rootfs) build through the same path.
+
+### 13.4 First fuse to a re-signed (non-dev) key (2026-09-21)
+
+A CI production bundle was re-signed on-device to a BIP85-derived key (Resign Release), armed
+(Arm eFuse Burn), and flashed to a Mini through SocToolkit's Download mode. The SPL printed
+`RSA: Write RSA key hash successfully.` and the board booted to the kernel. From the next
+power-on it went **straight to maskrom with only `RKUART` on UART**. After that, every
+`download.bin` was refused at Download Boot: the re-signed one, a vendor-signed one for the same
+key, the dev-key CI build and the original pre-re-sign build.
+
+| # | Finding | Evidence | Fix |
+|---|---|---|---|
+| F1 | The re-keyed loader header kept the **old key's PKA constant C** (`hdr+0x410`). BootROM hashes `hdr[0x200:0x430]` (N‖E‖C) against OTP, so the NAND idblock no longer matched the hash the SPL had just burned from its (correct) DTB | `rk_sign_tool otp --loader --hash`: the flashed loader needed a different OTP value from the one the SPL burned; a loader with C corrected needed exactly the burned value | `rkloader.write_key_block()` / `set_pubkey()`; `fused_boot_problems()` in `verify`, `check_release`, and the app's arm gate |
+| F2 | Every CI `download.bin` was dated **1970-01-01** (reproducibility pin). A fused board refused it at `db` even when correctly signed for the fused key | Changing only `releaseTime` (+ CRC) turned "Download boot failed!" into "Download boot ok."; 2025-01-01 00:00:00 also passes. A clean rkbin loader built by `boot_merger` and signed by `rk_sign_tool` passed first time | `ss-fs-normalise.sh` floors the date at 2025-01-01; `rkloader.prepare_for_signing()` does the same on re-sign |
+| F3 | `set_pubkey()` never re-keyed the **flashhead's SPL DTB** (the idblock copy inside `download.bin` that `upgrade_tool ul` / `update.img` upgrades write). This did not affect this recovery, which wrote `idblock.img` | the recovered loader's flashhead still held the dev modulus and `hash@np` | `set_pubkey()` re-keys the flashhead's DTB and rehashes its components |
+| F4 | After a failed `db`, a known-good loader also failed until the board was power-cycled | a clean vendor loader failed right after a rejected one, then passed from a clean power-on | [soctoolkit-cli.md](soctoolkit-cli.md#troubleshooting) |
+
+**Recovered** without any hardware tool: `db` with the corrected loader, then `wl` of the corrected
+(un-armed) `idblock.img` plus the existing re-signed images, then `rd`. The next boot showed
+`## Verified-boot: 1` through to the kernel, so the fuse holds the intended key and enforces it.
+
+**Lessons.** Nothing tested before the fuse could see F1 or F2: signature verification passes, and
+an unfused BootROM checks neither. Both are now checked in software, and arming refuses an image
+that fails. Keep rehearsing on a sacrificial board. When a fused board sits in maskrom, work from
+SocToolkit's own log, `rk_sign_tool otp`, and a clean rkbin loader before concluding it is dead.
+
 - [`docs/hwrng.md`](../hwrng.md) — how hardware entropy reaches the app on each platform

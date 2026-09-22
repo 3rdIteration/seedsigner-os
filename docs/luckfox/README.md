@@ -479,6 +479,8 @@ Notes:
   reaching the build host: digests out, signatures in, BIP85-derived keys.
 - [verifying-a-release.md](verifying-a-release.md) — how anyone can check a distributed image for
   authenticity and reproducibility, with no keys and no vendor tools.
+- [soctoolkit-cli.md](soctoolkit-cli.md) — driving SocToolkit's `upgrade_tool` directly: flashing,
+  reading back, reading SocToolkit's log, and recovering a fused board stuck in maskrom.
 - [../hwrng.md](../hwrng.md) — how hardware entropy reaches the app on this and the other boards.
 - [OS-build-instructions.md](OS-build-instructions.md) — detailed manual SDK build steps (original standalone layout).
 - [LUCKFOX_STARTUP_WORKFLOW.md](LUCKFOX_STARTUP_WORKFLOW.md) — on-device startup / camera sequencing.
