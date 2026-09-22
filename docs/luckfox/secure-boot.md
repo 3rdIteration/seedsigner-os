@@ -1445,9 +1445,8 @@ enters maskrom on every board, fused or not (bench row C6), and maskrom accepts 
   `rv1106_ddr` **v1.16** (`rkbin/doc/release/RV1106_EN.md`) — a separate, irreversible fuse. The
   SeedSigner build ships the SDK's pinned DDR blob, **v1.15** (`fwver: v1.15` in every boot log),
   which predates it according to those notes (not verified on hardware). Using it would mean moving
-to v1.16 or later (rkbin master has
-  `rv1106_ddr_924MHz_v1.16.bin`), validating that blob on every board, and then finding out how the
-  fuse is armed and burned — none of which has been tried.
+  to v1.16 (rkbin has `rv1106_ddr_924MHz_v1.16.bin`), validating that blob on every board, and then
+  finding out how the fuse is armed and burned — none of which has been tried.
 - **What it would buy.** On a fused board maskrom already refuses loaders signed with any other key,
   so disabling it mainly removes a way to flash an *older, correctly signed* release (see
   [§6.2](#62-anti-rollback)) and closes the BootROM's USB stack as an attack surface.
@@ -1457,6 +1456,30 @@ to v1.16 or later (rkbin master has
   dead board, and it also removes the failover `uboot-recovery-config.sh` configures. That is why
   [§3.6](#36-the-download-disable-fuse) recommends leaving it alone. If it is ever adopted, it should
   come after anti-rollback and a proven signed update path that never needs maskrom.
+
+**Notes on the loader blobs (checked 2026-09-22):**
+
+- **The DDR blob is not factory-provisioned.** Only the BootROM (mask ROM) and the OTP fuses are fixed
+  in the SoC. The DDR init blob is the first component of the loader we build: the pinned SDK's
+  `rkbin/RKBOOT/RV1106MINIALL.ini` uses `rv1106_ddr_924MHz_v1.15.bin` both as `CODE471` (loaded into
+  RAM by maskrom during `db`) and as `FlashData` (the first component of the NAND idblock, which prints
+  the `DDR 306b9977f5 … fwver: v1.15` banner at every boot). It sits inside the loader's first signed
+  component, so on a fused board an updated blob just means rebuilding the loader and re-signing it
+  with the fused key.
+- **v1.16 is the newest RV1106 DDR blob** (upstream `rockchip-linux/rkbin` and the `3rdIteration/rkbin`
+  fork both at `3e288fe`, 2026-06-26; the blob was dated 2026-05-11 and committed upstream 2026-05-19).
+  **Its only change is the download-disable support** — no DRAM or stability fixes. v1.15 (2023-12-21)
+  already has the low-temperature stability fix, the large-SPL fix and the suspend/resume timer change.
+  So v1.16 is only worth testing for this feature.
+- **v1.16 has run on a fused Mini, in RAM only:** the clean rkbin loader used in the 2026-09-21
+  recovery (built by `boot_merger RKBOOT/RV1106MINIALL.ini` from rkbin master: DDR v1.16, usbplug v1.09,
+  SPL v1.03) was accepted by `db` and initialised the DRAM. It has never been written to NAND or booted
+  from it.
+- **Prebuilt SPL v1.03** (2026-03-02; the SDK pins v1.02) fixes *"SPL hw decompression of uboot
+  failed"*, which sounds relevant because `uboot.img` is LZMA-compressed. It is probably not the SPL
+  that runs, though: the idblock's SPL appears to be the one the SDK compiles from its U-Boot source
+  (it carries our key, `burn-key-hash` and the FIT-signature config in its DTB). Confirm which SPL
+  ends up in `idblock.img` before spending time on it.
 
 ---
 
