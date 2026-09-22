@@ -406,6 +406,12 @@ def cmd_splice(a):
         _splice_flashhead(dl, idsig)
 
     # The rework changes image sizes; keep the auto-flash script honest.
+    # A MicroSD/eMMC bundle ships a copy of the rootfs signature next to the
+    # rootfs; after a re-sign it would otherwise still hold the old one.
+    note = lr.refresh_rootfs_sidecar(a.bundle)
+    if note:
+        print(note)
+
     res = lr.sd_update_check(a.bundle, fix=True)
     for line in res["fixed"]:
         print("sd_update.txt fixed: %s" % line)

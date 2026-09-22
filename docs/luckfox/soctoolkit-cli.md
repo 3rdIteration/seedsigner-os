@@ -95,6 +95,17 @@ firmware or loader), `sfi`.
   re-signed release's `update.img` still carries the old chain unless it was
   rebuilt; the re-sign tools delete it for that reason.
 
+## Boards that boot from MicroSD
+
+Everything here writes the **NAND** of a NAND board. A board that boots from a
+MicroSD card keeps its whole boot chain on the card, and `db` only ever loads a
+loader into RAM — so a re-signed `download.bin` sent over USB changes nothing on
+the card. Write the card in a reader instead (whole image, or just the changed
+partitions): see
+[secure-boot.md §2.5](secure-boot.md#flashing-a-board-that-boots-from-microsd).
+Whether the usbplug can be switched to the card (`ssd`, SwitchStorage) is
+untested here.
+
 ## NAND layout (Pico Mini, SPI NAND bundle)
 
 These are the LBAs (512-byte sectors) SocToolkit uses, taken from its log for

@@ -198,7 +198,8 @@ setup. Also see the `sd_update.txt` warning in [§4.7](#47-removable-media-sd_up
 ## 2. Signing a release
 
 Four ways to produce a release signed with a key you choose. All four produce the same thing, and
-every one ends with the same check ([§2.5](#25-checking-a-signed-release)).
+every one ends with the same check ([§2.6](#26-checking-a-signed-release)). MicroSD and eMMC
+releases need one extra step, [§2.5](#25-microsd-and-emmc-releases).
 
 | Method | Private key lives on | Needs | Use when |
 |---|---|---|---|
@@ -309,7 +310,7 @@ initramfs), then runs the full check. Keys are held in RAM only.
 - **Not on the Pico Mini:** re-signing the rootfs needs more memory than the Mini has and crashes
   it, so the app refuses and points at Sign Digest ([§2.4](#24-air-gapped-signing)) instead. The same
   applies to **Force Rootfs Check** (`airgap-sign.py force` is its PC-side counterpart).
-- The other Build Tools actions: **Check Release** (the same check as §2.5), **Export Pubkeys**,
+- The other Build Tools actions: **Check Release** (the same check as §2.6), **Export Pubkeys**,
   **Provision MicroSD** (copy a checked release to the card root for U-Boot's auto-flash), and
   **Danger Zone → Arm eFuse Burn** ([§3.2](#32-ways-to-arm)).
 
@@ -366,7 +367,91 @@ Things to know:
 - The card layout, the raw per-tier commands, and why the NAND rootfs digest is UBI-aware are in
   [airgapped-signing.md](airgapped-signing.md#toolsairgap-signpy).
 
-### 2.5 Checking a signed release
+### 2.5 MicroSD and eMMC releases
+
+A NAND release is a folder of partition images. A **MicroSD/eMMC release is the same folder**
+(`fit-sign-tree-<profile>/` in the build artifacts) **plus a flashable whole-card `.img` built from
+it**. So re-signing one is: re-sign the folder by any method above, then rebuild the image.
+
+```bash
+# ... re-sign <folder> exactly as in 2.1-2.4, then:
+python3 $SB/luckfox_release.py check    <folder>            # must be RESULT: VALID
+python3 $SB/luckfox_release.py sd-image <folder> -o card.img
+# write card.img to the card (dd / Raspberry Pi Imager / balenaEtcher)
+```
+
+What `sd-image` does, and why it is safe to rebuild:
+
+- It reads the partition table out of the folder's own `env.img`
+  (`blkdevparts=mmcblk1:32K(env),512K@32K(idblock),…`) and writes each `<name>.img` at the running
+  offset, zero between them, ending at the end of `rootfs.img` — the same layout as the build's
+  `blkenvflash`, which is why the rootfs partition's declared 6G does not inflate the file. Verified
+  byte-for-byte against a CI SD artifact (2026-09-22): rebuilding an untouched folder reproduces the
+  shipped `.img` exactly, hash for hash.
+- It refuses a partition image that is missing or too big for its slot.
+- It refreshes `rootfs.img.minisig` first (below).
+
+**Only the boot chain changes.** A re-signed SD image differs from the original in the `idblock`,
+`uboot` and `boot` slots only; `env`, `oem`, `userdata` and the (often large) `rootfs` are
+byte-identical, because the rootfs signature lives inside `boot.img`.
+
+**`rootfs.img.minisig`** is a copy of that signature, shipped beside the rootfs. Nothing on the
+device reads it — the verifier uses `boot.img` — but a stale copy would mislead anyone checking the
+folder by hand, so the re-sign tools (`airgap-sign.py splice`, the app's Resign Release) and
+`sd-image` refresh it, and `check` reports it when it is stale. `rootfs.img.size` only changes if the
+rootfs itself does.
+
+**`update.img`** in an SD artifact packs the old chain; the re-key tools delete it.
+
+> **Not yet booted on hardware.** The SD re-sign, the rebuilt image and the air-gapped round-trip
+> were all validated on the 2026-09-22 CI artifact, but no re-signed card has been booted. Do that on
+> an **unfused** board that genuinely boots from MicroSD before trusting it — note that some clone
+> Minis cannot SD-boot at all (`MMC: no card present`).
+
+#### Flashing a board that boots from MicroSD
+
+An SD-only board carries its whole boot chain on the card, so **the card is what you write** — there
+is no NAND to flash, and USB Download mode does not write it. Three ways, in order of preference:
+
+1. **Write the whole image (normal).** `dd`, Raspberry Pi Imager or balenaEtcher, exactly as for an
+   unsigned image. Everything — loader, U-Boot, kernel, rootfs — is inside `card.img`.
+
+   ```bash
+   sudo dd if=card.img of=/dev/sdX bs=4M conv=fsync status=progress
+   ```
+
+2. **Write only what a re-sign changed**, keeping the card's `oem`, `userdata` and rootfs. After a
+   re-sign that is just the three boot-chain partitions, at these offsets from the release's own
+   `env.img` table (Pico Mini SD; take them from your own `env.img`, or from
+   `luckfox_release.py sd-image`'s output, rather than assuming):
+
+   | Image | Offset | Sector | `dd` |
+   |---|---|---|---|
+   | `env.img` | 0 | 0 | `seek=0 bs=512` |
+   | `idblock.img` | 32 KiB | 64 | `seek=64 bs=512` |
+   | `uboot.img` | 544 KiB | 1088 | `seek=1088 bs=512` |
+   | `boot.img` | 800 KiB | 1600 | `seek=1600 bs=512` |
+
+   ```bash
+   sudo dd if=idblock.img of=/dev/sdX bs=512 seek=64   conv=fsync
+   sudo dd if=uboot.img   of=/dev/sdX bs=512 seek=1088 conv=fsync
+   sudo dd if=boot.img    of=/dev/sdX bs=512 seek=1600 conv=fsync
+   ```
+
+3. **The card's own `sd_update.txt`**, which on an SD release writes the card itself (`mmc write`,
+   where a NAND release uses `mtd write`). It is the U-Boot auto-flash path, driven from a FAT
+   partition holding the images. `luckfox_release.py sd-update <folder>` checks its write lengths and
+   `--fix` repairs them. Remember it is unsigned code execution
+   ([§4.7](#47-removable-media-sd_updatetxt-signed-images-and-rollback)).
+
+**What USB/SocToolkit can and cannot do here.** `upgrade_tool db` only loads a loader into RAM
+([soctoolkit-cli.md](soctoolkit-cli.md)); it never writes the boot medium, so sending a re-signed
+`download.bin` to an SD board changes nothing on the card. Whether the usbplug can be pointed at the
+card to write it (`upgrade_tool ssd`, SwitchStorage) is **untested here** — assume not, and use a card
+reader. Maskrom still matters on a fused SD board for a different reason: if the card's loader is
+wrong the board drops there, and recovery is to rewrite the card, not to flash over USB.
+
+### 2.6 Checking a signed release
 
 ```bash
 SB=opt/luckfox/secure-boot

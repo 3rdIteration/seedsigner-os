@@ -527,6 +527,103 @@ class Identify(Base):
         self.assertTrue(info["serial_console"])
 
 
+class SdImage(Base):
+    """Rebuilding the flashable card image, and the .minisig sidecar beside it.
+
+    The layout mirrors `opt/luckfox/blkenvflash`: each <name>.img at the running
+    offset from env.img's blkdevparts table, zero between them, and the image ends
+    at the end of the last partition's file rather than at its declared size.
+    """
+
+    PARTS = "blkdevparts=mmcblk1:32K(env),512K@32K(idblock),256K(uboot),32M(boot),1M(rootfs)"
+
+    def make_sd(self, **kw):
+        make_release(self.tmp, kind="squashfs", **kw)
+        env = (self.PARTS + "\x00").encode().ljust(32 * 1024, b"\x00")
+        for name, data in (("env", env), ("idblock", b"IDB" * 100), ("uboot", b"UB" * 200)):
+            with open(os.path.join(self.tmp, name + ".img"), "wb") as f:
+                f.write(data)
+        # the sidecar a real SD build ships: a copy of boot.img's /rootfs.sig
+        sig = lr.initramfs_members(self.boot())["rootfs.sig"]
+        with open(os.path.join(self.tmp, lr.ROOTFS_SIDECAR), "wb") as f:
+            f.write(sig)
+        return env
+
+    def test_layout_follows_the_declared_sizes_not_the_at_offsets(self):
+        self.make_sd()
+        self.assertEqual(lr.sd_image_layout(self.tmp),
+                         [("env", 0, 32 << 10), ("idblock", 32 << 10, 512 << 10),
+                          ("uboot", (32 + 512) << 10, 256 << 10),
+                          ("boot", (32 + 512 + 256) << 10, 32 << 20),
+                          ("rootfs", (32 + 512 + 256) * 1024 + (32 << 20), 1 << 20)])
+
+    def test_image_places_every_partition_and_ends_at_the_rootfs(self):
+        self.make_sd()
+        out = os.path.join(self.tmp, "card.img")
+        written = lr.build_sd_image(self.tmp, out)
+        data = open(out, "rb").read()
+        for name, off, length in written:
+            src = open(os.path.join(self.tmp, name + ".img"), "rb").read()
+            self.assertEqual(data[off:off + length], src, name)
+        last, off, length = written[-1]
+        self.assertEqual(last, "rootfs")
+        self.assertEqual(len(data), off + length)          # no padding to 1M
+        # the gaps are zero
+        gap_start = written[1][1] + written[1][2]
+        self.assertEqual(set(data[gap_start:written[2][1]]), {0})
+
+    def test_refuses_a_partition_that_does_not_fit(self):
+        self.make_sd()
+        with open(os.path.join(self.tmp, "uboot.img"), "wb") as f:
+            f.write(b"\xff" * ((256 << 10) + 1))
+        with self.assertRaises(lr.ReleaseError):
+            lr.build_sd_image(self.tmp, os.path.join(self.tmp, "card.img"))
+
+    def test_refuses_a_folder_with_no_partition_table(self):
+        make_release(self.tmp, kind="squashfs")
+        with self.assertRaises(lr.ReleaseError):
+            lr.sd_image_layout(self.tmp)
+
+    def test_stale_sidecar_is_reported_and_refreshed(self):
+        # no loader images here: this is about the sidecar, and check_release
+        # reports those as missing rather than choking on placeholders
+        make_release(self.tmp, kind="squashfs")
+        path = os.path.join(self.tmp, lr.ROOTFS_SIDECAR)
+        with open(path, "wb") as f:
+            f.write(lr.initramfs_members(self.boot())["rootfs.sig"])
+        with open(path, "wb") as f:
+            f.write(b"untrusted comment: stale\n")
+        self.assertEqual(lr.rootfs_sidecar_state(self.tmp), (True, False))
+        rep = lr.check_release(self.tmp)
+        self.assertTrue(any(lr.ROOTFS_SIDECAR in w for w in rep.warnings), rep.warnings)
+        self.assertIsNotNone(lr.refresh_rootfs_sidecar(self.tmp))
+        self.assertEqual(open(path, "rb").read(),
+                         lr.initramfs_members(self.boot())["rootfs.sig"])
+        self.assertEqual(lr.rootfs_sidecar_state(self.tmp), (True, True))
+        self.assertIsNone(lr.refresh_rootfs_sidecar(self.tmp))      # idempotent
+
+    def test_no_sidecar_is_not_an_error(self):
+        make_release(self.tmp)                                      # NAND bundle
+        self.assertEqual(lr.rootfs_sidecar_state(self.tmp), (False, None))
+        self.assertIsNone(lr.refresh_rootfs_sidecar(self.tmp))
+
+    def test_identify_reports_the_sd_rootfs_kind(self):
+        """NAND says what the rootfs is in its bootargs; SD/eMMC do not, so the
+        image's own magic is the only source."""
+        boot = build_boot({
+            "fdt": kernel_dtb(model=b"Luckfox Pico Mini",
+                              bootargs=b"console=ttyFIQ0 root=/dev/mmcblk1p7 rootfstype=squashfs"),
+            "kernel": b"KERNEL" * 300,
+        })
+        with open(os.path.join(self.tmp, "boot.img"), "wb") as f:
+            f.write(boot)
+        with open(os.path.join(self.tmp, "rootfs.img"), "wb") as f:
+            f.write(b"hsqs" + b"\x00" * 0x100)
+        info = lr.identify(self.tmp)
+        self.assertEqual(info["medium"], "sd")
+        self.assertEqual(info["rootfs"], "squashfs (read-only)")
+
+
 class SdUpdate(Base):
     def test_truncation_detected_and_fixed(self):
         make_release(self.tmp)
