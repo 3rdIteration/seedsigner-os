@@ -409,6 +409,11 @@ when there is no NAND to fall back to — is [§3.2, *Arming a board that boots 
 > U-Boot both verified under the new key and the app came up
 > ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)). Note some clone Minis cannot SD-boot at
 > all (`MMC: no card present`), so use a board you know boots from a card.
+>
+> **If a known-good SD board will not boot, suspect the slot before the image.** Some Luckfox
+> MicroSD slots are mechanically flaky: re-insert the card and power-cycle, and repeat — it can take
+> a dozen or more tries to make good contact. Only after that conclude the card/image is at fault.
+> (Insert before power-on; these images do not detect hot-swapped cards.)
 
 #### Flashing a board that boots from MicroSD
 
@@ -587,6 +592,13 @@ RSA: Write RSA key hash successfully.        <- SPL, on the burn boot
 ## Verified-boot: 1                          <- every boot after
 conf: sha256,rsa2048:dev+                    <- U-Boot verifying boot.img (the key name hint stays "dev")
 ```
+
+These are **UART** lines: connect a 3.3 V USB-serial adapter to the debug header (115200 8N1) and
+capture from power-on. `## Verified-boot:` is printed by the Rockchip SPL/U-Boot secure-boot code
+**before Linux starts**, so it is visible even on a non-dev image whose kernel console is stripped —
+watching the first lines after power-on is the quickest way to tell a fused, enforcing board (`1`)
+from an unfused one (`0`). Once the kernel is up, the same state also shows as `fuse.programmed=` on
+`/proc/cmdline`.
 
 The SPL refuses to burn unless the key it holds hashes to its DTB's `hash@np`, and it reads the OTP
 back afterwards, so "Write RSA key hash successfully" means the OTP holds exactly that value. On the
