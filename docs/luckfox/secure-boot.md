@@ -24,8 +24,9 @@ and hardware-proven**:
   - 2026-09-23: a fully fused SD-only Mini ran a tamper spliced into the **unsigned `oem`
     partition** as root — secure boot verified everything it covers, and simply did not cover `oem`.
     The partition was removed and its content folded into the signed rootfs; on re-test the normal
-    re-signed card boots (camera works) and the equivalent tamper is now **rejected at rootfs
-    verification** ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
+    re-signed card boots (camera works), the equivalent tamper is now **rejected at rootfs
+    verification**, and the folded images boot on SPI-NAND and eMMC too
+    ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
 
 **Where to start**
 
@@ -1983,6 +1984,11 @@ key on a Pico Pi (boot key `a0c79bd9…`, rootfs key `B7CF7678AC31ADDA`), then r
 (`rootfs does not match its signature`). The tampered squashfs was padded back to the signed length
 so the rejection is purely content, not a short read; the two cards differ only inside the rootfs
 partition.
+
+**All three media.** The same run's folded images also boot on a **SPI-NAND** Mini (the `ubi.mtd`
+6→5 signed bake) and an **eMMC** Pico Pi (the eMMC partition layout) — so the fold is not an SD-only
+fix and the NAND/eMMC bootargs follow the new partition index. Camera was confirmed on the Mini; it
+was not separately checked on the Pi/NAND boards.
 
 ### 7.11 Provenance
 
