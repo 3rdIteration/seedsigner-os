@@ -1547,12 +1547,30 @@ release notes before switching. `RKTRUST/RV1106TOS.ini` points at it
 
 ### 6.4 Full kernel command-line lockdown
 
-**Status: partial.** On signed builds `root=` and the rootfs arguments are baked into the signed DTB and
-the env partition cannot set `sys_bootargs`, but `mtdparts`/`blkdevparts` are still imported from the
-unsigned env partition and merged into the command line. A redefined layout cannot make an unsigned
-rootfs verify, but the residual is not zero. The full fix is `CONFIG_CMDLINE_FORCE=y` (untested on the
-5.10 kernel), or stripping those names from `CONFIG_ENVF_LIST` — mitigations and history in
-[§4.6](#46-the-kernel-command-line-envf-and-autoboot); open question Q13.
+**Status: partial, and now known to be exploitable — this is the top open issue.** On signed builds
+`root=` and the rootfs arguments are baked into the signed DTB and the env partition cannot set
+`sys_bootargs`, but `mtdparts`/`blkdevparts` are **still imported from the unsigned env partition and
+merged into the command line**, and that residual is not harmless: appending ` rdinit=/bin/sh` to the
+env's `blkdevparts` value gets it into the cmdline verbatim and the kernel runs a shell from the
+signed initramfs **instead of** the verifier — a silent, persistent, pre-verification root-shell
+bypass on a fused board (confirmed 2026-09-23,
+[§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)). From that shell any rootfs on
+the card can be mounted and `switch_root`ed into, with no signature check.
+
+**Fix, in order of preference:**
+
+1. **Strip the injection (surgical).** Remove `blkdevparts`/`mtdparts` from `CONFIG_ENVF_LIST` so
+   `envf.c` will not import them from the unsigned env, and extend the `apply_signed_nand_bootargs`
+   bake (which already puts `root=`/`rootfstype=` into the signed DTB `/chosen`) to also carry
+   `blkdevparts`. The env then contributes nothing to the cmdline, so nothing can ride it. Verify on a
+   build that U-Boot still resolves its own partitions with those names gone from the list.
+2. **Force the whole cmdline.** `CONFIG_CMDLINE_FORCE=y` + a compiled-in `CONFIG_CMDLINE`: the kernel
+   ignores the bootloader/env cmdline. Definitive but heavier — the compiled-in string must reproduce
+   the complete per-variant cmdline; `fuse.programmed=1` is dropped (the verifier's OTP-byte fallback
+   covers it).
+
+Both are untested on the 5.10 kernel and differ per medium (SD/NAND/eMMC), so implement with a
+build+boot on each. History in [§4.6](#46-the-kernel-command-line-envf-and-autoboot); open question Q13.
 
 ### 6.5 Locking the U-Boot console
 
@@ -2127,11 +2145,22 @@ not a failure to find one; only the fused key could sign a runnable `sd_update.t
 the board booted straight through (§6.5). Confirm UART TX actually reaches U-Boot on a dev board before
 relying on this — an unwired TX line would look identical.
 
-**Still open — env cmdline smuggling (M1).** Whether the unsigned env partition's `blkdevparts` can
-smuggle a trailing `rdinit=/bin/sh` into the kernel command line — running a shell from the signed
-initramfs *before* the verifier `/init` — is untested. It sits within the same physical-access
-envelope as the (intentional) escape hatch, just stealthier and without the button; `CONFIG_CMDLINE_FORCE=y`
-would close it. See [§6.4](#64-full-kernel-command-line-lockdown).
+**CONFIRMED — env cmdline smuggling is a pre-verifier root-shell bypass (M1).** Appending
+` rdinit=/bin/sh` to the unsigned env partition's `blkdevparts` value (and recomputing the ENVF CRC)
+put it verbatim into the kernel command line — the boot printed
+`… 6G(rootfs) rdinit=/bin/sh androidboot.fwver=…` — and the kernel ran
+`Run /bin/sh as init process` **instead of** the signed verifier `/init`. No `rootfs-verify:` line
+appeared; `ls` on the resulting `#` prompt showed the initramfs (`pubkey`, `rootfs.sig`, `init`, …),
+i.e. an **interactive root shell in the signed initramfs, from which any rootfs can be mounted and
+`switch_root`ed into.** So the unsigned env can override the one component that is supposed to be
+unbypassable, silently — no red screen, no button, unlike the (consented) escape hatch. This is
+worse than "DoS": `env` is a verifier bypass. It still needs env write (card access), the same
+physical-access class as the escape hatch. **Fix:** `CONFIG_CMDLINE_FORCE=y` (compile the cmdline into
+the signed kernel so the env cannot reach it), or strip `blkdevparts`/`mtdparts` from
+`CONFIG_ENVF_LIST` and carry the layout in the signed `uboot.img`'s compiled-in env. Both are
+untested on the 5.10 kernel and must preserve the per-medium `root=`/`rootfstype=` baking
+(`apply_signed_nand_bootargs`) — implement with a build+boot on each medium. See
+[§6.4](#64-full-kernel-command-line-lockdown).
 
 ### 7.12 Provenance
 
