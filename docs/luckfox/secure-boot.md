@@ -1,7 +1,8 @@
 # Luckfox Pico secure boot
 
 Secure boot on the Luckfox Pico boards (RV1103 Mini, RV1106 Pro Max and Pico Pi) is **implemented
-and hardware-proven**:
+and hardware-proven** (the bench runs behind that claim are in
+[§7](#7-findings-open-questions-and-history)):
 
 - **What every build does.** It signs the whole boot chain and the rootfs. `signing: on` is the CI
   default, and it uses the committed **public** dev keys, so a default build is signed but not
@@ -13,20 +14,6 @@ and hardware-proven**:
 - **Not implemented yet** ([§6](#6-possible-future-work)): recognising the physical device
   (anti-phishing words / device PIN), anti-rollback (a fused board still boots an older genuine
   release), and full lockdown of the U-Boot console, the kernel command line and `sd_update.txt`.
-- **Proven on silicon:**
-  - 2026-09-12: a Mini fused to the dev key.
-  - 2026-09-14: the rootfs verifier on fused and unfused boards.
-  - 2026-09-21: a Mini fused to a BIP85-derived key after an on-device re-sign. That run also
-    found, fixed and documented two defects that only a fused board shows
-    ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
-  - 2026-09-22: a **MicroSD-only** Mini, re-signed air-gapped and fused from the card alone - no
-    NAND and no USB at any point ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)).
-  - 2026-09-23: a fully fused SD-only Mini ran a tamper spliced into the **unsigned `oem`
-    partition** as root — secure boot verified everything it covers, and simply did not cover `oem`.
-    The partition was removed and its content folded into the signed rootfs; on re-test the normal
-    re-signed card boots (camera works), the equivalent tamper is now **rejected at rootfs
-    verification**, and the folded images boot with a working camera on SPI-NAND and eMMC too
-    ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
 
 **Where to start**
 
@@ -1664,6 +1651,22 @@ enters maskrom on every board, fused or not (bench row C6), and maskrom accepts 
 Everything learned along the way, kept so the reasoning behind the current design is not lost.
 Question numbers (Q1–Q17) are the original ones from when this document was a feasibility report;
 other docs and commits refer to them.
+
+**Proven on silicon.** The bench runs behind the claims in this document:
+
+- 2026-09-12: a Mini fused to the dev key.
+- 2026-09-14: the rootfs verifier on fused and unfused boards.
+- 2026-09-21: a Mini fused to a BIP85-derived key after an on-device re-sign. That run also found,
+  fixed and documented two defects that only a fused board shows
+  ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
+- 2026-09-22: a **MicroSD-only** Mini, re-signed air-gapped and fused from the card alone - no NAND
+  and no USB at any point ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)).
+- 2026-09-23: a fully fused SD-only Mini ran a tamper spliced into the **unsigned `oem` partition**
+  as root — secure boot verified everything it covers, and simply did not cover `oem`. The partition
+  was removed and its content folded into the signed rootfs; on re-test the normal re-signed card
+  boots (camera works), the equivalent tamper is now **rejected at rootfs verification**, and the
+  folded images boot with a working camera on SPI-NAND and eMMC too
+  ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
 
 ### 7.1 Open questions
 
