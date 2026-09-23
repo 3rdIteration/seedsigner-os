@@ -1197,12 +1197,16 @@ provision_fit_build_keys() {
 # is dropped, so the board hangs at "Waiting for root device" and comes up with
 # the DT-default CMA. Bake the rootfs cmdline (the exact args the SDK computes in
 # parse_partition_file/__GET_BOOTARGS_FROM_BOARD_CFG) into /chosen before the
-# kernel build. Gated on signed builds, so unsigned ones are untouched (u-boot
-# still overrides their /chosen at runtime). This also fixes the
-# attacker-controlled-cmdline gap for signed builds: root is now pinned inside
-# the signed image, not read from the unsigned env partition. A mismatch is not
-# a fallback: it is "Waiting for root device" with no recovery short of a
-# reflash.
+# kernel build — including the partition-layout token (mtdparts= / blkdevparts=
+# built from RK_PARTITION_CMD_IN_ENV, exactly what parse_partition_file() wrote
+# to env.img): since lock-kernel-cmdline.sh stops U-Boot importing those from the
+# unsigned env partition (M1), and our images carry no MBR, this baked token is
+# now the ONLY partition table the kernel has. Gated on signed builds, so
+# unsigned ones are untouched (u-boot still overrides their /chosen at runtime).
+# This also fixes the attacker-controlled-cmdline gap for signed builds: root
+# and the layout are pinned inside the signed image, not read from the unsigned
+# env partition. A mismatch is not a fallback: it is "Waiting for root device"
+# with no recovery short of a reflash.
 apply_signed_nand_bootargs() {
     [ "${SEEDSIGNER_FIT_SIGNATURE:-0}" = "1" ] || return 0
     local profile="$1" medium="$2"
@@ -1239,6 +1243,27 @@ apply_signed_nand_bootargs() {
     [ -n "$cma_size" ] \
         || { print_error "signed bootargs: no RK_BOOTARGS_CMA_SIZE in board config ${SS_BOARD_CONFIG:-missing}"; exit 1; }
 
+    # The partition-layout token baked alongside root=. This is the SAME string
+    # U-Boot used to append from the unsigned env partition — project/build.sh
+    # parse_partition_file() builds <prefix>:<RK_PARTITION_CMD_IN_ENV> and writes
+    # it into env.img, and board.c merged whatever env held verbatim. Since
+    # lock-kernel-cmdline.sh stops that import (M1), the kernel would see NO
+    # partitions at all without this: our images carry no MBR (sector 0 is the
+    # ENVF itself), so blkdevparts=/mtdparts= is the only partition table the
+    # kernel has. Read from the board config — one source of truth with
+    # apply-partition-layout.sh, never a second hardcoded copy. The device
+    # prefixes mirror parse_partition_file() exactly (spi-nand0 is the kernel's
+    # spi-nand MTD name; eMMC is mmcblk0, SD card mmcblk1).
+    local part_layout part_token
+    part_layout="$(sed -n 's/^export RK_PARTITION_CMD_IN_ENV="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$SS_BOARD_CONFIG" 2>/dev/null | head -n1)"
+    [ -n "$part_layout" ] \
+        || { print_error "signed bootargs: no RK_PARTITION_CMD_IN_ENV in board config ${SS_BOARD_CONFIG:-missing}"; exit 1; }
+    case "$medium" in
+        nand) part_token="mtdparts=spi-nand0:$part_layout" ;;
+        sd)   part_token="blkdevparts=mmcblk1:$part_layout" ;;
+        emmc) part_token="blkdevparts=mmcblk0:$part_layout" ;;
+    esac
+
     if [ "$medium" = "nand" ]; then
         # The baked cmdline must match what mkfs_ubi.sh actually built. readonly-
         # rootfs (resolved by apply_readonly_rootfs, which runs earlier in main)
@@ -1248,9 +1273,9 @@ apply_signed_nand_bootargs() {
         # makes for spi_nand.
         local baked_root marker
         if [ "${SS_RO_ROOTFS:-0}" = "1" ]; then
-            baked_root="ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ubi.mtd=5 rk_dma_heap_cma=$cma_size"
+            baked_root="ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ubi.mtd=5 rk_dma_heap_cma=$cma_size $part_token"
         else
-            baked_root="root=ubi0:rootfs ubi.mtd=5 rootfstype=ubifs rk_dma_heap_cma=$cma_size"
+            baked_root="root=ubi0:rootfs ubi.mtd=5 rootfstype=ubifs rk_dma_heap_cma=$cma_size $part_token"
         fi
         # The full string, not just the first token: a stale bake with an old
         # ubi.mtd (6, before oem was removed) must not be mistaken for current.
@@ -1259,9 +1284,31 @@ apply_signed_nand_bootargs() {
             print_success "NAND root already baked in $(basename "$dtsi") ($marker)"
             return 0
         fi
-        grep -qE "root=/dev/($root_dev|$old_root_dev)" "$dtsi" \
-            || { print_error "signed-NAND bootargs: expected 'root=/dev/$root_dev' (or stock $old_root_dev) in $(basename "$dtsi") — SDK layout changed (or a different root= was already baked)"; exit 1; }
+        # The SDK checkout survives between runs, so the DTSI may carry an EARLIER
+        # bake — this one (RO or dev) or the SD/eMMC one on the same file. All prior
+        # states start with a recognisable root= token:
+        #   fresh            : root=/dev/$old_root_dev (stock SDK default, pre-oem-removal)
+        #   stale SD bake    : root=/dev/$root_dev rootfstype=squashfs rk_dma_heap_cma=X
+        #   stale NAND RO    : ubi.block=0,rootfs root=/dev/ubiblock0_0 ...
+        #   stale NAND dev   : root=ubi0:rootfs ...
+        grep -qE "(^|[[:space:]])((ubi\.block=0,rootfs )?root=/dev/($root_dev|$old_root_dev|ubiblock0_0)|root=ubi0:rootfs)([[:space:]]|$)" "$dtsi" \
+            || { print_error "signed-NAND bootargs: no root= for $root_dev / $old_root_dev / ubiblock0_0 / ubi0:rootfs in $(basename "$dtsi") — SDK layout changed"; exit 1; }
         # rootfs is mtd5 in our 6-partition NAND layout (env,idblock,uboot,boot,userdata,rootfs).
+        # Replace any previously-baked sequence with the new bake — each known format
+        # exactly, because the token orders differ between them (one combined regex
+        # cannot cover all), and a plain root= substitution alone would leave stale
+        # tokens behind: the kernel takes the LAST occurrence of a cmdline param, so
+        # a dev-NAND build after an SD build would otherwise ship with
+        # rootfstype=squashfs winning over ubifs. Only one -e can match per state;
+        # on a fresh (never-baked) DTSI none do and the final bare-root= substitution
+        # applies instead. The optional trailing mtdparts=/blkdevparts= token is an
+        # earlier bake of THIS change: it must be consumed too, or a stale layout
+        # would survive after the new one (last occurrence wins).
+        sed -i -E \
+            -e "s|ubi\.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=[A-Za-z0-9]+ ubi\.mtd=[0-9]+ rk_dma_heap_cma=[A-Za-z0-9]+( mtdparts=[^[:space:]]+)?|$baked_root|" \
+            -e "s|root=ubi0:rootfs ubi\.mtd=[0-9]+ rootfstype=[A-Za-z0-9]+ rk_dma_heap_cma=[A-Za-z0-9]+( mtdparts=[^[:space:]]+)?|$baked_root|" \
+            -e "s#root=/dev/($root_dev|$old_root_dev) rootfstype=[A-Za-z0-9]+ rk_dma_heap_cma=[A-Za-z0-9]+( mtdparts=[^[:space:]]+| blkdevparts=[^[:space:]]+)?#$baked_root#" \
+            "$dtsi"
         sed -i -E "s#root=/dev/($root_dev|$old_root_dev)#$baked_root#" "$dtsi"
         grep -qF "$marker" "$dtsi" || { print_error "signed-NAND bootargs: rewrite failed in $(basename "$dtsi")"; exit 1; }
         print_success "baked: $baked_root ($profile)"
@@ -1290,7 +1337,7 @@ apply_signed_nand_bootargs() {
         rootfs_fs="$(echo "$fs_cfg" | sed -n 's/.*rootfs@[^@,"]*@\([A-Za-z0-9]*\).*/\1/p')"
         [ "$rootfs_fs" = "squashfs" ] \
             || { print_error "signed-$medium bootargs: rootfs fs type is '${rootfs_fs:-<unknown>}' (board config ${SS_BOARD_CONFIG:-missing}) — only squashfs roots are supported by the initramfs verifier"; exit 1; }
-        baked="root=/dev/$root_dev rootfstype=squashfs rk_dma_heap_cma=$cma_size"
+        baked="root=/dev/$root_dev rootfstype=squashfs rk_dma_heap_cma=$cma_size $part_token"
         # The FULL string, including the root device: a stale p7 bake must not
         # match p6 and be left in place.
         marker="$baked"
@@ -1305,8 +1352,10 @@ apply_signed_nand_bootargs() {
         # trailing tokens, not just bare root=: a plain substitution would leave
         # the old tokens behind, and if the CMA size ever changes the stale
         # rk_dma_heap_cma would win (the kernel takes the LAST occurrence of a
-        # cmdline param).
-        sed -i -E "s#root=/dev/($root_dev|$old_root_dev)( rootfstype=[A-Za-z0-9]+)?( rk_dma_heap_cma=[A-Za-z0-9]+)?#$baked#" "$dtsi"
+        # cmdline param). The optional trailing blkdevparts=/mtdparts= token is an
+        # earlier bake of THIS change; it must be consumed too, or a stale layout
+        # would survive after the new one.
+        sed -i -E "s#root=/dev/($root_dev|$old_root_dev)( rootfstype=[A-Za-z0-9]+)?( rk_dma_heap_cma=[A-Za-z0-9]+)?(( blkdevparts=[^[:space:]]+| mtdparts=[^[:space:]]+)?)#$baked#" "$dtsi"
         grep -qF "$baked" "$dtsi" \
             || { print_error "signed-$medium bootargs: rewrite failed in $(basename "$dtsi")"; exit 1; }
         print_success "baked: $baked ($profile/$medium)"
@@ -2974,6 +3023,14 @@ main() {
     # apply_readonly_rootfs on purpose: apply_signed_nand_bootargs reads its
     # SS_RO_ROOTFS/SS_BOARD_CONFIG exports to pick the baked root= args.
     apply_fit_signature_config   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise)
+    # Signed builds only: strip blkdevparts/mtdparts from U-Boot's env import
+    # whitelist so the unsigned env partition cannot reach the kernel cmdline (M1).
+    bash "$SCRIPT_DIR/lock-kernel-cmdline.sh" "$WORK_DIR/luckfox-pico"
+    # Signed builds only: that whitelist is not the only consumer of the env.
+    # mtd_part_parse() (board.c CONFIG_MTD_BLK fallback + the SPL) reads the env
+    # directly and serialises partition NAMES into the cmdline; sanitise them so
+    # SPI-NAND cannot inject tokens (e.g. rdinit=) either.
+    bash "$SCRIPT_DIR/patch-mtd-part-parse.sh" "$WORK_DIR/luckfox-pico"
     apply_signed_nand_bootargs "$hardware" "$boot_medium"   # signed NAND: bake root=ubi0 into the DTB (no-op otherwise)
 
     # Rootfs verification setup, all no-ops unless SEEDSIGNER_FIT_SIGNATURE=1.
