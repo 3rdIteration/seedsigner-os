@@ -235,14 +235,41 @@ cmd_otp_hash() {
 # SHA-256 of the committed PUBLIC dev key's RSA modulus (secure-boot/dev-keys/).
 # A burn armed with this key fuses the board to a key everyone has: recoverable
 # (still updatable) but with zero secure-boot protection.
-PUBLIC_DEV_KEY_MODULUS_SHA256="c8b597b50bbb94c7c700011c2aefc43eb97d3b391da28bc130936d8d9f530f17"
+#
+# The hash is taken over the modulus HEX ONLY — not `openssl`'s `Modulus=<HEX>`
+# line — so it does not depend on the line ending `openssl` emits. A previous pin
+# hashed the whole line, which matched only Windows/CRLF output: on Linux/macOS
+# (LF) the hash never matched and this warning silently never fired. The regex
+# captures just [0-9A-Fa-f] after `Modulus=`, dropping any trailing CR, so the
+# value is identical on every platform. `dev_key_modulus_sha256` below is the
+# single source of that normalisation; check_dev_key_pin() self-tests it at load.
+PUBLIC_DEV_KEY_MODULUS_SHA256="61987f7a8e0180b9af186bca54e24212a56fa3870525b95338414912953e8c03"
+
+dev_key_modulus_sha256() {
+  # $1 = key file (PEM). Prints the platform-independent modulus hash, or nothing.
+  openssl rsa -in "$1" -noout -modulus 2>/dev/null \
+    | sed -n 's/^Modulus=\([0-9A-Fa-f]*\).*/\1/p' | tr -d '\n' | sha256sum | awk '{print $1}'
+}
+
+# Fail loudly at load if the pin ever drifts from the committed dev key, so this
+# guardrail can never silently rot again (the CRLF bug went unnoticed precisely
+# because nothing checked it). Skips quietly when openssl or the key is absent.
+check_dev_key_pin() {
+  command -v openssl >/dev/null 2>&1 || return 0
+  local dk="$SCRIPT_DIR/dev-keys/dev.key"
+  [ -f "$dk" ] || return 0
+  local got; got="$(dev_key_modulus_sha256 "$dk")"
+  [ -z "$got" ] && return 0
+  [ "$got" = "$PUBLIC_DEV_KEY_MODULUS_SHA256" ] || \
+    die "PUBLIC_DEV_KEY_MODULUS_SHA256 pin ($PUBLIC_DEV_KEY_MODULUS_SHA256) does not match the committed dev key ($got) — the dev-key burn warning would not fire; re-pin it"
+}
 
 warn_if_public_dev_key() {
   command -v openssl >/dev/null 2>&1 || return 0
   local kf=""
   for f in "$KEYS/dev.key" "$KEYS/private_key.pem"; do [ -f "$f" ] && { kf="$f"; break; }; done
   [ -n "$kf" ] || return 0
-  local mod; mod="$(openssl rsa -in "$kf" -noout -modulus 2>/dev/null | sha256sum | awk '{print $1}')"
+  local mod; mod="$(dev_key_modulus_sha256 "$kf")"
   if [ "$mod" = "$PUBLIC_DEV_KEY_MODULUS_SHA256" ]; then
     warn "########################################################################"
     warn "## THIS IS THE COMMITTED PUBLIC DEV KEY — NOT A SECRET.                ##"
@@ -256,6 +283,7 @@ warn_if_public_dev_key() {
 }
 
 confirm_burn() {
+  check_dev_key_pin      # the pin must be correct here, or the dev-key warning is a no-op
   warn_if_public_dev_key
   warn "================= IRREVERSIBLE ================="
   warn "--burn arms the OTP key-hash write. A board booted with the resulting loader"

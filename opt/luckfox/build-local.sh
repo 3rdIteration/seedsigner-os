@@ -2183,7 +2183,12 @@ build_system() {
 
     print_info "Building U-Boot..."
     ./build.sh uboot
-    
+
+    # Assert FIT signature enforcement actually landed in the built U-Boot .config
+    # (SEEDSIGNER_FIT_SIGNATURE=1 only) — Kconfig can silently drop it, leaving a
+    # signed-but-unenforced image. Shared with os-build.sh / CI.
+    bash "$SCRIPT_DIR/assert-uboot-fit-signature.sh" "$WORK_DIR/luckfox-pico"
+
     print_info "Building Kernel..."
     ./build.sh kernel
 

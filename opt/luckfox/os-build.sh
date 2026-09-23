@@ -1659,6 +1659,26 @@ arm_fit_burn_key_hash() {
     print_step "ARMING OTP BURN — SEEDSIGNER_FIT_BURN_KEY_HASH=1 (IRREVERSIBLE)"
     print_success "  the built loader will write the FIT pubkey hash to OTP on first boot and"
     print_success "  turn on secure boot PERMANENTLY. Flash it only on a board you mean to fuse."
+    # Same confirm gate as sign-secure-boot.sh's confirm_burn: arming the fuse is
+    # irreversible, so it must not happen from a stray env var alone. A build with
+    # SEEDSIGNER_FIT_BURN_KEY_HASH=1 but no token would otherwise silently emit a
+    # burn-armed loader. Note the burned key is the PUBLIC dev key unless
+    # SEEDSIGNER_FIT_KEY_DIR gave a real one — arming with the dev key fuses the
+    # board to a key with no protection (recoverable, but never re-keyable).
+    if [ "${SEEDSIGNER_SB_CONFIRM:-}" != "I-UNDERSTAND-THIS-BURNS-A-FUSE" ]; then
+        print_error "refusing to arm the OTP burn without SEEDSIGNER_SB_CONFIRM=I-UNDERSTAND-THIS-BURNS-A-FUSE"
+        print_error "  (SEEDSIGNER_FIT_BURN_KEY_HASH=1 arms an IRREVERSIBLE fuse; set the token only on a board you mean to fuse)"
+        exit 1
+    fi
+    # Not a refusal (fusing to the dev key is a valid sacrificial-board test of the
+    # burn mechanism — see bench §7.5), but say so loudly, the way sign-secure-boot.sh's
+    # warn_if_public_dev_key does: arming with the dev key gives NO protection and
+    # the board can never later move to a real key.
+    if [ "${SEEDSIGNER_FIT_KEY_DIR:-}" = "" ]; then
+        print_error "  WARNING: no SEEDSIGNER_FIT_KEY_DIR — this arms a burn to the committed PUBLIC dev key."
+        print_error "  WARNING: that fuses the board to a key with NO protection, and it can NEVER be re-keyed."
+        print_error "  WARNING: only meaningful as a sacrificial-board test of the burn mechanism itself."
+    fi
     [ -f "$mk" ] || { print_error "u-boot make.sh not found at $mk"; exit 1; }
     # Append --burn-key-hash to the uboot.img FIT signing call inside
     # pack_fit_image (the `${SCRIPT_FIT} ${ARG_LIST_FIT} --chip ${RKCHIP_LABEL}`
@@ -2715,6 +2735,13 @@ s/^endef\nendif/endef\nendif\nendif/
     print_step "Building U-Boot"
     sdk_build uboot
 
+    # Assert FIT signature ENFORCEMENT actually landed in the built U-Boot .config
+    # (SEEDSIGNER_FIT_SIGNATURE=1 only). apply_fit_signature_config wrote it to the
+    # defconfig, but Kconfig silently drops symbols with unmet deps — signing would
+    # still pass while the board enforces nothing. Same GENERATED-.config discipline
+    # as assert-kernel-network.sh below. No-op on unsigned builds.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/assert-uboot-fit-signature.sh" "$LUCKFOX_SDK_DIR"
+
     print_step "Building Kernel"
     sdk_build kernel
 
@@ -3305,6 +3332,7 @@ assert_shared_build_files() {
              apply-partition-layout.sh \
               pin-spidev-bufsiz.sh readonly-rootfs.sh \
                 assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
+               assert-uboot-fit-signature.sh \
                patch-otp-size.sh assert-otp-size.sh \
                harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
                strip-whitespace-filenames.sh \
