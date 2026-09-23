@@ -852,7 +852,7 @@ enable_dts_node() {
 # of boot.img on mini and max.
 #
 # SD_CARD profiles are left alone: there the same controller already carries the
-# rootfs (root=/dev/mmcblk1p7), so it is configured as storage already and the
+# rootfs (root=/dev/mmcblk1p6), so it is configured as storage already and the
 # one slot is occupied anyway.
 apply_sdmmc_dts_patch() {
     local board_profile="$1" boot_medium="$2"
@@ -1190,8 +1190,9 @@ provision_fit_build_keys() {
 # When the boot.img FIT is signed, u-boot must NOT rewrite the kernel DTB's
 # /chosen bootargs at runtime (that would break the signature), so the kernel
 # uses whatever root= is BAKED into the DTB. Each board's ipc.dtsi hardcodes its
-# SD/eMMC default (root=/dev/mmcblk1p7 on mini+max, root=/dev/mmcblk0p7 on pi —
-# eMMC is the FIRST block device); on a signed NAND build the SDK's usual
+# stock SD/eMMC default (root=/dev/mmcblk1p7 on mini+max, root=/dev/mmcblk0p7 on
+# pi — eMMC is the FIRST block device; those are pre-oem-removal positions and
+# apply_signed_nand_bootargs now bakes p6); on a signed NAND build the SDK's usual
 # runtime injection of root=ubi0:rootfs / ubi.mtd / rootfstype / rk_dma_heap_cma
 # is dropped, so the board hangs at "Waiting for root device" and comes up with
 # the DT-default CMA. Bake the rootfs cmdline (the exact args the SDK computes in
@@ -1210,14 +1211,19 @@ apply_signed_nand_bootargs() {
         *) print_info "apply_signed_nand_bootargs: no bootargs baking needed for '$medium'"; return 0 ;;
     esac
     # Per-board DTSI (the one carrying /chosen/bootargs) and the rootfs block
-    # device. All three boards share the same 7-partition layout
-    # (env,idblock,uboot,boot,oem,userdata,rootfs — apply-partition-layout.sh),
-    # so on NAND rootfs is mtd6 everywhere; SD/SDMMC is mmcblk1, eMMC is mmcblk0.
-    local dtsi root_dev
+    # device. All three boards share the same 6-partition layout
+    # (env,idblock,uboot,boot,userdata,rootfs — apply-partition-layout.sh; oem
+    # was folded into the rootfs and removed), so on NAND rootfs is mtd5
+    # everywhere; SD/SDMMC is mmcblk1p6, eMMC is mmcblk0p6.
+    #
+    # old_root_dev is the SDK's stock default (rootfs was partition 7 with oem
+    # in slot 6). A fresh DTSI still carries p7, so every replacement accepts
+    # either form.
+    local dtsi root_dev old_root_dev
     case "$profile" in
-        mini) dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1103-luckfox-pico-ipc.dtsi";      root_dev="mmcblk1p7" ;;
-        max)  dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1106-luckfox-pico-pro-max-ipc.dtsi"; root_dev="mmcblk1p7" ;;
-        pi)   dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1106-luckfox-pico-pi-ipc.dtsi";     root_dev="mmcblk0p7" ;;
+        mini) dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1103-luckfox-pico-ipc.dtsi";      root_dev="mmcblk1p6"; old_root_dev="mmcblk1p7" ;;
+        max)  dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1106-luckfox-pico-pro-max-ipc.dtsi"; root_dev="mmcblk1p6"; old_root_dev="mmcblk1p7" ;;
+        pi)   dtsi="$WORK_DIR/luckfox-pico/sysdrv/source/kernel/arch/arm/boot/dts/rv1106-luckfox-pico-pi-ipc.dtsi";     root_dev="mmcblk0p6"; old_root_dev="mmcblk0p7" ;;
         *) print_error "signed bootargs: unsupported board profile '$profile' (expected mini, max or pi)"; exit 1 ;;
     esac
     [ -f "$dtsi" ] || { print_error "signed bootargs: DTS not found: $dtsi"; exit 1; }
@@ -1242,19 +1248,21 @@ apply_signed_nand_bootargs() {
         # makes for spi_nand.
         local baked_root marker
         if [ "${SS_RO_ROOTFS:-0}" = "1" ]; then
-            baked_root="ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ubi.mtd=6 rk_dma_heap_cma=$cma_size"
+            baked_root="ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ubi.mtd=5 rk_dma_heap_cma=$cma_size"
         else
-            baked_root="root=ubi0:rootfs ubi.mtd=6 rootfstype=ubifs rk_dma_heap_cma=$cma_size"
+            baked_root="root=ubi0:rootfs ubi.mtd=5 rootfstype=ubifs rk_dma_heap_cma=$cma_size"
         fi
-        marker="${baked_root%% *}"
+        # The full string, not just the first token: a stale bake with an old
+        # ubi.mtd (6, before oem was removed) must not be mistaken for current.
+        marker="$baked_root"
         if grep -qF "$marker" "$dtsi"; then
             print_success "NAND root already baked in $(basename "$dtsi") ($marker)"
             return 0
         fi
-        grep -q "root=/dev/$root_dev" "$dtsi" \
-            || { print_error "signed-NAND bootargs: expected 'root=/dev/$root_dev' in $(basename "$dtsi") — SDK layout changed (or a different root= was already baked)"; exit 1; }
-        # rootfs is mtd6 in our 7-partition NAND layout (env,idblock,uboot,boot,oem,userdata,rootfs).
-        sed -i "s|root=/dev/$root_dev|$baked_root|" "$dtsi"
+        grep -qE "root=/dev/($root_dev|$old_root_dev)" "$dtsi" \
+            || { print_error "signed-NAND bootargs: expected 'root=/dev/$root_dev' (or stock $old_root_dev) in $(basename "$dtsi") — SDK layout changed (or a different root= was already baked)"; exit 1; }
+        # rootfs is mtd5 in our 6-partition NAND layout (env,idblock,uboot,boot,userdata,rootfs).
+        sed -i -E "s#root=/dev/($root_dev|$old_root_dev)#$baked_root#" "$dtsi"
         grep -qF "$marker" "$dtsi" || { print_error "signed-NAND bootargs: rewrite failed in $(basename "$dtsi")"; exit 1; }
         print_success "baked: $baked_root ($profile)"
     else
@@ -1283,20 +1291,22 @@ apply_signed_nand_bootargs() {
         [ "$rootfs_fs" = "squashfs" ] \
             || { print_error "signed-$medium bootargs: rootfs fs type is '${rootfs_fs:-<unknown>}' (board config ${SS_BOARD_CONFIG:-missing}) — only squashfs roots are supported by the initramfs verifier"; exit 1; }
         baked="root=/dev/$root_dev rootfstype=squashfs rk_dma_heap_cma=$cma_size"
-        marker="rootfstype=squashfs rk_dma_heap_cma=$cma_size"
+        # The FULL string, including the root device: a stale p7 bake must not
+        # match p6 and be left in place.
+        marker="$baked"
         if grep -qF "$marker" "$dtsi"; then
             print_success "SD/eMMC bootargs already baked in $(basename "$dtsi") ($marker)"
             return 0
         fi
-        grep -q "root=/dev/$root_dev" "$dtsi" \
-            || { print_error "signed-$medium bootargs: expected 'root=/dev/$root_dev' in $(basename "$dtsi") — SDK layout changed (or different bootargs already baked)"; exit 1; }
+        grep -qE "root=/dev/($root_dev|$old_root_dev)" "$dtsi" \
+            || { print_error "signed-$medium bootargs: expected 'root=/dev/$root_dev' (or stock $old_root_dev) in $(basename "$dtsi") — SDK layout changed (or different bootargs already baked)"; exit 1; }
         # The SDK checkout survives between builds, so the DTSI may carry an
         # EARLIER bake of this same line. Replace root= plus any previously-baked
         # trailing tokens, not just bare root=: a plain substitution would leave
         # the old tokens behind, and if the CMA size ever changes the stale
         # rk_dma_heap_cma would win (the kernel takes the LAST occurrence of a
         # cmdline param).
-        sed -i -E "s|root=/dev/$root_dev( rootfstype=[A-Za-z0-9]+)?( rk_dma_heap_cma=[A-Za-z0-9]+)?|$baked|" "$dtsi"
+        sed -i -E "s#root=/dev/($root_dev|$old_root_dev)( rootfstype=[A-Za-z0-9]+)?( rk_dma_heap_cma=[A-Za-z0-9]+)?#$baked#" "$dtsi"
         grep -qF "$baked" "$dtsi" \
             || { print_error "signed-$medium bootargs: rewrite failed in $(basename "$dtsi")"; exit 1; }
         print_success "baked: $baked ($profile/$medium)"
@@ -2486,10 +2496,11 @@ package_firmware() {
         print_warning "no rootfs_uclibc_* dir under output/out — skipping whitespace filename strip"
     fi
 
-    # Install the oem iqfiles prune into the SDK's pre-build-OEM hook. The oem
-    # tree is assembled by __PACKAGE_OEM inside `build.sh firmware`, so this is
-    # the only window where it exists and is still editable (before build_mkimg
-    # makes oem.img). Shared with CI via patch-oem-pre-hook.sh.
+    # Install the oem iqfiles prune + rootfs prep into the SDK's pre-build-OEM
+    # hook. The oem tree is assembled by __PACKAGE_OEM inside `build.sh firmware`,
+    # so this is the only window where it exists and is still editable (before
+    # build_firmware() folds it into the rootfs and packs the squashfs). Shared
+    # with CI via patch-oem-pre-hook.sh.
     if [ "$BUILD_VARIANT" == "non-dev" ]; then
         if [ -e "$WORK_DIR/luckfox-pico/.BoardConfig.mk" ]; then
             bash "$SCRIPT_DIR/patch-oem-pre-hook.sh" \
@@ -2541,11 +2552,13 @@ package_firmware() {
     # text scripts, so this runs after the pack step without changing any hash.
     bash "$SCRIPT_DIR/patch-sd-update-scripts.sh" "$WORK_DIR/luckfox-pico" "$hardware"
 
-    # Re-verify now that the oem partition is staged: every built .ko lands in
-    # /oem/usr/ko, which no rootfs hardening touches, so a stray wireless module
-    # there would be loadable by root.
+    # Re-verify after the fold: the oem tree is now inside the signed rootfs at
+    # /oem/usr/ko (apply-partition-layout.sh removes the partition), and its .ko
+    # are still loadable by root, so a stray wireless module would be a hole.
+    # REQUIRE_OEM=1 (5th arg) makes a missing/moved oem payload or a leftover
+    # oem.img a hard failure rather than a silent skip.
     if [ "$BUILD_VARIANT" == "non-dev" ]; then
-        bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1 1
+        bash "$SCRIPT_DIR/assert-kernel-network.sh" "$WORK_DIR/luckfox-pico" "${SS_STRIP_NET:-1}" 1 1 1
         bash "$SCRIPT_DIR/assert-readonly-rootfs.sh" "$WORK_DIR/luckfox-pico" "${SS_BOARD_CONFIG:-}" "${SS_RO_ROOTFS:-0}"
     fi
     debug_uart_bootargs_outputs
@@ -2655,7 +2668,7 @@ create_nand_bundle() {
     # Copy required files
     local required_files=(
         update.img download.bin env.img idblock.img
-        uboot.img boot.img oem.img
+        uboot.img boot.img
         rootfs.img userdata.img sd_update.txt tftp_update.txt
     )
     
@@ -2730,7 +2743,7 @@ create_emmc_bundle() {
     # Copy available files to bundle
     local emmc_files=(
         update.img download.bin env.img idblock.img
-        uboot.img boot.img oem.img rootfs.img userdata.img
+        uboot.img boot.img rootfs.img userdata.img
     )
     
     for file in "${emmc_files[@]}"; do

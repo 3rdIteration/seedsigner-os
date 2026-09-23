@@ -80,9 +80,10 @@ Worth knowing so the checks are not over-read:
 - **rootfs** — exactly the first `<image>.size` bytes, hashed with BLAKE2b-512.
   The partition is padded beyond that, and the padding is deliberately not
   covered.
-- **Not covered by any signature:** `oem.img`, `userdata.img`, `env.img`. The
-  `.minisig` files present for `oem`/`userdata` are produced by the same build
-  hook but nothing verifies them at boot.
+- **Not covered by any signature:** `userdata.img`, `env.img`. `userdata.img`
+  (and any `.minisig` beside it) is produced by the build but nothing verifies
+  it at boot. `oem` is no longer a partition: its content is folded into the
+  signed rootfs, so the rootfs signature covers it.
 
 ## 2. Reproducibility
 

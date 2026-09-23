@@ -34,10 +34,10 @@
 # /root and /home get tmpfs overlays so software that expects to write keeps
 # working, with the writes discarded at reboot.
 #
-# NOT COVERED (deliberate, follow-up): the oem partition is still read-write.
-# Its surface is much smaller — no equivalent of the per-boot luckfox.cfg
-# rewrite has been observed — and converting it is a separate change with its
-# own hardware verification. The SDK does support `oem@/oem@squashfs`.
+# The oem partition is no longer a separate read-write volume: since 2026-09-23
+# apply-partition-layout.sh removes it and the SDK folds its content into this
+# squashfs at /oem, which is what makes /oem read-only (and signature-covered).
+# Nothing to do for it here.
 #
 # NOTE: Kconfig SILENTLY DROPS defconfig lines for symbols that don't exist or
 # whose dependencies are unmet. Setting CONFIG_OVERLAY_FS here does NOT prove it

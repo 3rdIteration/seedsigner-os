@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 #
 # assert-kernel-network.sh <LUCKFOX_PICO_DIR> [EXPECT_NET_OFF] [EXPECT_WIFI_OFF]
-#                          [EXPECT_COREDUMP_OFF]
+#                          [EXPECT_COREDUMP_OFF] [REQUIRE_OEM]
 #
 # Post-build verification that the non-dev kernel network/WiFi strip actually
 # took effect. Shared by the GitHub Actions build and both local Docker builds.
 # Run AFTER `./build.sh kernel` (and, for the oem check, after the firmware/oem
 # packaging step — the check no-ops if the oem dir isn't staged yet).
+#
+#   REQUIRE_OEM  1|0 (default 0). Set 1 only on the call that runs AFTER
+#                `build.sh firmware`: by then the oem tree must have been folded
+#                into the rootfs (apply-partition-layout.sh sets
+#                RK_BUILD_APP_TO_OEM_PARTITION=n), so a missing /oem payload or a
+#                leftover separate oem partition is then a hard failure. Without
+#                this an oem-path move would make the guard silently skip.
 #
 # WHY THIS EXISTS: Kconfig SILENTLY DROPS defconfig lines whose symbol doesn't
 # exist or whose dependencies are unmet. The U-Boot bootcount work proved this
@@ -25,6 +32,7 @@ LUCKFOX_DIR="${1:-}"
 EXPECT_NET_OFF="${2:-1}"
 EXPECT_WIFI_OFF="${3:-1}"
 EXPECT_COREDUMP_OFF="${4:-1}"
+REQUIRE_OEM="${5:-0}"
 
 if [ -z "$LUCKFOX_DIR" ] || [ ! -d "$LUCKFOX_DIR" ]; then
     echo "assert-kernel-network: luckfox-pico dir '${LUCKFOX_DIR:-<empty>}' not found" >&2
@@ -120,10 +128,16 @@ if [ "$EXPECT_WIFI_OFF" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------- oem payload
-# The SDK packages every built .ko to the oem partition at /oem/usr/ko
-# (build.sh __PACKAGE_RESOURCES -> __COPY_FILES kernel_drv_ko/ $OEM/usr/ko).
-# No rootfs hardening touches /oem, so a stray .ko landing there is directly
-# loadable by root.
+# Every built .ko is packaged into the oem tree (build.sh __PACKAGE_RESOURCES ->
+# __COPY_FILES kernel_drv_ko/ $OEM/usr/ko), which since 2026-09-23 is FOLDED into
+# the signed read-only rootfs at /oem: apply-partition-layout.sh removes the oem
+# partition and sets RK_BUILD_APP_TO_OEM_PARTITION=n, so build_firmware() copies
+# $RK_PROJECT_PACKAGE_OEM_DIR to <rootfs>/oem and deletes the staging dir. Before
+# the fold the modules are at output/out/oem/usr/ko; after it they are at
+# output/out/rootfs_<libc>_<chip>/oem/usr/ko. They are still loadable by root, so
+# the stray-module scan must follow them to the location that actually ships —
+# and must NOT silently skip when the path moves (a silently-skipped guard is how
+# an oem-path move would ship a cfg80211.ko unnoticed).
 #
 # Wireless and networking modules are checked SEPARATELY against their own
 # expectation. They were originally lumped together, which failed a
@@ -132,7 +146,11 @@ fi
 # configuration is as bad as a missed real one.
 WIFI_KO_PATTERN='cfg80211|mac80211|8188fu|8189fs|aic8800|atbm|r8723bs|ssv6'
 NET_KO_PATTERN='ipv6'
-KO_DIR="$LUCKFOX_DIR/output/out/oem/usr/ko"
+LEGACY_OEM_DIR="$LUCKFOX_DIR/output/out/oem"
+KO_DIR=""
+for d in "$LUCKFOX_DIR"/output/out/rootfs_*/oem/usr/ko; do
+    [ -d "$d" ] && { KO_DIR="$d"; break; }
+done
 
 check_oem_payload() {
     local label="$1" pattern="$2"
@@ -146,12 +164,23 @@ check_oem_payload() {
     fi
 }
 
-if [ -d "$KO_DIR" ]; then
+if [ -n "$KO_DIR" ]; then
     [ "$EXPECT_WIFI_OFF" = "1" ] && check_oem_payload "wireless" "$WIFI_KO_PATTERN"
     [ "$EXPECT_NET_OFF" = "1" ] && check_oem_payload "networking" "$NET_KO_PATTERN"
-    log "oem payload: $(find "$KO_DIR" -maxdepth 1 -name '*.ko' | wc -l) modules total"
+    log "oem payload: $(find "$KO_DIR" -maxdepth 1 -name '*.ko' | wc -l) modules total (${KO_DIR#$LUCKFOX_DIR/})"
+    if [ "$REQUIRE_OEM" = "1" ] && [ -d "$LEGACY_OEM_DIR/usr/ko" ]; then
+        fail "output/out/oem still exists after firmware — oem was NOT folded into the rootfs (is RK_BUILD_APP_TO_OEM_PARTITION still 'y'?)"
+    fi
+elif [ "$REQUIRE_OEM" = "1" ]; then
+    fail "no oem .ko payload found after firmware (checked output/out/rootfs_*/oem/usr/ko and output/out/oem/usr/ko) — the oem fold did not happen and the camera modules would be missing"
 elif [ "$EXPECT_WIFI_OFF" = "1" ] || [ "$EXPECT_NET_OFF" = "1" ]; then
-    log "(skip) oem dir not staged yet: ${KO_DIR#$LUCKFOX_DIR/}"
+    log "(skip) oem dir not staged yet (run the oem check after build.sh firmware)"
+fi
+
+# A separate oem.img means the partition still exists; the fold is then not in
+# effect and the untrusted-partition hole is back.
+if [ "$REQUIRE_OEM" = "1" ] && [ -f "$LUCKFOX_DIR/output/image/oem.img" ]; then
+    fail "output/image/oem.img exists after firmware — the unsigned oem partition was still built"
 fi
 
 if [ "$FAILED" -ne 0 ]; then

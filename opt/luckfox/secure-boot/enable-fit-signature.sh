@@ -5,8 +5,9 @@
 # Turn ON FIT signature *enforcement* in a checked-out Luckfox SDK's U-Boot
 # defconfig, so SPL and U-Boot REQUIRE a valid signature to boot. Idempotent.
 #
-# WHY THIS IS A SEPARATE, MANUAL SCRIPT and not one of the auto-applied patches
-# in ../patches/luckfox-sdk/: those are applied to EVERY build. Enforcing
+# WHY THIS IS A SEPARATE, MANUAL SCRIPT and not one of the auto-applied SDK
+# edits (apply_sdk_patches in os-build.sh / build-local.sh): those run on EVERY
+# build. Enforcing
 # signatures on a build whose images are then NOT signed produces a device that
 # refuses to boot. This must be opt-in, paired with a signing step
 # (sign-secure-boot.sh) and, ultimately, an OTP burn. See

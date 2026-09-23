@@ -9,14 +9,15 @@
 # OEM_DIR defaults to $RK_PROJECT_PACKAGE_OEM_DIR, which the SDK exports, so the
 # script can be invoked from the SDK's pre-build-OEM hook with no arguments.
 #
-# WHY IT RUNS FROM THAT HOOK: the oem partition is assembled by __PACKAGE_OEM,
-# which is called only from build_firmware() (i.e. during `./build.sh firmware`).
+# WHY IT RUNS FROM THAT HOOK: the oem tree is assembled by __PACKAGE_OEM, which
+# is called only from build_firmware() (i.e. during `./build.sh firmware`).
 # Anything earlier — such as optimize-nondev.sh, which runs during the rootfs/app
 # install step — sees no oem directory at all and silently prunes nothing (this
 # prune was dead for every build until 2026-08-06). The SDK's
-# __RUN_PRE_BUILD_OEM_SCRIPT hook runs after __PACKAGE_OEM but before
-# build_mkimg creates oem.img, which is the one window where the staged oem tree
-# exists and is still editable. The vendor's own hook script
+# __RUN_PRE_BUILD_OEM_SCRIPT hook runs after __PACKAGE_OEM but before the tree is
+# folded into the rootfs (RK_BUILD_APP_TO_OEM_PARTITION=n, see
+# apply-partition-layout.sh) and packed into the squashfs — the one window where
+# the staged oem tree exists and is still editable. The vendor's own hook script
 # (luckfox-buildroot-oem-pre.sh) prunes unused libs there for the same reason,
 # and the SDK's __RUN_POST_CLEAN_FILES drops unused NPU/audio models at the same
 # point — this follows that established pattern.
