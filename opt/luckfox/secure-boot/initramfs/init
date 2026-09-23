@@ -8,10 +8,10 @@
 # without ever materialising the image in RAM (peak ~128 KiB) — and only then
 # mounts and switches (switch_root) to the real rootfs. Per medium:
 #   NAND non-dev : squashfs on a static UBI volume, /dev/ubiblock0_0
-#                  (ubi.block=0,rootfs + ubi.mtd=6 baked into the signed DTB)
+#                  (ubi.block=0,rootfs + ubi.mtd=5 baked into the signed DTB)
 #   NAND dev     : writable dynamic UBIFS volume, logical contents at /dev/ubi0_0
-#   MicroSD/eMMC : raw-partition squashfs, root=/dev/mmcblk1p7 (mini/max SD) or
-#                  /dev/mmcblk0p7 (pi eMMC — it is the first block device); the
+#   MicroSD/eMMC : raw-partition squashfs, root=/dev/mmcblk1p6 (mini/max SD) or
+#                  /dev/mmcblk0p6 (pi eMMC — it is the first block device); the
 #                  SDK writes the signed file verbatim to partition offset 0 and
 #                  the rest of the partition is untrusted padding this script
 #                  never reads
@@ -86,7 +86,7 @@ mount -t sysfs sysfs /sys 2>/dev/null || log "WARN: mounting /sys failed"
 # NAND dev (writable): raw dynamic UBIFS volume
 #     bootargs: root=ubi0:rootfs rootfstype=ubifs
 # MicroSD/eMMC (read-only): squashfs written verbatim to a plain partition
-#     bootargs: root=/dev/mmcblk{0,1}p7 rootfstype=squashfs  (eMMC=mmcblk0)
+#     bootargs: root=/dev/mmcblk{0,1}p6 rootfstype=squashfs  (eMMC=mmcblk0)
 ROOT_DEV=""
 for w in $(cat /proc/cmdline); do
     case "$w" in
@@ -107,7 +107,7 @@ case "$ROOT_DEV" in
         MNT_CMD="mount -t squashfs -o ro $ROOT_DEV /mnt"
         ;;
     ubi0:*)
-        # UBI auto-attach (ubi.mtd=6) exposes the volume's logical contents.
+        # UBI auto-attach (ubi.mtd=5) exposes the volume's logical contents.
         SRC_DEV="/dev/ubi0_0"
         MNT_CMD="mount -t ubifs $ROOT_DEV /mnt"
         ;;

@@ -403,7 +403,7 @@ mkdir -p "$NAND_BUNDLE_DIR"
 
 # Copy required NAND flashing files
 cp update.img download.bin env.img idblock.img uboot.img boot.img \
-   oem.img userdata.img rootfs.img sd_update.txt tftp_update.txt \
+   userdata.img rootfs.img sd_update.txt tftp_update.txt \
    "$NAND_BUNDLE_DIR/"
 
 # Create tar.gz archive
@@ -577,7 +577,7 @@ Package:
 Double check the output, now all of the expected .img files are there:
 ```bash
 $ ls /mnt/host/output/image/
-boot.img  download.bin  env.img  idblock.img  oem.img  rootfs.img  sd_update.txt  tftp_update.txt  uboot.img  update.img  userdata.img
+boot.img  download.bin  env.img  idblock.img  rootfs.img  sd_update.txt  tftp_update.txt  uboot.img  update.img  userdata.img
 ```
 
 Final Piece of Sanity Checking:

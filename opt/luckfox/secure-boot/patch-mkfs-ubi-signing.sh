@@ -9,7 +9,7 @@
 # same constraint as patch-fs-determinism.sh).
 #
 # Why sign the logical image rather than the final .ubi file: UBI rewrites
-# erase-counter headers and fastmap data after unclean power cuts, so raw mtd6
+# erase-counter headers and fastmap data after unclean power cuts, so raw mtd5
 # bytes are not stable across boots. The logical volume contents ARE stable —
 # that is exactly what mkfs.ubifs/mksquashfs produced, and it is what the
 # kernel exposes at boot (/dev/ubi0_0 for dynamic UBIFS volumes,

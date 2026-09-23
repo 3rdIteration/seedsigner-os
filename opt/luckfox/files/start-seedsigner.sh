@@ -132,10 +132,14 @@ clear_persistent_log() {
 #
 # Patterns are deliberately narrow. This deletes from the user's removable card,
 # so it matches only what a kernel core_pattern produces — `core-<pid>-<exe>`
-# (the SDK's /data/core-%p-%e), `core.<pid>`, and the bare `core` default — at
-# the top level only, never recursively, and only regular files.
+# (RkLunch.sh's pattern; prepare-oem-for-rootfs.sh repoints it from the old
+# /data/core-%p-%e to /tmp/core-%p-%e now that /oem is a read-only squashfs),
+# `core.<pid>`, and the bare `core` default — at the top level only, never
+# recursively, and only regular files. /tmp is included because that is where
+# the pattern now points (tmpfs, wiped at reboot, but a running process could
+# still leave a dump there with seed material in it).
 sweep_core_dumps() {
-    for dir in /mnt/microsd /mnt/sdcard "$PERSIST_DIR" /data; do
+    for dir in /mnt/microsd /mnt/sdcard "$PERSIST_DIR" /data /tmp; do
         [ -d "$dir" ] || continue
         for f in "$dir"/core "$dir"/core-* "$dir"/core.*; do
             # An unmatched glob stays literal in sh, so -f also filters that.

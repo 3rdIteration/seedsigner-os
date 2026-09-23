@@ -93,8 +93,14 @@ HDMI; its extra vectors are the USB gadget and Ethernet on Pro Max / Pico Pi).
 **Threat model: root-level code execution.** The SeedSigner Python app runs as root, so *userspace* hardening
 is not a control by itself — root can simply `ifconfig eth0 up; udhcpc`, or `insmod` a WiFi driver from
 `/oem/usr/ko`. Anything that must genuinely hold is therefore removed from the **kernel**, with the userspace
-steps kept as defence in depth. Note that **the oem partition is part of the attack surface**: every built
-`.ko` is packaged to `/oem/usr/ko` and no rootfs hardening touches it.
+steps kept as defence in depth.
+
+**The `oem` partition used to be a hole and is gone.** It was a separate, unsigned volume the board mounted
+and executed as root — a 2026-09-23 PoC ran a tamper spliced into its `RkLunch.sh` as uid 0 on a **fully
+fused** board (see [secure-boot.md §7.10](secure-boot.md#710-bench-oem-partition-tamper-2026-09-23)). It is
+now removed and folded into the signed rootfs: `apply-partition-layout.sh` sets
+`RK_BUILD_APP_TO_OEM_PARTITION=n`, so `/oem/usr/ko`, the camera iqfiles and `RkLunch.sh` live inside the
+rootfs squashfs and are covered by the rootfs signature.
 
 | Vector | non-dev closes it via | Where |
 |---|---|---|
@@ -147,7 +153,7 @@ Non-dev images also get size and boot tweaks (dev keeps SDK defaults). Companion
 |---|---|---|
 | Optimize for size | defconfig `BR2_OPTIMIZE_3=y` → `BR2_OPTIMIZE_S=y` | smaller binaries, marginally slower |
 | Prune test/metadata | remove `tests/`, `*.dist-info`/`*.egg-info` under site-packages + `/opt/src`, and `/opt/tools` | `optimize-nondev.sh` |
-| Prune camera iqfiles | keep only the board's sensor (`IQFILES_KEEP`), remove the rest from `/oem` | `prune-oem-iqfiles.sh`, run from the SDK's pre-build-OEM hook (see below); **verify camera** |
+| Prune camera iqfiles | keep only the board's sensor (`IQFILES_KEEP`), remove the rest from the staged oem tree before it is folded into the rootfs at `/oem` | `prune-oem-iqfiles.sh`, run from the SDK's pre-build-OEM hook (see below); **verify camera** |
 | Quiet boot | append `quiet loglevel=3` to the DTS `bootargs` | marginal once console is stripped |
 | U-Boot bootdelay | zero any non-zero `CONFIG_BOOTDELAY`/`bootdelay=` in the SDK U-Boot | best-effort, guarded |
 | UI-first camera | `optimize-nondev.sh` drops `/etc/seedsigner-nondev`; `start-seedsigner.sh` then backgrounds the ~4s camera-graph bootstrap so the UI comes up first | **experimental — verify camera on hardware** |
@@ -158,18 +164,20 @@ reorder must be verified on real hardware** (scan a QR) — a green build proves
 are trivially revertible (widen `IQFILES_KEEP`; the reorder only triggers when the `/etc/seedsigner-nondev`
 marker exists).
 
-**Why iqfiles pruning uses an SDK hook.** Anything that edits the *oem* partition cannot run from
-`optimize-nondev.sh`: oem is assembled by the SDK's `__PACKAGE_OEM`, which is called only from
+**Why iqfiles pruning and the `/oem` prep use an SDK hook.** Anything that edits the oem tree cannot run
+from `optimize-nondev.sh`: oem is assembled by the SDK's `__PACKAGE_OEM`, which is called only from
 `build_firmware()` (i.e. during `build.sh firmware`), long after the rootfs/app install step. The prune lived
 there originally and therefore **silently did nothing in every build** until 2026-08-06. It now runs from
 `prune-oem-iqfiles.sh`, invoked via the SDK's `__RUN_PRE_BUILD_OEM_SCRIPT` hook — which fires after
-`__PACKAGE_OEM` but before `build_mkimg` creates `oem.img`, the one window where the staged oem tree exists
-and is still editable. `patch-oem-pre-hook.sh` installs the call by **appending** to whatever script
-`RK_PRE_BUILD_OEM_SCRIPT` names (every Luckfox board config points at the vendor's
+`__PACKAGE_OEM` and **before the tree is folded into the rootfs and packed**, the one window where the staged
+oem tree exists and is still editable. `patch-oem-pre-hook.sh` installs the calls by **appending** to
+whatever script `RK_PRE_BUILD_OEM_SCRIPT` names (every Luckfox board config points at the vendor's
 `luckfox-buildroot-oem-pre.sh`, which prunes unused libs there for the same reason — replacing it would drop
-those prunes). The prune decides what to delete before deleting anything and **aborts without touching a file
-if `IQFILES_KEEP` matches nothing**, so a bad keep-list can't silently ship a camera with no tuning data.
-The same hook is the right home for any future oem-partition surgery.
+those prunes). The same hook also runs `prepare-oem-for-rootfs.sh`, which fixes what assumed a *writable*
+`/oem` (notably repointing `RkLunch.sh`'s `core_pattern` to `/tmp`). The prune decides what to delete before
+deleting anything and **aborts without touching a file if `IQFILES_KEEP` matches nothing**, so a bad keep-list
+can't silently ship a camera with no tuning data. The fold itself is done by the SDK
+(`RK_BUILD_APP_TO_OEM_PARTITION=n`, set in `apply-partition-layout.sh`), not by this hook.
 
 ## Keeping the three build implementations in sync
 
@@ -179,14 +187,14 @@ There are three ways to build: `.github/workflows/build-luckfox.yml` (CI),
 
 | Script | Does |
 |---|---|
-| `apply-partition-layout.sh` | flash layout incl. the `userdata` partition |
+| `apply-partition-layout.sh` | flash layout incl. the `userdata` partition; removes the `oem` partition and folds it into the rootfs (`RK_BUILD_APP_TO_OEM_PARTITION=n`) |
 | `pin-spidev-bufsiz.sh` | `spidev.bufsiz=8192` on the kernel command line |
 | `readonly-rootfs.sh` / `assert-readonly-rootfs.sh` | squashfs root + overlay, and its verification |
 | `install-gnupg-home.sh` | stages the GnuPG agent/scdaemon config seeded into `GNUPGHOME` |
 | `install-build-time.sh` | bakes `/etc/seedsigner-build-time` from the pinned app commit; the boot clock's default |
 | `strip-whitespace-filenames.sh` | drops whitespace-named entries anywhere in the rootfs before ext4 packing (upstream test fixtures like setuptools' vendored `Lorem ipsum.txt`); debugfs's line-oriented command file cannot address them, so they break every ext4 target. Every removal is logged |
 | `strip-kernel-network.sh` / `assert-kernel-network.sh` | network/WiFi/coredump strip, and its verification |
-| `configure-usb-mode.sh`, `harden-nondev.sh`, `optimize-nondev.sh`, `patch-s50usbdevice.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`, `uboot-recovery-config.sh`, `compile-translations.sh` | as named |
+| `configure-usb-mode.sh`, `harden-nondev.sh`, `optimize-nondev.sh`, `patch-s50usbdevice.sh`, `patch-oem-pre-hook.sh`, `prune-oem-iqfiles.sh`, `prepare-oem-for-rootfs.sh`, `uboot-recovery-config.sh`, `compile-translations.sh` | as named |
 
 **Why this is a hard rule, not a style preference.** Two of these were inlined and duplicated instead, and
 both copies drifted into shipping a different device:
@@ -298,7 +306,7 @@ deliberately writing.
 | `/etc` `/var` `/root` `/home` | overlayfs, tmpfs upper | writable; **discarded at reboot** |
 | `/opt` | read-only | app + bytecode; deliberately not overlaid |
 | `/userdata` | **read-write, persistent** | the only persistent store — settings live here |
-| `/oem` | read-write | **not yet covered** — see below |
+| `/oem` | read-only, inside `/` | folded into the signed rootfs squashfs; the separate partition was removed |
 
 **Moving parts.** `readonly-rootfs.sh` (build time) sets `rootfs@IGNORE@squashfs` in the board config plus
 `RK_SQUASHFS_COMP=xz`, and enables `CONFIG_OVERLAY_FS` in the kernel defconfig. Bootargs are **not** patched:
@@ -334,10 +342,13 @@ matters here: until the home was writable, `gpg-agent`/`scdaemon` could not crea
 sockets and never ran at all; giving them a working home means they start, and `disable-ccid`
 routes scdaemon through pcscd instead of letting it grab the SEC1210 reader directly.
 
-**Not yet covered:** the `oem` partition is still read-write. Its surface is much smaller (no equivalent of
-the per-boot `luckfox.cfg` rewrite has been observed), but it is the remaining writable filesystem that is
-mounted on every boot. The SDK does support `oem@/oem@squashfs`; converting it is a separate change needing
-its own hardware verification.
+**The `oem` partition is gone (2026-09-23).** It used to be a separate, unsigned, read-write volume the board
+mounted at `/oem` and ran `/oem/usr/bin/RkLunch.sh` from as root — outside the boot chain secure boot
+verifies. A tamper spliced there ran as uid 0 on a fully fused board. It is now removed and its content
+(camera iqfiles, `.ko` modules, `RkLunch.sh`) is folded into the signed read-only rootfs squashfs, so it is
+immutable and signature-covered. `prepare-oem-for-rootfs.sh` repoints `RkLunch.sh`'s `core_pattern` at
+`/tmp` because `/oem` is no longer writable. See
+[secure-boot.md §7.10](secure-boot.md#710-bench-oem-partition-tamper-2026-09-23).
 
 ## Boot recovery & auto-failover to Loader
 

@@ -1,7 +1,8 @@
 # Luckfox Pico secure boot
 
 Secure boot on the Luckfox Pico boards (RV1103 Mini, RV1106 Pro Max and Pico Pi) is **implemented
-and hardware-proven**:
+and hardware-proven** (the bench runs behind that claim are in
+[§7](#7-findings-open-questions-and-history)):
 
 - **What every build does.** It signs the whole boot chain and the rootfs. `signing: on` is the CI
   default, and it uses the committed **public** dev keys, so a default build is signed but not
@@ -13,14 +14,6 @@ and hardware-proven**:
 - **Not implemented yet** ([§6](#6-possible-future-work)): recognising the physical device
   (anti-phishing words / device PIN), anti-rollback (a fused board still boots an older genuine
   release), and full lockdown of the U-Boot console, the kernel command line and `sd_update.txt`.
-- **Proven on silicon:**
-  - 2026-09-12: a Mini fused to the dev key.
-  - 2026-09-14: the rootfs verifier on fused and unfused boards.
-  - 2026-09-21: a Mini fused to a BIP85-derived key after an on-device re-sign. That run also
-    found, fixed and documented two defects that only a fused board shows
-    ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
-  - 2026-09-22: a **MicroSD-only** Mini, re-signed air-gapped and fused from the card alone - no
-    NAND and no USB at any point ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)).
 
 **Where to start**
 
@@ -123,6 +116,12 @@ The rootfs signature lives **inside** `boot.img` (in the initramfs), not next to
 re-signing the rootfs rewrites `boot.img`, which then needs a tier-B re-sign. The formats, and
 exactly what each signature covers, are in [airgapped-signing.md](airgapped-signing.md).
 
+**Since 2026-09-23 tier C also covers `/oem`.** There is no separate `oem` partition any more: it was
+not verified by any tier, yet the board mounted it and ran `/oem/usr/bin/RkLunch.sh` as root. It is
+now folded into the signed rootfs squashfs (camera ISP `iqfiles`, kernel modules, `RkLunch.sh`), so
+the rootfs signature covers it. This closed a trivially exploitable hole — see
+[§7.10](#710-bench-oem-partition-tamper-2026-09-23).
+
 ### 1.4 Keys
 
 **The committed dev keys** (`opt/luckfox/secure-boot/dev-keys/` for RSA,
@@ -170,8 +169,8 @@ Verified by inspecting a built SD image
 
 ```
 sector 0     blkdevparts=mmcblk1:32K(env),512K@32K(idblock),256K(uboot),32M(boot),
-                                 512M(oem),256M(userdata),6G(rootfs)
-             sys_bootargs= root=/dev/mmcblk1p7 rootfstype=squashfs
+                                 256M(userdata),6656M(rootfs)
+             sys_bootargs= root=/dev/mmcblk1p6 rootfstype=squashfs
 sector 64    RKNS....            <- the loader/idblock, at the standard Rockchip offset
 ```
 
@@ -384,14 +383,14 @@ What `sd-image` does, and why it is safe to rebuild:
 - It reads the partition table out of the folder's own `env.img`
   (`blkdevparts=mmcblk1:32K(env),512K@32K(idblock),…`) and writes each `<name>.img` at the running
   offset, zero between them, ending at the end of `rootfs.img` — the same layout as the build's
-  `blkenvflash`, which is why the rootfs partition's declared 6G does not inflate the file. Verified
+  `blkenvflash`, which is why the rootfs partition's declared multi-GB size does not inflate the file. Verified
   byte-for-byte against a CI SD artifact (2026-09-22): rebuilding an untouched folder reproduces the
   shipped `.img` exactly, hash for hash.
 - It refuses a partition image that is missing or too big for its slot.
 - It refreshes `rootfs.img.minisig` first (below).
 
 **Only the boot chain changes.** A re-signed SD image differs from the original in the `idblock`,
-`uboot` and `boot` slots only; `env`, `oem`, `userdata` and the (often large) `rootfs` are
+`uboot` and `boot` slots only; `env`, `userdata` and the (often large) `rootfs` are
 byte-identical, because the rootfs signature lives inside `boot.img`.
 
 **`rootfs.img.minisig`** is a copy of that signature, shipped beside the rootfs. Nothing on the
@@ -410,6 +409,11 @@ when there is no NAND to fall back to — is [§3.2, *Arming a board that boots 
 > U-Boot both verified under the new key and the app came up
 > ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)). Note some clone Minis cannot SD-boot at
 > all (`MMC: no card present`), so use a board you know boots from a card.
+>
+> **If a known-good SD board will not boot, suspect the slot before the image.** Some Luckfox
+> MicroSD slots are mechanically flaky: re-insert the card and power-cycle, and repeat — it can take
+> a dozen or more tries to make good contact. Only after that conclude the card/image is at fault.
+> (Insert before power-on; these images do not detect hot-swapped cards.)
 
 #### Flashing a board that boots from MicroSD
 
@@ -423,7 +427,7 @@ is no NAND to flash, and USB Download mode does not write it. Three ways, in ord
    sudo dd if=card.img of=/dev/sdX bs=4M conv=fsync status=progress
    ```
 
-2. **Write only what a re-sign changed**, keeping the card's `oem`, `userdata` and rootfs. After a
+2. **Write only what a re-sign changed**, keeping the card's `userdata` and rootfs. After a
    re-sign that is just the three boot-chain partitions, at these offsets from the release's own
    `env.img` table (Pico Mini SD; take them from your own `env.img`, or from
    `luckfox_release.py sd-image`'s output, rather than assuming):
@@ -588,6 +592,13 @@ RSA: Write RSA key hash successfully.        <- SPL, on the burn boot
 ## Verified-boot: 1                          <- every boot after
 conf: sha256,rsa2048:dev+                    <- U-Boot verifying boot.img (the key name hint stays "dev")
 ```
+
+These are **UART** lines: connect a 3.3 V USB-serial adapter to the debug header (115200 8N1) and
+capture from power-on. `## Verified-boot:` is printed by the Rockchip SPL/U-Boot secure-boot code
+**before Linux starts**, so it is visible even on a non-dev image whose kernel console is stripped —
+watching the first lines after power-on is the quickest way to tell a fused, enforcing board (`1`)
+from an unfused one (`0`). Once the kernel is up, the same state also shows as `fuse.programmed=` on
+`/proc/cmdline`.
 
 The SPL refuses to burn unless the key it holds hashes to its DTB's `hash@np`, and it reads the OTP
 back afterwards, so "Write RSA key hash successfully" means the OTP holds exactly that value. On the
@@ -886,7 +897,7 @@ if (env) {
 
 On an **unsigned** build, whatever `sys_bootargs` the env partition holds is merged into the kernel
 command line. The SD image carries
-`sys_bootargs= root=/dev/mmcblk1p7 rootfstype=squashfs rk_dma_heap_cma=1M` at sector 0, and no signature covers any of it (bench row A4 confirmed the same on
+`sys_bootargs= root=/dev/mmcblk1p6 rootfstype=squashfs rk_dma_heap_cma=1M` at sector 0, and no signature covers any of it (bench row A4 confirmed the same on
 NAND). An attacker who can write the env partition adds `rdinit=`, `init=` and `root=`, and a genuine
 signed kernel boots into their own root filesystem without ever running the initramfs verifier —
 trivial on SD boards, where it sits on the removable card, and reachable on NAND boards through
@@ -924,8 +935,7 @@ Mitigations for full lockdown, in order of preference:
 2. **Remove `sys_bootargs`, `blkdevparts` and `mtdparts` from `CONFIG_ENVF_LIST`** (or disable
    `CONFIG_ENVF`) and carry those values in the compiled-in default environment inside the signed
    `uboot.img`. This repo delivers its partition layout through `RK_PARTITION_CMD_IN_ENV` (see
-   `opt/luckfox/patches/luckfox-sdk/001-optimize-mini-spi-nand-partitions.patch`), so that path would
-   have to move.
+   `opt/luckfox/apply-partition-layout.sh`), so that path would have to move.
 3. **Pin the rootfs device inside the initramfs** instead of reading `root=`.
 
 Only (1) closes the whole class; (2) and (3) are defence in depth.
@@ -1044,9 +1054,8 @@ DTS is currently a no-op. The `&rng` pin, by contrast, is real and working (see
 
 ### 5.1 Rootfs verification: design
 
-The vendor chain stops at `boot.img`. The rootfs is a separate partition (103M on the Mini, per
-`opt/luckfox/patches/luckfox-sdk/001-optimize-mini-spi-nand-partitions.patch`), so closing that gap
-was our design.
+The vendor chain stops at `boot.img`. The rootfs is a separate partition (113M on the Mini, per
+`opt/luckfox/apply-partition-layout.sh`), so closing that gap was our design.
 
 **Where verification logic can run:**
 
@@ -1140,8 +1149,8 @@ same RSA signature that protects the kernel. The signature, the public key and t
 rewrites `boot.img` ([airgapped-signing.md](airgapped-signing.md#changing-the-rootfs-key)).
 
 **Boot flow.** The medium-specific setup happens in the signed DTB: NAND bakes
-`ubi.mtd=6`/`ubi.block=0,rootfs` (UBI auto-attach), MicroSD/eMMC bake `rootfstype=squashfs` next to the
-stock `root=/dev/mmcblk1p7` — required because on a signed FIT U-Boot ignores the env partition's
+`ubi.mtd=5`/`ubi.block=0,rootfs` (UBI auto-attach), MicroSD/eMMC bake `rootfstype=squashfs` next to
+`root=/dev/mmcblk1p6` (stock was p7 before the `oem` partition was removed) — required because on a signed FIT U-Boot ignores the env partition's
 `sys_bootargs` entirely ([§4.6](#46-the-kernel-command-line-envf-and-autoboot)). `/init` then reads
 `root=` from the command line to learn the presentation (squashfs-on-ubiblock, raw UBIFS, or
 raw-partition squashfs at `/dev/mmcblk*`), waits for the device, checks whether secure boot is fused on
@@ -1655,6 +1664,22 @@ Everything learned along the way, kept so the reasoning behind the current desig
 Question numbers (Q1–Q17) are the original ones from when this document was a feasibility report;
 other docs and commits refer to them.
 
+**Proven on silicon.** The bench runs behind the claims in this document:
+
+- 2026-09-12: a Mini fused to the dev key.
+- 2026-09-14: the rootfs verifier on fused and unfused boards.
+- 2026-09-21: a Mini fused to a BIP85-derived key after an on-device re-sign. That run also found,
+  fixed and documented two defects that only a fused board shows
+  ([§7.8](#78-bench-first-fuse-to-a-re-signed-key-2026-09-21)).
+- 2026-09-22: a **MicroSD-only** Mini, re-signed air-gapped and fused from the card alone - no NAND
+  and no USB at any point ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)).
+- 2026-09-23: a fully fused SD-only Mini ran a tamper spliced into the **unsigned `oem` partition**
+  as root — secure boot verified everything it covers, and simply did not cover `oem`. The partition
+  was removed and its content folded into the signed rootfs; on re-test the normal re-signed card
+  boots (camera works), the equivalent tamper is now **rejected at rootfs verification**, and the
+  folded images boot with a working camera on SPI-NAND and eMMC too
+  ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
+
 ### 7.1 Open questions
 
 - **Q4.** Is the OTP public-key-hash region on RV1106 write-locked independently, and does burning it
@@ -1934,7 +1959,53 @@ signature is exercised for real (an unfused board skips it unless the forced che
 Unchanged from §7.8: F1 and F2 would still have bricked this board without their fixes, and here
 there would have been no maskrom route back - only rewriting the card.
 
-### 7.10 Provenance
+### 7.10 Bench: oem-partition tamper (2026-09-23)
+
+**The hole.** Secure boot verifies three tiers — the loader, both FIT images, and the rootfs. It did
+**not** cover the `oem` partition: a plain, unsigned ext4 (SD/eMMC) / UBI (NAND) volume the board mounts
+at `/oem`, from which `/oem/usr/bin/RkLunch.sh` (the camera launcher) and `/oem/usr/ko/insmod_ko.sh` run
+as **root** every boot, with no integrity check.
+
+| # | Test | Result | Bearing |
+|---|---|---|---|
+| H1 | On a **fully fused** SD-only Pico Mini, splice two marker `echo`s into `RkLunch.sh`'s comment block in the `oem` partition, leaving the entire signed chain byte-identical | SPL/U-Boot print `## Verified-boot: 1`; `/init` verifies the minisign rootfs; the spliced lines run | The signed chain verifies exactly as usual — `oem` was simply not part of it |
+| H2 | Observe what the marker runs as | printed `uid=0` | A card-writer gets **root code execution** on a locked board, and secure boot does nothing to stop it |
+
+**Why this was severe.** On an SD-only board the `oem` partition is rewritable with a card reader
+alone; on NAND it is reachable with a programmer or through the `sd_update` path. The one thing secure
+boot is meant to prevent — running attacker code on a locked device — was one `echo` away.
+
+**The fix.** `oem` was removed as a partition and folded into the signed rootfs:
+[`apply-partition-layout.sh`](../../opt/luckfox/apply-partition-layout.sh) drops the `oem` element from
+every board's `RK_PARTITION_CMD_IN_ENV` / `RK_PARTITION_FS_TYPE_CFG` and sets
+`RK_BUILD_APP_TO_OEM_PARTITION=n`, so the SDK's `build_firmware()` copies the pruned `oem` tree into
+`<rootfs>/oem` before the squashfs is packed. The camera `iqfiles`, the `.ko` modules and `RkLunch.sh`
+are then covered by tier C. No verifier was added — the untrusted partition left the execution path by
+construction. [`prepare-oem-for-rootfs.sh`](../../opt/luckfox/prepare-oem-for-rootfs.sh) repoints
+`RkLunch.sh`'s `core_pattern` at `/tmp` (the folded `/oem` is read-only, and a core is a copy of root
+memory holding seed material), and `assert-kernel-network.sh` (with `REQUIRE_OEM=1`) still scans the
+folded `/oem/usr/ko` for stray wireless modules and hard-fails if the fold did not happen.
+
+**Hardware-confirmed (2026-09-23).** A CI Mini SD release (`…-300`) was re-signed to the board's
+key on a Pico Pi (boot key `a0c79bd9…`, rootfs key `B7CF7678AC31ADDA`), then rebuilt with
+`luckfox_release.py sd-image` into two cards. On the **fused** SD-only Mini:
+
+| # | Test | Result | Bearing |
+|---|---|---|---|
+| H3 | Boot the **normal** re-signed card | the full chain verifies and the app starts; the camera works | The folded `iqfiles`/`.ko` are correct, and tier C now covers `/oem` |
+| H4 | Boot the **tampered** card — the same trick (a marker spliced into `/oem/usr/bin/RkLunch.sh`), with `boot.img` left signed | rootfs verification fails | The H1/H2 attack has no target: `/oem` is inside the signed rootfs, so the tamper is rejected before `RkLunch.sh` can run |
+
+`check` reports the normal folder `RESULT: VALID` and the tampered folder `RESULT: INVALID`
+(`rootfs does not match its signature`). The tampered squashfs was padded back to the signed length
+so the rejection is purely content, not a short read; the two cards differ only inside the rootfs
+partition.
+
+**All three media.** The same run's folded images also boot on a **SPI-NAND** Mini (the `ubi.mtd`
+6→5 signed bake) and an **eMMC** Pico Pi (the eMMC partition layout) — so the fold is not an SD-only
+fix and the NAND/eMMC bootargs follow the new partition index. The camera works on all three, so the
+folded `iqfiles`/`.ko` are correct on SD, NAND and eMMC alike.
+
+### 7.11 Provenance
 
 This work started as a feasibility study because **no public Rockchip secure boot document covers
 RV1103/RV1106**. Three were reviewed:

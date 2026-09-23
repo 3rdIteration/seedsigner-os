@@ -32,12 +32,13 @@ Start with [`docs/luckfox/secure-boot.md`](../../../docs/luckfox/secure-boot.md)
 | `minisign.py` | Sign / verify the **rootfs** with minisign (Ed25519) **in pure Python** — no `minisign-host` binary. `keygen --entropy` turns 32 bytes of BIP85 entropy straight into the keypair, so the rootfs key is reproducible from a seed and need never be stored. Byte-compatible with the vendored binary. Tested by `tests/test_minisign.py`. |
 | `verify-fit-payloads.py` | Parse a FIT; list payloads and recomputed hashes, dump the signature node, or compare two images' payloads (release vs rebuild). |
 
-## Why enforcement is not an auto-applied SDK patch
+## Why enforcement is not an auto-applied SDK edit
 
-The patches in `../patches/luckfox-sdk/` run on *every* build. Signature
-**enforcement** there would brick every unsigned build, because a build whose
-images are not subsequently signed would refuse to boot. Enforcement must
-therefore be opt-in and always paired with a signing step.
+The build's automatic SDK customisations (`apply_sdk_patches` in `os-build.sh` /
+`build-local.sh`, and the partition layout in `apply-partition-layout.sh`) run on
+*every* build. Signature **enforcement** there would brick every unsigned build,
+because a build whose images are not subsequently signed would refuse to boot.
+Enforcement must therefore be opt-in and always paired with a signing step.
 
 That pairing is what `SEEDSIGNER_FIT_SIGNATURE=1` does: `apply_fit_signature_config`
 in `os-build.sh` / `build-local.sh` flips the defconfig *and* provisions the keys

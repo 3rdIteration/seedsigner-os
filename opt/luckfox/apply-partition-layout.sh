@@ -27,9 +27,50 @@
 # nowhere to store settings. Three copies of a layout is how that happens, so
 # there is now one.
 #
+# THE oem PARTITION IS REMOVED AND ITS CONTENT IS FOLDED INTO THE SIGNED ROOTFS.
+# Luckfox secure boot verifies the loader, both FIT images and the rootfs — it
+# does NOT verify the oem partition, yet the board mounts oem at /oem and runs
+# /oem/usr/bin/RkLunch.sh and /oem/usr/ko/insmod_ko.sh as root on every boot. A
+# proof-of-concept on a fully fused board (2026-09-23) spliced two `echo`s into
+# RkLunch.sh on an otherwise byte-identical signed chain: the board verified the
+# rootfs, then ran the tamper as uid 0. oem is therefore not part of the trusted
+# boot path and cannot be made so by a userspace check.
+#
+# The fix is to remove it by construction. Setting
+#   RK_BUILD_APP_TO_OEM_PARTITION=n
+# makes the SDK's build_firmware() copy the staged (and pruned) oem tree into the
+# rootfs staging directory before the rootfs squashfs is packed — build.sh:
+#
+#     __PACKAGE_ROOTFS ; __PACKAGE_OEM ; __RUN_PRE_BUILD_OEM_SCRIPT
+#     if [ "$RK_BUILD_APP_TO_OEM_PARTITION" = "y" ]; then
+#         build_mkimg oem $RK_PROJECT_PACKAGE_OEM_DIR          # separate partition
+#     else
+#         __COPY_FILES $RK_PROJECT_PACKAGE_OEM_DIR $RK_PROJECT_PACKAGE_ROOTFS_DIR/oem
+#         rm -rf $RK_PROJECT_PACKAGE_OEM_DIR                   # folded into rootfs
+#     fi
+#     ... build_mkimg rootfs $RK_PROJECT_PACKAGE_ROOTFS_DIR
+#
+# so the camera iqfiles, the .ko modules and RkLunch.sh all end up inside the
+# squashfs, which the rootfs signature (tier C) already covers. The `oem`
+# element is removed from every partition table and every filesystem mount
+# config; the space it used is added to the (last) rootfs partition. No verifier
+# code, no hashing, no freeze: the untrusted partition leaves the execution path
+# by construction.
+#
+# The partition tables live in the SDK board configs under
+# project/cfg/BoardConfig_IPC/, in two variables:
+#   RK_PARTITION_CMD_IN_ENV   the `<size>(name),...` list (also the SD card's
+#                             blkdevparts via env.img)
+#   RK_PARTITION_FS_TYPE_CFG  the `name@mountpoint@fstype,...` mount list
+# A stale oem entry in RK_PARTITION_FS_TYPE_CFG with no matching partition is a
+# hard error in the SDK (__GET_TARGET_PARTITION_FS_TYPE exits), so both must go
+# together.
+#
 # Sizes are chosen so rootfs stays LAST and userdata sits at a fixed offset before
 # it: rootfs can then grow in a later revision without moving userdata, which would
-# otherwise orphan the settings of every already-flashed device.
+# otherwise orphan the settings of every already-flashed device. (Removing the
+# oem entry necessarily shifts userdata earlier by the oem size, so every device
+# is reflashed with the new table; nothing at runtime hardcodes the offset.)
 
 set -eu
 
@@ -44,64 +85,111 @@ log()  { echo "  [parts] $*"; }
 fail() { echo "  [parts] ❌ $*" >&2; exit 1; }
 
 CFG_DIR="$LUCKFOX_DIR/project/cfg/BoardConfig_IPC"
-MINI_FILE="$CFG_DIR/BoardConfig-SPI_NAND-Buildroot-RV1103_Luckfox_Pico_Mini-IPC.mk"
-MAX_FILE="$CFG_DIR/BoardConfig-SPI_NAND-Buildroot-RV1106_Luckfox_Pico_Pro_Max-IPC.mk"
-PI_FILE="$CFG_DIR/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Pi-IPC.mk"
+NAND_MINI="$CFG_DIR/BoardConfig-SPI_NAND-Buildroot-RV1103_Luckfox_Pico_Mini-IPC.mk"
+NAND_MAX="$CFG_DIR/BoardConfig-SPI_NAND-Buildroot-RV1106_Luckfox_Pico_Pro_Max-IPC.mk"
+SD_MINI="$CFG_DIR/BoardConfig-SD_CARD-Buildroot-RV1103_Luckfox_Pico_Mini-IPC.mk"
+SD_MAX="$CFG_DIR/BoardConfig-SD_CARD-Buildroot-RV1106_Luckfox_Pico_Pro_Max-IPC.mk"
+EMMC_PI="$CFG_DIR/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Pi-IPC.mk"
 
 echo "=== Applying Luckfox partition layout ==="
 
-# ------------------------------------------------------------------ Mini (128MB)
-# OEM 30M -> 20M; userdata 6M retained; rootfs 85M -> 93M. Same 119M total as the
-# old userdata-less layout (20M oem + 99M rootfs), with 6M carved out of rootfs.
-[ -f "$MINI_FILE" ] || fail "Mini BoardConfig not found: $MINI_FILE"
-sed -i 's/30M(oem),6M(userdata),85M(rootfs)/20M(oem),6M(userdata),93M(rootfs)/' "$MINI_FILE"
-log "Mini: oem 20M, userdata 6M, rootfs 93M"
+part_line() { grep -E '^[[:space:]]*export[[:space:]]+RK_PARTITION_CMD_IN_ENV=' "$1" | head -n1; }
+fs_line()   { grep -E '^[[:space:]]*export[[:space:]]+RK_PARTITION_FS_TYPE_CFG=' "$1" | head -n1; }
 
-# ------------------------------------------------------------------- Max (256MB)
-# OEM 30M -> 20M; userdata 10M retained (settings + boot log); rootfs 210M -> 217M.
-[ -f "$MAX_FILE" ] || fail "Max BoardConfig not found: $MAX_FILE"
-sed -i 's/30M(oem),10M(userdata),210M(rootfs)/20M(oem),10M(userdata),217M(rootfs)/' "$MAX_FILE"
-log "Max: oem 20M, userdata 10M, rootfs 217M"
+# Delete the oem entry from RK_PARTITION_FS_TYPE_CFG for a given fstype (ubifs or
+# ext4). Anchored on `oem@/oem@` so a userdata/rootfs entry can never be touched.
+strip_oem_fs() {
+    sed -i "s|,oem@/oem@${2}||" "$1"
+}
 
-# --------------------------------------------------------------------- Pi (eMMC)
-# Nothing is edited: the SDK's own layout already has 256M(userdata) and eMMC has
-# space to spare. But an unconditional "retained" message is not a check — it
-# would keep reporting a partition that a future SDK bump had removed — so assert
-# both halves instead.
-[ -f "$PI_FILE" ] || fail "Pi BoardConfig not found: $PI_FILE"
-PI_PARTITION="$(grep 'RK_PARTITION_CMD_IN_ENV=' "$PI_FILE" | head -1)"
-PI_FS_TYPE="$(grep 'RK_PARTITION_FS_TYPE_CFG=' "$PI_FILE" | head -1)"
-echo "$PI_PARTITION" | grep -q '(userdata)' \
-    || fail "Pi eMMC partition table has no userdata partition: $PI_PARTITION"
-echo "$PI_FS_TYPE" | grep -q 'userdata@/userdata@' \
-    || fail "Pi eMMC fs config does not mount userdata: $PI_FS_TYPE"
-log "Pi: userdata retained (SDK default, 256M ext4) — verified, not assumed"
+# Set RK_BUILD_APP_TO_OEM_PARTITION=n (fold oem into the rootfs). Idempotent.
+fold_oem_flag() {
+    sed -i -E 's|^([[:space:]]*export[[:space:]]+RK_BUILD_APP_TO_OEM_PARTITION=).*|\1n|' "$1"
+}
+
+# ------------------------------------------------------------------ NAND Mini (128MB)
+# SDK default: 30M(oem),6M(userdata),85M(rootfs). oem removed, its 20M (the
+# pruned size this repo used) folded into rootfs: 93M -> 113M, so the total stays
+# at 119M (the previous 20/6/93 layout).
+[ -f "$NAND_MINI" ] || fail "NAND Mini BoardConfig not found: $NAND_MINI"
+sed -i 's/30M(oem),6M(userdata),85M(rootfs)/6M(userdata),113M(rootfs)/' "$NAND_MINI"
+strip_oem_fs "$NAND_MINI" ubifs
+fold_oem_flag "$NAND_MINI"
+log "Mini (NAND): oem removed, userdata 6M, rootfs 113M"
+
+# ------------------------------------------------------------------- NAND Max (256MB)
+# SDK default: 30M(oem),10M(userdata),210M(rootfs). oem's 20M folded into rootfs:
+# 217M -> 237M, so the total stays 247M (the previous 20/10/217 layout).
+[ -f "$NAND_MAX" ] || fail "NAND Max BoardConfig not found: $NAND_MAX"
+sed -i 's/30M(oem),10M(userdata),210M(rootfs)/10M(userdata),237M(rootfs)/' "$NAND_MAX"
+strip_oem_fs "$NAND_MAX" ubifs
+fold_oem_flag "$NAND_MAX"
+log "Max (NAND): oem removed, userdata 10M, rootfs 237M"
+
+# --------------------------------------------------------- Mini/Max/Pi (SD/eMMC)
+# The MicroSD and eMMC board configs all carry the same `32M(boot),512M(oem),
+# 256M(userdata),6G(rootfs)` shape. oem 512M removed and added to the (last)
+# rootfs: 6G -> 6656M. The eMMC Pi previously needed no edit because only its
+# userdata mount was checked; it now gets the same treatment as the SD boards so
+# one layout rule covers all four non-NAND profiles.
+apply_ext4_board() {
+    local file="$1" label="$2"
+    [ -f "$file" ] || fail "$label BoardConfig not found: $file"
+    sed -i 's/32M(boot),512M(oem),256M(userdata),6G(rootfs)/32M(boot),256M(userdata),6656M(rootfs)/' "$file"
+    strip_oem_fs "$file" ext4
+    fold_oem_flag "$file"
+    log "$label (ext4): oem removed, userdata 256M, rootfs 6656M"
+}
+apply_ext4_board "$SD_MINI" "SD Mini"
+apply_ext4_board "$SD_MAX"  "SD Max"
+apply_ext4_board "$EMMC_PI" "EMMC Pi"
 
 # ------------------------------------------------------------------ verification
-# Hard failures. A silently unpatched table ships a board with no userdata
-# partition, which has no visible symptom at build time and shows up only when a
-# user loses their settings.
+# Hard failures. A silently unpatched table would ship a board that either still
+# has an untrusted oem partition or (worse) no /oem at all — the camera tuning
+# files and .ko would be missing, which builds green and shows up only as a dead
+# camera on hardware.
 echo ""
-MINI_PARTITION="$(grep 'RK_PARTITION_CMD_IN_ENV=' "$MINI_FILE" | head -1)"
-MAX_PARTITION="$(grep 'RK_PARTITION_CMD_IN_ENV=' "$MAX_FILE" | head -1)"
-log "Mini table: $MINI_PARTITION"
-log "Max table:  $MAX_PARTITION"
+for entry in "$NAND_MINI" "$NAND_MAX" "$SD_MINI" "$SD_MAX" "$EMMC_PI"; do
+    name="$(basename "$entry")"
+    pl="$(part_line "$entry")"
+    fl="$(fs_line "$entry")"
 
-echo "$MINI_PARTITION" | grep -q '6M(userdata),93M(rootfs)' \
-    || fail "Mini partition layout unexpected: $MINI_PARTITION"
-log "✅ Mini partition VERIFIED"
+    # No oem partition anywhere, and no oem mount config.
+    echo "$pl" | grep -q '(oem)' \
+        && fail "oem partition still present in $name: $pl"
+    echo "$fl" | grep -q 'oem@' \
+        && fail "oem mount still present in $name: $fl"
 
-echo "$MAX_PARTITION" | grep -q '10M(userdata),217M(rootfs)' \
-    || fail "Max partition layout unexpected: $MAX_PARTITION"
-log "✅ Max partition VERIFIED"
+    # userdata must remain: it is the partition that keeps on-device settings.
+    echo "$pl" | grep -q '(userdata)' \
+        || fail "userdata partition missing from $name: $pl"
+    echo "$fl" | grep -q 'userdata@/userdata@' \
+        || fail "userdata mount missing from $name: $fl"
 
-# The filesystem config must still MOUNT userdata on every board. Keeping the
-# partition but dropping its mountpoint would give a device with the space
-# allocated and nothing able to use it.
-for f in "$MINI_FILE" "$MAX_FILE" "$PI_FILE"; do
-    grep -q 'userdata@/userdata@' "$f" \
-        || fail "userdata mount missing from fs config in $(basename "$f")"
+    # rootfs must stay last, so growing it later never moves userdata.
+    echo "$pl" | grep -qE ',[0-9]+[KMG]\(rootfs\)"?[[:space:]]*$' \
+        || fail "rootfs is not the last partition in $name: $pl"
+
+    # oem must be folded into the rootfs at pack time.
+    grep -qE '^[[:space:]]*export[[:space:]]+RK_BUILD_APP_TO_OEM_PARTITION=n[[:space:]]*$' "$entry" \
+        || fail "RK_BUILD_APP_TO_OEM_PARTITION is not 'n' in $name — oem would be a separate, unsigned partition"
 done
-log "✅ userdata mounted on all three boards"
 
+# Exact expected tables, checked as whole substrings so a partial/renamed patch
+# fails loudly rather than shipping a subtly different layout.
+part_line "$NAND_MINI" | grep -q '4M(boot),6M(userdata),113M(rootfs)"' \
+    || fail "Mini NAND partition layout unexpected: $(part_line "$NAND_MINI")"
+part_line "$NAND_MAX" | grep -q '4M(boot),10M(userdata),237M(rootfs)"' \
+    || fail "Max NAND partition layout unexpected: $(part_line "$NAND_MAX")"
+for entry in "$SD_MINI" "$SD_MAX" "$EMMC_PI"; do
+    part_line "$entry" | grep -q '32M(boot),256M(userdata),6656M(rootfs)"' \
+        || fail "$(basename "$entry") partition layout unexpected: $(part_line "$entry")"
+done
+
+log "Mini table:  $(part_line "$NAND_MINI")"
+log "Max table:   $(part_line "$NAND_MAX")"
+log "SD/Pi table: $(part_line "$SD_MINI")"
+log "✅ no oem partition on any board; userdata retained and mounted; rootfs last"
+log "✅ oem folded into the signed rootfs (RK_BUILD_APP_TO_OEM_PARTITION=n)"
 echo "=== partition layout applied ==="

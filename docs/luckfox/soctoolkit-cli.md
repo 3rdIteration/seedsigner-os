@@ -118,9 +118,12 @@ SocToolkit log or its partition table rather than reusing these.
 | `idblock.img` | 512 | 512 |
 | `uboot.img` | 1024 | 1024 |
 | `boot.img` | 2048 | 8192 |
-| `oem.img` | 10240 | 40960 |
-| `userdata.img` | 51200 | 12288 |
-| `rootfs.img` | 63488 | 190464 |
+| `userdata.img` | 10240 | 12288 |
+| `rootfs.img` | 22528 | 231424 |
+
+(`oem` used to sit between `boot` and `userdata`; since 2026-09-23 it is not a
+partition — its content is folded into `rootfs`, and the following partitions
+shift up by its 40960 sectors.)
 
 ## Recipe: flash a bundle by hand
 
@@ -133,8 +136,8 @@ $id = "<LocationID from ld>"
 & $t ld                                   # expect Mode=Maskrom, empty SerialNo
 & $t -s $id db "$b\download.bin"          # expect "Download boot ok."
 $plan = @(@(0,512,"env.img"), @(512,512,"idblock.img"), @(1024,1024,"uboot.img"),
-          @(2048,8192,"boot.img"), @(10240,40960,"oem.img"),
-          @(51200,12288,"userdata.img"), @(63488,190464,"rootfs.img"))
+          @(2048,8192,"boot.img"),
+          @(10240,12288,"userdata.img"), @(22528,231424,"rootfs.img"))
 foreach ($p in $plan) { & $t -s $id wl $p[0] $p[1] "$b\$($p[2])" }
 & $t -s $id rl 512 512 "$env:TEMP\idblock-readback.img"   # compare the first len(idblock.img) bytes
 & $t -s $id rd

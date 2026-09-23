@@ -58,14 +58,14 @@ fi
 # --------------------------------------------------------------------------- 2
 # Camera ISP iqfiles prune MOVED OUT of this script (2026-08-06).
 #
-# It used to live here and silently did nothing in every build: the oem
-# partition is assembled by the SDK's __PACKAGE_OEM, which runs inside
-# `build.sh firmware` — i.e. AFTER this script — so the iqfiles directory did
-# not exist yet and the prune always hit its "not found" branch. It now runs
-# from opt/luckfox/prune-oem-iqfiles.sh, invoked via the SDK's
+# It used to live here and silently did nothing in every build: the oem tree is
+# assembled by the SDK's __PACKAGE_OEM, which runs inside `build.sh firmware` —
+# i.e. AFTER this script — so the iqfiles directory did not exist yet and the
+# prune always hit its "not found" branch. It now runs from
+# opt/luckfox/prune-oem-iqfiles.sh, invoked via the SDK's
 # __RUN_PRE_BUILD_OEM_SCRIPT hook (installed by patch-oem-pre-hook.sh), which
-# fires after __PACKAGE_OEM and before build_mkimg creates oem.img — the one
-# window where the staged oem tree exists and is still editable.
+# fires after __PACKAGE_OEM and before the tree is folded into the rootfs /
+# packed — the one window where the staged oem tree exists and is still editable.
 
 # --------------------------------------------------------------------------- 3
 # UI-first camera bring-up marker (read by start-seedsigner.sh). OPT-IN only:
