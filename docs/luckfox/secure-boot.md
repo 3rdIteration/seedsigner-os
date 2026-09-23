@@ -25,7 +25,7 @@ and hardware-proven**:
     partition** as root — secure boot verified everything it covers, and simply did not cover `oem`.
     The partition was removed and its content folded into the signed rootfs; on re-test the normal
     re-signed card boots (camera works), the equivalent tamper is now **rejected at rootfs
-    verification**, and the folded images boot on SPI-NAND and eMMC too
+    verification**, and the folded images boot with a working camera on SPI-NAND and eMMC too
     ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
 
 **Where to start**
@@ -1987,8 +1987,8 @@ partition.
 
 **All three media.** The same run's folded images also boot on a **SPI-NAND** Mini (the `ubi.mtd`
 6→5 signed bake) and an **eMMC** Pico Pi (the eMMC partition layout) — so the fold is not an SD-only
-fix and the NAND/eMMC bootargs follow the new partition index. Camera was confirmed on the Mini; it
-was not separately checked on the Pi/NAND boards.
+fix and the NAND/eMMC bootargs follow the new partition index. The camera works on all three, so the
+folded `iqfiles`/`.ko` are correct on SD, NAND and eMMC alike.
 
 ### 7.11 Provenance
 
