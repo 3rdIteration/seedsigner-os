@@ -23,8 +23,9 @@ and hardware-proven**:
     NAND and no USB at any point ([§7.9](#79-bench-re-signed-microsd-image-2026-09-22)).
   - 2026-09-23: a fully fused SD-only Mini ran a tamper spliced into the **unsigned `oem`
     partition** as root — secure boot verified everything it covers, and simply did not cover `oem`.
-    That partition is now removed and its content folded into the signed rootfs
-    ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
+    The partition was removed and its content folded into the signed rootfs; on re-test the normal
+    re-signed card boots (camera works) and the equivalent tamper is now **rejected at rootfs
+    verification** ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
 
 **Where to start**
 
@@ -1969,10 +1970,19 @@ construction. [`prepare-oem-for-rootfs.sh`](../../opt/luckfox/prepare-oem-for-ro
 memory holding seed material), and `assert-kernel-network.sh` (with `REQUIRE_OEM=1`) still scans the
 folded `/oem/usr/ko` for stray wireless modules and hard-fails if the fold did not happen.
 
-> **Not yet re-run on hardware.** The build assertions prove the partition is gone and the `/oem`
-> content is inside the rootfs, but camera bring-up on a folded image and the negative test (no
-> unsigned partition left in the boot path) still need a bench pass — a wrong or missing tuning file
-> breaks the camera with a green build.
+**Hardware-confirmed (2026-09-23).** A CI Mini SD release (`…-300`) was re-signed to the board's
+key on a Pico Pi (boot key `a0c79bd9…`, rootfs key `B7CF7678AC31ADDA`), then rebuilt with
+`luckfox_release.py sd-image` into two cards. On the **fused** SD-only Mini:
+
+| # | Test | Result | Bearing |
+|---|---|---|---|
+| H3 | Boot the **normal** re-signed card | the full chain verifies and the app starts; the camera works | The folded `iqfiles`/`.ko` are correct, and tier C now covers `/oem` |
+| H4 | Boot the **tampered** card — the same trick (a marker spliced into `/oem/usr/bin/RkLunch.sh`), with `boot.img` left signed | rootfs verification fails | The H1/H2 attack has no target: `/oem` is inside the signed rootfs, so the tamper is rejected before `RkLunch.sh` can run |
+
+`check` reports the normal folder `RESULT: VALID` and the tampered folder `RESULT: INVALID`
+(`rootfs does not match its signature`). The tampered squashfs was padded back to the signed length
+so the rejection is purely content, not a short read; the two cards differ only inside the rootfs
+partition.
 
 ### 7.11 Provenance
 
