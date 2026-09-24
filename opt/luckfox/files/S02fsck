@@ -164,7 +164,10 @@ EOF
                                 log_fsck "FAT partition $dev mounted read-only at $mntpt; unmounting to repair"
                                 if umount "$dev" 2>>"$FSCK_LOG"; then
                                     run_fsck_fat "$dev"
-                                    mount "$dev" "$mntpt" 2>>"$FSCK_LOG" \
+                                    # Only removable media is ever FAT on these boards, and it is
+                                    # untrusted: remount with the same options fat-fsck-hotplug uses
+                                    # (a bare mount here would drop noexec,nosuid,nodev).
+                                    mount -o sync,noexec,nosuid,nodev "$dev" "$mntpt" 2>>"$FSCK_LOG" \
                                         && log_fsck "Remounted $dev at $mntpt" \
                                         || log_fsck "WARNING: could not remount $dev at $mntpt"
                                 else

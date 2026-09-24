@@ -23,6 +23,10 @@ On every microSD insert, `/etc/mdev/mdev.sh` (source: [`opt/rootfs-overlay/etc/m
 4. Mounts the squashfs at `/mnt/diy` **only if the hashes match**. Any other outcome (file absent, hash
    mismatch, missing pin file) refuses to mount — an unverified image is never mounted.
 
+The microSD itself is mounted `noexec,nosuid,nodev` (untrusted removable media; see AGENTS.md). The `/mnt/diy`
+squashfs mount is deliberately left without those options: its content is trusted by construction via the pinned
+hash, and the tools inside (JDK/Ant) may need to be executed.
+
 ## The log: `/tmp/diy-mount.log`
 
 Every insert/remove appends to `/tmp/diy-mount.log`. Notes for reading it:

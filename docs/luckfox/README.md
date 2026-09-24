@@ -112,6 +112,7 @@ rootfs squashfs and are covered by the rootfs signature.
 | **USB gadget** (ADB + RNDIS) | DTS `dr_mode = "host"`: dwc3 registers host-only so **`/sys/class/udc/` is empty and a configfs gadget has nothing to bind to** — root cannot re-enable adb at runtime. Plus adb userspace strip: stub `adbd`/`usbdevice`, blank the gadget function config, comment gadget lines in `RkLunch.sh`. `S*usb*` init scripts are **kept** — `S50usbdevice` mounts configfs (the SPI display depends on it) and is patched host-aware instead | `configure-usb-mode.sh` + `harden-nondev.sh` (`HARDEN_DISABLE_ADB=1`) + `patch-s50usbdevice.sh` |
 | Logging daemons | remove `syslogd`/`klogd` autostart | `harden-nondev.sh` |
 | Dev / network CLI tools | drop `python-pip`, `wget`, `libcurl`/curl from the target | defconfig sed |
+| Untrusted storage mounts | `/userdata` (the only untrusted writable partition) and removable FAT cards mount `noexec,nosuid,nodev` — all variants. The SDK does not use fstab for these partitions: it generates `/etc/init.d/S20linkmount`, whose template lives in `project/build.sh` and is re-copied into the rootfs during `build.sh firmware` (after harden-nondev.sh), so only a generator patch survives | `patch-linkmount-hardening.sh` (via apply_sdk_patches, all three builds), `files/fat-fsck-hotplug`, `files/S02fsck` |
 
 **Kernel symbols that must stay enabled** — each would break the device:
 `CONFIG_NET`/`CONFIG_UNIX` (pcscd uses an AF_UNIX socket; dropping `NET` kills smartcards),
@@ -139,7 +140,8 @@ userspace step is **guarded/no-op if the target is absent** and logs each file i
 log lines, then verify on hardware. As root on the device: `ip link` shows no `eth0` and `ifconfig eth0 up`
 **fails**; no wifi `.ko` exists under `/oem/usr/ko` to `insmod`; `ls /sys/class/udc/` is **empty** and
 `adb devices` finds nothing; nothing listens on `:22`/`:23` and no DHCP requests appear on the LAN; no
-console output or login prompt on the serial header; no `syslogd`/`klogd`; `which pip curl wget` empty. Also
+console output or login prompt on the serial header; no `syslogd`/`klogd`; `which pip curl wget` empty;
+`mount | grep -E 'userdata|microsd'` shows `noexec,nosuid,nodev` on both. Also
 confirm the things the strip must *not* have broken: **display** (the configfs canary), **camera** (modules
 still load from `/oem/usr/ko`) and **smartcards** (the AF_UNIX/pcscd path). The reboot-to-Loader Power option
 / `rk-reboot` is retained in **both** variants.

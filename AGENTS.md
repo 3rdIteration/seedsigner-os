@@ -175,6 +175,7 @@ Non-dev (production) images are **air-gapped and headless by design** — they m
 | **Kernel serial console** | no `console=<serial>`, no `earlyprintk`; route the console to a null sink via `console=ttynull` + `CONFIG_NULL_TTY=y` | cmdline (`boot_cmdline.txt` / `extlinux.conf`) + kernel config |
 | **Serial login prompt** | `# BR2_TARGET_GENERIC_GETTY is not set` (no getty on any tty) | defconfig |
 | **System logging daemons** | `post-build.sh` removes `S01syslogd` / `S02klogd` | post-build.sh |
+| **Untrusted storage mounts** | `/mnt/microsd` (removable media) mounts `noexec,nosuid,nodev` — all profiles, dev and non-dev; nothing legitimate execve's from the card. The hash-pinned DIY squashfs at `/mnt/diy` is deliberately left unhardened (see caveats below) | `opt/rootfs-overlay/etc/mdev/mdev.sh` |
 
 **Luckfox Pico closes the same vectors differently** (Rockchip SDK; no HDMI; its extra vectors are the USB
 gadget and — on Pro Max / Pico Pi — Ethernet). All of it lives in shared `opt/luckfox/*.sh` scripts called
@@ -204,6 +205,16 @@ still scans the folded payload for stray wireless modules.
 | **Serial login prompt** | getty/login/sulogin inittab respawn lines commented (console shells left intact — the app boot path uses one) | `harden-nondev.sh` §1 |
 | **System logging daemons** | syslogd/klogd init scripts removed + launches commented | `harden-nondev.sh` §3 |
 | **Boot recovery** | memory-backed U-Boot bootcount → rockusb Loader failover (no serial/adb needed to recover a brick) | `uboot-recovery-config.sh` |
+| **Untrusted storage mounts** | `/userdata` (the only untrusted writable partition) and removable FAT cards mount `noexec,nosuid,nodev` — all variants. The SDK does NOT use fstab for these partitions: it generates `/etc/init.d/S20linkmount`, whose template lives in `project/build.sh` and is re-copied into the rootfs during `build.sh firmware` (after harden-nondev.sh), so only a generator patch survives — same class of fix as the sdkinfo Build Time pin | `patch-linkmount-hardening.sh` (via apply_sdk_patches in all three builds), `files/fat-fsck-hotplug`, `files/S02fsck` |
+
+**Mount options on untrusted storage (both platforms).** The app runs as root, so a planted binary or
+setuid/device file on `/userdata` or a removable card is code execution; `noexec,nosuid,nodev` on those
+mounts is cheap insurance and the natural complement to "userdata is the untrusted store". Caveats: `noexec`
+blocks direct `execve` of a planted binary but not interpreter execution — `sh /mnt/x.sh` still works because
+the shell reads the file as data — and none of it helps if the rootfs itself is compromised (root can copy
+anything to an executable location). It is defence in depth behind the kernel-level controls, not a control on
+its own. The hash-pinned DIY squashfs at `/mnt/diy` is deliberately left unhardened: its content is trusted by
+construction and the tools inside may need to exec.
 
 **Three kernel symbols must never be disabled** (each has bitten us or would break the device):
 `CONFIG_NET`/`CONFIG_UNIX` — `pcscd` uses an AF_UNIX socket, so dropping `NET` kills smartcards;

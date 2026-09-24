@@ -475,6 +475,11 @@ apply_sdk_patches() {
     # the rootfs became read-only squashfs, nowhere writable at all.
     bash "$SEEDSIGNER_LUCKFOX_DIR/apply-partition-layout.sh" "$LUCKFOX_SDK_DIR"
 
+    # Mount /userdata (the only non-IGNORE partition in our layout) noexec,nosuid,nodev:
+    # patches the S20linkmount generator in project/build.sh — see the script for
+    # why the installed init script cannot be patched instead.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-linkmount-hardening.sh" "$LUCKFOX_SDK_DIR"
+
     # Pin ubinize's image_seq and mksquashfs's timestamps. Must run before
     # `build.sh rootfs`, because the pctools step copies these scripts from
     # sysdrv/tools/pc into sysdrv/out/pc and it is the copies that get used.
@@ -3379,7 +3384,7 @@ assert_shared_build_files() {
     local s
     for s in prepare-sdk-checkout.sh rust-toolchain-cache.sh \
              patch-fs-determinism.sh mkfs-ext4-deterministic.sh ss-fs-normalise.sh \
-             apply-partition-layout.sh \
+             apply-partition-layout.sh patch-linkmount-hardening.sh \
               pin-spidev-bufsiz.sh readonly-rootfs.sh \
                 assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
                 assert-uboot-fit-signature.sh lock-kernel-cmdline.sh \

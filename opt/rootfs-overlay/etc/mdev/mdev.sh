@@ -25,7 +25,13 @@ emit_result() {
 if [ "$ACTION" = "add" ] && [ -n "$DEVNAME" ]; then
     log "ADD $DEVNAME: mounting microsd"
     mkdir -p /mnt/microsd
-    if ! mount -o sync "$DEVNAME" /mnt/microsd 2>>"$LOG"; then
+    # The card is untrusted removable media: mount it noexec,nosuid,nodev so a
+    # planted binary or setuid file cannot be executed from it (the app runs as
+    # root). Nothing legitimate execve's from the card — dev builds run the app
+    # via python3, which reads .py files as data. Caveat: noexec blocks direct
+    # execve only; `sh /mnt/microsd/x.sh` still works because the interpreter
+    # reads the file as data (see AGENTS.md).
+    if ! mount -o sync,noexec,nosuid,nodev "$DEVNAME" /mnt/microsd 2>>"$LOG"; then
         emit_result MICROSD_MOUNT_FAILED "could not mount microSD partition $DEVNAME" dev="$DEVNAME"
         exit 1
     fi

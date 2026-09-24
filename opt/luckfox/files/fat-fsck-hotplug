@@ -102,7 +102,9 @@ if [ -n "$mntpt" ]; then
                 fsck.fat -a "$DEV" >> "$FSCK_LOG" 2>&1
                 rc=$?
                 log_msg "fsck.fat on $DEV completed (rc=$rc)"
-                mount "$DEV" "$mntpt" 2>>"$FSCK_LOG" \
+                # Same options as the initial mount below — a bare remount here
+                # would silently drop noexec,nosuid,nodev.
+                mount -o sync,noexec,nosuid,nodev "$DEV" "$mntpt" 2>>"$FSCK_LOG" \
                     && log_msg "Remounted $DEV at $mntpt" \
                     || log_msg "WARNING: could not remount $DEV at $mntpt"
             else
@@ -123,12 +125,14 @@ fi
 
 # Mount the (now-checked) FAT card as SeedSigner's removable media (/mnt/microsd)
 # and notify the running app. The Luckfox SDK does not auto-mount removable media,
-# so this mirrors the Raspberry Pi mdev handler.
+# so this mirrors the Raspberry Pi mdev handler. The card is untrusted: mount it
+# noexec,nosuid,nodev (the app runs as root; nothing legitimate execve's from it —
+# see AGENTS.md for the caveats).
 mkdir -p "$MOUNT_POINT"
 if is_mounted; then
     log_msg "$MOUNT_POINT already mounted; not remounting $DEV"
 else
-    if mount -o sync "$DEV" "$MOUNT_POINT" 2>>"$FSCK_LOG"; then
+    if mount -o sync,noexec,nosuid,nodev "$DEV" "$MOUNT_POINT" 2>>"$FSCK_LOG"; then
         log_msg "Mounted $DEV at $MOUNT_POINT"
         signal_app add
     else
