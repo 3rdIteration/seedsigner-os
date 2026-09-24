@@ -329,6 +329,7 @@ run_build() {
                          SEEDSIGNER_ROOTFS_KEY_DIR SEEDSIGNER_ROOTFS_KEY_PASSPHRASE \
                          SEEDSIGNER_REBUILD_INITRAMFS_BINARIES \
                          SEEDSIGNER_KEEP_SDK_CHECKOUT \
+                         NETWORK_MAX_ATTEMPTS NETWORK_RETRY_DELAY \
                        DISABLE_UART2_CONSOLE_DEBUG \
                        SEEDSIGNER_OS_REPO SEEDSIGNER_OS_BRANCH \
                        SEEDSIGNER_OS_COMMIT SEEDSIGNER_OS_DATE; do

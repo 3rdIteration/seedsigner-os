@@ -72,6 +72,16 @@ export SEEDSIGNER_CODE_DIR="$REPOS_DIR/seedsigner"
 export SEEDSIGNER_OS_PACKAGES_DIR="${SEEDSIGNER_OS_PACKAGES_DIR:-/build/external-packages}"
 export SEEDSIGNER_LUCKFOX_DIR="/build"
 
+# Transient-network retry for the SDK build steps (shared with build-local.sh).
+# BR2_WGET in the defconfig only retries HTTP errors; a TLS failure (e.g. the
+# libraqm download) aborts outright, so the whole SDK step is retried on a
+# transient-looking failure. See retry-network.sh.
+if [ ! -f "$SEEDSIGNER_LUCKFOX_DIR/retry-network.sh" ]; then
+    echo "retry-network.sh missing from $SEEDSIGNER_LUCKFOX_DIR (stale build image?)" >&2
+    exit 1
+fi
+source "$SEEDSIGNER_LUCKFOX_DIR/retry-network.sh"
+
 # Common paths (computed after SDK directory is determined)
 # Placeholder only. The real path is resolved from the unpacked SDK by
 # ensure_buildroot_tree() via resolve-buildroot-dir.sh, because the buildroot
@@ -259,11 +269,14 @@ resolve_uart2_console
 # setarch is util-linux and present in the build image; if it is somehow
 # missing, fall back to running unwrapped rather than failing the build.
 sdk_build() {
+    # Every SDK step (uboot/kernel/rootfs/media/app/firmware) can download, so each
+    # runs under the transient-network retry (retry-network.sh). Buildroot resumes
+    # from its .stamp_* files, so a retry re-attempts only what failed.
     if command -v setarch >/dev/null 2>&1; then
-        setarch "$(uname -m)" -R ./build.sh "$@"
+        retry_sdk_step "build.sh $*" setarch "$(uname -m)" -R ./build.sh "$@"
     else
         print_warning "setarch unavailable -- FIT /memreserve/ will vary between builds"
-        ./build.sh "$@"
+        retry_sdk_step "build.sh $*" ./build.sh "$@"
     fi
 }
 
@@ -3370,7 +3383,7 @@ assert_shared_build_files() {
               pin-spidev-bufsiz.sh readonly-rootfs.sh \
                 assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
                 assert-uboot-fit-signature.sh lock-kernel-cmdline.sh \
-                patch-mtd-part-parse.sh \
+                patch-mtd-part-parse.sh retry-network.sh \
                 patch-otp-size.sh assert-otp-size.sh \
                harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
                strip-whitespace-filenames.sh \

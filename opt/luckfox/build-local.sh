@@ -7,6 +7,16 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Transient-network retry for the SDK build steps (shared with os-build.sh).
+# BR2_WGET in the defconfig only retries HTTP errors; a TLS failure (e.g. the
+# libraqm download) aborts outright, so the whole SDK step is retried on a
+# transient-looking failure. See retry-network.sh.
+if [ ! -f "$SCRIPT_DIR/retry-network.sh" ]; then
+    echo "retry-network.sh missing from $SCRIPT_DIR" >&2
+    exit 1
+fi
+source "$SCRIPT_DIR/retry-network.sh"
 # Build variant: non-dev (hardened/air-gapped) or dev. Override via SEEDSIGNER_BUILD_VARIANT env.
 BUILD_VARIANT="${SEEDSIGNER_BUILD_VARIANT:-non-dev}"
 # USB role (mirrors build-luckfox.yml's usb_mode): gadget|host|otg|auto.
@@ -2209,6 +2219,13 @@ save_rust_toolchain_cache() {
     cd "$WORK_DIR/luckfox-pico"
 }
 
+# Every SDK step (uboot/kernel/rootfs/media/app/firmware) can download, so each
+# runs under the transient-network retry (retry-network.sh), matching os-build.sh.
+# Buildroot resumes from its .stamp_* files, so a retry re-attempts only what failed.
+sdk_build() {
+    retry_sdk_step "build.sh $*" ./build.sh "$@"
+}
+
 build_system() {
     print_header "Building System Components"
     
@@ -2231,7 +2248,7 @@ build_system() {
     fi
 
     print_info "Building U-Boot..."
-    ./build.sh uboot
+    sdk_build uboot
 
     # Assert FIT signature enforcement actually landed in the built U-Boot .config
     # (SEEDSIGNER_FIT_SIGNATURE=1 only) — Kconfig can silently drop it, leaving a
@@ -2239,7 +2256,7 @@ build_system() {
     bash "$SCRIPT_DIR/assert-uboot-fit-signature.sh" "$WORK_DIR/luckfox-pico"
 
     print_info "Building Kernel..."
-    ./build.sh kernel
+    sdk_build kernel
 
     # Assert the strip took effect against the GENERATED .config — Kconfig
     # silently drops defconfig lines whose symbol/deps don't resolve.
@@ -2255,16 +2272,16 @@ build_system() {
     fi
 
     print_info "Building Rootfs..."
-    ./build.sh rootfs
+    sdk_build rootfs
     
     print_info "Building Media..."
-    ./build.sh media
+    sdk_build media
     
     # Keep vendor RkLunch.sh camera bring-up behavior on all builds.
     print_info "Keeping RkLunch.sh rkipc autostart enabled"
     
     print_info "Building Applications..."
-    ./build.sh app
+    sdk_build app
     
     # Save Rust toolchain for future builds if it was built from source
     save_rust_toolchain_cache
@@ -2566,7 +2583,7 @@ package_firmware() {
         fi
     fi
 
-    ./build.sh firmware
+    sdk_build firmware
 
     embed_rootfs_verifier "$hardware" "$boot_medium"   # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE sign_boot_image so the FIT signature covers the new ramdisk.
     sign_boot_image                         # opt-in: SEEDSIGNER_FIT_SIGNATURE=1 (no-op otherwise). BEFORE deterministic_sign_chain so our re-sign covers the final boot.img.
