@@ -194,6 +194,38 @@ re-run by rewriting the card, with no rockusb/maskrom dance. That convenience st
 after the burn an unsigned card will not boot, so a rewritable card does not rescue a botched key
 setup. Also see the `sd_update.txt` warning in [§4.7](#47-removable-media-sd_updatetxt-signed-images-and-rollback).
 
+### 1.6 Distribution and trust model
+
+Signing separates two questions that are easy to conflate: **what** the code is, and **who** vouched
+for it. Reproducibility answers the first — anyone can rebuild a release from source and match its
+hash — and a signature answers the second. Because re-signing changes only signatures, not content, a
+signed release can be verified to be *byte-for-byte the audited reproducible build plus a signature*
+(zero the signatures with `canonicalise` and diff; see
+[verifying-a-release.md](verifying-a-release.md)). "Trust me" is therefore never blind.
+
+Three tiers sit on that shared anchor:
+
+- **Reproducible CI / dev-key builds** — signed with the committed *public* dev key (or unsigned). The
+  transparency baseline: anyone can reproduce and audit them. Meant to be run **unfused**, or fused
+  only as a throwaway test of the burn mechanism. **Never fuse a board to the public dev key for
+  protection** — anyone can sign for it, so it grants none (the device shows a yellow "dev key — no
+  protection" screen to make this obvious, [§5.2](#52-rootfs-verification-implementation)).
+- **A vendor-signed release** (signed with a key the distributor controls) — the "trust the vendor"
+  model, for users who will not self-sign. Protection equals the distributor's key custody, so that
+  key is a high-value, non-revocable target: hold it air-gapped/HSM ([§2.4](#24-air-gapped-signing),
+  [§6.7](#67-hardware-held-signing-keys)) and make it a backed-up BIP85-derived key so it is itself
+  recoverable and reproducible. Note the rollback asymmetry in [§6.2](#62-anti-rollback): a shared
+  vendor key has a public back-catalogue of old releases, unlike a personal key.
+- **Self-signing** — the user re-signs with their own key and fuses to it ([§2](#2-signing-a-release)).
+  Maximum sovereignty: the board accepts only what that person signed, and nothing an attacker can
+  produce; it also rejects every official/dev release, since those carry a different key.
+
+**Fusing is a permanent, un-migratable choice.** The OTP holds one key hash for the life of the board,
+so a board fused to the vendor key can *never* later switch to a personal key (or vice versa). Decide
+whose key to trust **before** arming ([§3](#3-burning-the-fuse-and-recovery)) — it is the custody
+model for the device's whole life. Until the fuse is burned any signed image runs, so the choice is
+only made real at arming time.
+
 ---
 
 ## 2. Signing a release
@@ -954,19 +986,25 @@ Check on hardware what a failed boot actually does. **Neither is set today** —
 
 ### 4.7 Removable media: `sd_update.txt`, signed images, and rollback
 
-> **`sd_update.txt` is unsigned code execution, and secure boot does not cover it.** On every boot
-> U-Boot looks for a card and runs its `sd_update.txt`; the boot log shows
+> **`sd_update.txt` runs unsigned on an UNFUSED board, but a FUSED board refuses it.** On every boot
+> U-Boot looks for a card and reads its `sd_update.txt`; the boot log shows
 > `## retrieving sd_update.txt ...` before the kernel loads. That file is a **U-Boot command
 > script** (`mw.b`, `fatload`, `mtd erase`, `mtd write`, ... see
-> [`opt/luckfox/patch-sd-update-scripts.sh`](../../opt/luckfox/patch-sd-update-scripts.sh)), and
-> nothing signs or verifies it. On a fused board it cannot make unsigned firmware *boot*, but anyone
-> who can insert a card gets arbitrary U-Boot commands before the kernel: erase or overwrite any NAND
-> partition, brick the device, or write to memory. A secure-boot build should disable the `sd_update`
-> auto-run or require a signed script. It is an intentional convenience today and becomes an attack
-> surface the moment the rest of the chain is locked.
+> [`opt/luckfox/patch-sd-update-scripts.sh`](../../opt/luckfox/patch-sd-update-scripts.sh)). On an
+> unfused board nothing verifies it — the intended *Provision MicroSD* convenience, and, before the
+> fuse, an arbitrary pre-kernel command primitive for anyone who can insert a card.
 >
-> Secondary effect: with secure boot enabled, images written through this path must be signed, or
-> the flash reports success and the device then refuses to boot.
+> **Under verified boot the Rockchip U-Boot enforces script signing itself.** A fused Mini that
+> `fatload`ed an attacker-crafted `sd_update.txt` (valid MBR + FAT + recomputed ENVF CRC so it boots
+> at all) printed **`Verify-boot: forbit no-signed script`**, ran nothing, and booted normally
+> (bench [§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)). So on a fused board an
+> attacker with card access **cannot** get arbitrary U-Boot commands, brick the device, or rewrite
+> the env partition through this path — only a script signed with the fused key runs. The
+> fuse-conditional gate a hardened build would have added is already present in the platform
+> ([§6.6](#66-hardening-removable-media)).
+>
+> Secondary effect: images written through this path must be signed, or the flash reports success and
+> the device then refuses to boot.
 
 **Signed images on microSD** are mostly native behaviour once verification is enabled: every stage
 above the BootROM checks the FIT signature **regardless of which medium the image came from**, and
@@ -1175,6 +1213,16 @@ person with physical access presses it to boot an **UNVERIFIED** rootfs (green `
 the board halts — no reboot loop; a fused board keeps refusing until a correctly signed image is
 flashed, recovery is a power-cycle.
 
+The escape hatch is **deliberate, not an oversight.** It preserves user sovereignty: someone who signs
+and runs their own software — or who must keep a device working after official releases stop — is
+never locked out by a verification failure. The accepted trade-off is that a physical attacker with a
+tampered rootfs card can press the same button (the failure screen even names the key), so tier C is
+advisory against an evil-maid who has the board in hand — the same DIY-model cost that
+[§6.2](#62-anti-rollback) accepts in declining anti-rollback. It is a *physical-access* bypass only:
+it needs the device in hand, a deliberate press, and it shows a red FAILED screen first. A cheap
+hardening that keeps the freedom would make the post-override state visible in the booted OS, so a
+silent bypass cannot pass unnoticed.
+
 **Dev-key indicator.** A *passing* verification is not the same as a *protective* one: while a build
 uses the committed PUBLIC dev keys (see [`secure-boot/dev-keys/README.md`](../../opt/luckfox/secure-boot/dev-keys/README.md)
 and [`dev-keys-rootfs/README.md`](../../opt/luckfox/secure-boot/dev-keys-rootfs/README.md)), anyone can
@@ -1380,29 +1428,45 @@ That helps whenever the secret can't be copied off the device.
 
 ### 6.2 Anti-rollback
 
-**Status: not implemented at any stage.** A fused board boots any release signed with its key —
-including a genuine but older one with known bugs. Anyone who can flash the device (maskrom, or
-`sd_update.txt`, §6.6) can downgrade it to such a release. Nothing in the build sets a rollback index.
+**Status: considered and deliberately declined** (not "unimplemented" — the reasoning below is the
+decision, so it is not something a later contributor should "fix").
 
-What the platform offers, per stage:
+Hardware anti-rollback is **mutually exclusive with this project's model**, in which the user is
+sovereign and may boot any image signed with their own key. A one-way version counter says the
+opposite — *refuse images signed with your key that are too old* — so enabling it would permanently
+confiscate the ability to run your own earlier builds (to escape a regression, pin a version you
+trust, or recover), the same freedom the boot chain exists to grant, and the same principle behind
+the deliberately-kept escape hatch ([§5.2](#52-rootfs-verification-implementation)). **The trust
+anchor here is the key, not a version number.**
 
-- **SPL → `uboot.img`: supported by the SDK, unused.** The SPL can enforce a rollback index read
-  directly from secure OTP (the counter at `0xe0`, `OTP_UBOOT_ROLLBACK_OFFSET`, 8 bytes), and
-  `fit-sign.sh --rollback-index uboot.img <n>` writes `rollback-index = <n>` into the ITS (Q11). The
-  counter is a one-way fuse with 64 increments: raising it is irreversible, and every older
-  `uboot.img` is refused afterwards — so the recovery images you keep must be kept current too.
-- **U-Boot → `boot.img`: needs OP-TEE or a patch.** `CONFIG_FIT_ROLLBACK_PROTECT` exists, but U-Boot
-  proper reads the index through an OP-TEE client call, and `fit-sign.sh` refuses a `boot.img` index
-  without `CONFIG_OPTEE_CLIENT` ([§4.7](#47-removable-media-sd_updatetxt-signed-images-and-rollback)).
-  Options: adopt OP-TEE ([§6.3](#63-op-tee)), or patch U-Boot to compare the FIT index against a floor
-  compiled into a rollback-protected `uboot.img` (Q14).
-- **initramfs → rootfs: nothing yet.** The verifier accepts any rootfs signed with the pinned key. A
-  version floor could live in the signed initramfs and be compared against a version carried in the
-  minisign trusted comment (which the signature covers) — an unexplored idea.
+It is also largely unnecessary for the configuration that is meant to be protected. A board fused to
+a **personal** key accepts only what that person has signed: there is no public back-catalogue of
+matching images to roll back to, and the small set that does exist is under the owner's control (keep
+one current recovery image, protected like the key). The rollback threat — flashing an *older
+genuine* release with a known bug — therefore needs the owner's own old signed images **plus**
+physical access, and is often simply empty. The exception is a **shared vendor key**
+([§1.6](#16-distribution-and-trust-model)): there old releases are public, so rollback is a real if
+narrow concern for that tier — still not worth the cost below.
 
-Whatever is chosen, the re-sign tools ([§2](#2-signing-a-release)) would need to carry the indexes
-through, and a device-side check should refuse to arm a release whose index would lock out the
-recovery images.
+The cost that makes this a clear "no" is not OP-TEE (an OP-TEE-free path exists) but the one-way OTP
+fuse itself. For completeness, the mechanics if it were ever wanted:
+
+- **SPL → `uboot.img`** is the only hardware anchor: the SPL enforces a rollback index read from
+  secure OTP (the counter at `0xe0`, `OTP_UBOOT_ROLLBACK_OFFSET`, 8 bytes);
+  `fit-sign.sh --rollback-index uboot.img <n>` writes it. **One-way, 64 increments total** — every
+  bump permanently locks out all older `uboot.img`, recovery images included.
+- **U-Boot → `boot.img`** needs OP-TEE (`CONFIG_FIT_ROLLBACK_PROTECT` via an OP-TEE client call,
+  [§4.7](#47-removable-media-sd_updatetxt-signed-images-and-rollback)) *or* a U-Boot patch anchoring
+  `boot.img`'s floor in the OTP-protected `uboot.img` (Q14). Necessary because the counter on
+  `uboot.img` alone is defeated by a *partial* downgrade — keep the current loader, swap an old
+  `boot.img`+rootfs, which U-Boot still verifies as genuine and boots.
+- **initramfs → rootfs** could carry a version floor in the signed initramfs, checked against the
+  minisign trusted comment — but a software floor lives in a downgradable image and is defeated by
+  downgrading the image that holds it, so it works only anchored to the two above.
+
+None of this is built, on purpose. The OTP-counter mechanics remain **available if a rollback-worthy
+CVE ever ships in a released version** — that is the moment to weigh the one-way-fuse cost against a
+specific threat, not before.
 
 ### 6.3 OP-TEE
 
@@ -1483,29 +1547,63 @@ release notes before switching. `RKTRUST/RV1106TOS.ini` points at it
 
 ### 6.4 Full kernel command-line lockdown
 
-**Status: partial.** On signed builds `root=` and the rootfs arguments are baked into the signed DTB and
-the env partition cannot set `sys_bootargs`, but `mtdparts`/`blkdevparts` are still imported from the
-unsigned env partition and merged into the command line. A redefined layout cannot make an unsigned
-rootfs verify, but the residual is not zero. The full fix is `CONFIG_CMDLINE_FORCE=y` (untested on the
-5.10 kernel), or stripping those names from `CONFIG_ENVF_LIST` — mitigations and history in
-[§4.6](#46-the-kernel-command-line-envf-and-autoboot); open question Q13.
+**Status: partial, and now known to be exploitable — this is the top open issue.** On signed builds
+`root=` and the rootfs arguments are baked into the signed DTB and the env partition cannot set
+`sys_bootargs`, but `mtdparts`/`blkdevparts` are **still imported from the unsigned env partition and
+merged into the command line**, and that residual is not harmless: appending ` rdinit=/bin/sh` to the
+env's `blkdevparts` value gets it into the cmdline verbatim and the kernel runs a shell from the
+signed initramfs **instead of** the verifier — a silent, persistent, pre-verification root-shell
+bypass on a fused board (confirmed 2026-09-23,
+[§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)). From that shell any rootfs on
+the card can be mounted and `switch_root`ed into, with no signature check.
+
+**Fix, in order of preference:**
+
+1. **Strip the injection (surgical).** Remove `blkdevparts`/`mtdparts` from `CONFIG_ENVF_LIST` so
+   `envf.c` will not import them from the unsigned env, and extend the `apply_signed_nand_bootargs`
+   bake (which already puts `root=`/`rootfstype=` into the signed DTB `/chosen`) to also carry
+   `blkdevparts`. The env then contributes nothing to the cmdline, so nothing can ride it. Verify on a
+   build that U-Boot still resolves its own partitions with those names gone from the list.
+2. **Force the whole cmdline.** `CONFIG_CMDLINE_FORCE=y` + a compiled-in `CONFIG_CMDLINE`: the kernel
+   ignores the bootloader/env cmdline. Definitive but heavier — the compiled-in string must reproduce
+   the complete per-variant cmdline; `fuse.programmed=1` is dropped (the verifier's OTP-byte fallback
+   covers it).
+
+Both are untested on the 5.10 kernel and differ per medium (SD/NAND/eMMC), so implement with a
+build+boot on each. History in [§4.6](#46-the-kernel-command-line-envf-and-autoboot); open question Q13.
 
 ### 6.5 Locking the U-Boot console
 
-**Status: not done.** The build sets `CONFIG_BOOTDELAY=0` (`opt/luckfox/uboot-recovery-config.sh`),
-which is still interruptible: holding CTRL+C on the UART at power-on reaches a U-Boot prompt, even on a
-fused board (bench row B1), and that prompt can read and write memory. A locked-down build needs
-`CONFIG_BOOTDELAY=-2` and `CONFIG_CONSOLE_DISABLE_CLI=y`
-([§4.6](#46-the-kernel-command-line-envf-and-autoboot)), checked on hardware against the recovery
-failover that `uboot-recovery-config.sh` configures.
+**Status: appears already closed on fused boards, though not deliberately configured.** The build sets
+`CONFIG_BOOTDELAY=0` (`opt/luckfox/uboot-recovery-config.sh`), which by the Kconfig docs is still
+interruptible. But on the fused SD-only Mini, **spamming CTRL+C on the UART at power-on reached no
+prompt** — the board booted straight through (2026-09-23,
+[§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)); the earlier bench row B1 was
+taken in a different context. The verified-boot U-Boot is more locked down than the config alone
+implies — it also refuses unsigned `sd_update.txt` scripts (§6.6). To make the guarantee *explicit*
+rather than incidental, a locked-down build would still set `CONFIG_CONSOLE_DISABLE_CLI=y`
+(`CONFIG_BOOTDELAY=-2` is unavailable — it disables the abort check the bootcount→loader failover
+relies on). Worth a dev-board sanity check that UART TX actually reaches U-Boot before relying on
+"no prompt", since an unwired TX line would look identical.
 
 ### 6.6 Hardening removable media
 
-**Status: not done.** U-Boot still auto-runs `sd_update.txt` from any inserted card before the kernel
-loads. It is how *Provision MicroSD* updates work, and it is unsigned code execution: on a fused board it
-cannot make unsigned firmware boot, but it can erase or overwrite any partition. A hardened build would
-drop the auto-run, or require a signed script, and only ever load, verify and then write signed images —
-never the env partition ([§4.7](#47-removable-media-sd_updatetxt-signed-images-and-rollback)).
+**Status: the pre-kernel code-execution risk is already closed on fused boards** (the Rockchip U-Boot
+enforces it); the unsigned write path remains only on unfused boards, by design.
+
+U-Boot auto-runs `sd_update.txt` from an inserted card on every boot — that is how *Provision MicroSD*
+works on unfused boards. But under verified boot the Rockchip U-Boot **refuses an unsigned script.** A
+card carrying a valid MBR + FAT partition + a banner `sd_update.txt`, with the ENVF CRC recomputed so
+the SPL still boots (a *naive* MBR add instead bricks the board first — it corrupts the ENVF the SPL
+reads the partition table from: `ENVF: !bad CRC @ 0x0` → `spl: partition error` → maskrom), made
+`fatload mmc 1` genuinely succeed and read the script — then U-Boot printed
+**`Verify-boot: forbit no-signed script`**, ran nothing, and booted normally (2026-09-23,
+[§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)). So on a fused board an attacker
+with card access **cannot** use `sd_update.txt` to run unsigned commands, brick the device, or rewrite
+the env partition — the earlier "unsigned code execution" concern does not apply once the fuse is
+burned; only someone holding the fused key can produce a script it will run. This is the exact
+fuse-conditional gate a hardened build would have added, already present in the platform. (On an
+*unfused* board it still runs any script, which is the intended *Provision MicroSD* behaviour.)
 
 ### 6.7 Hardware-held signing keys
 
@@ -1790,6 +1888,11 @@ instructive.
 | `otp --loader --hash` output cannot be compared after the burn | Still true for reading OTP, but the burned value equals the burning idblock's `hash@np`, so it can be recovered from NAND (§3.5) | 2026-09-22 |
 | `fit-sign.sh --burn-key-hash` is how to arm on RV1106 | Its re-sign flow is unusable on this SDK; arm in-build, with `setburn`, or from the app (§3.2) | Q3 |
 | The chain stops at `boot.img`; the rootfs is unsigned | Implemented on signed builds (§5.2) | 2026-09-14 |
+| `/oem` is an unsigned partition secure boot never covers | Folded into the signed rootfs and removed as a partition; a tamper is now rejected before it runs (§7.10) | 2026-09-23 |
+| `sd_update.txt` is unsigned code execution secure boot does not cover | A fused board's U-Boot refuses an unsigned script (`Verify-boot: forbit no-signed script`); only the unfused case runs it (§4.7, §7.11) | 2026-09-23 bench |
+| CTRL+C reaches a U-Boot prompt even on a fused board (row B1) | No prompt on the fused Mini — it booted straight through (§6.5) | 2026-09-23 bench |
+| The public-dev-key burn warning fires when arming with the dev key | Its pin was hashed from Windows/CRLF `openssl` output, so it never matched — and never fired — on Linux/macOS; now hashed over the modulus hex only, with a load-time self-test (`sign-secure-boot.sh`) | 2026-09-23 |
+| Anti-rollback is unimplemented future work | Considered and **deliberately declined** — it contradicts the DIY/sovereign-key model (§6.2) | 2026-09-23 |
 
 ### 7.4 Bench: unsigned baseline (stock image)
 
@@ -2005,7 +2108,61 @@ partition.
 fix and the NAND/eMMC bootargs follow the new partition index. The camera works on all three, so the
 folded `iqfiles`/`.ko` are correct on SD, NAND and eMMC alike.
 
-### 7.11 Provenance
+### 7.11 Bench: `sd_update` and console on a fused board (2026-09-23)
+
+Two pre-kernel attack surfaces re-tested on the fused SD-only Mini (boot key `a0c79bd9…`), settling
+questions a static review had left open.
+
+**`sd_update.txt` is refused under verified boot.** A card was built from a known-good re-signed image
+(`card-unarmed.img`) plus an MBR and a FAT partition holding a banner `sd_update.txt` (echo-only, no
+writes). The first attempt — MBR written straight onto sector 0 — bricked at the SPL:
+
+```
+Trying to boot from MMC2
+ENVF: !bad CRC @ 0x0
+No env partition table
+spl: partition error
+... SPL: failed to boot from all boot devices
+```
+
+because the SPL reads the partition table out of the ENVF at sector 0, and the raw MBR corrupted its
+CRC-32 (which covers the whole 32 KiB). Recomputing the ENVF CRC over the modified region restored the
+boot; the same card then reached U-Boot, which found and read the script but refused it:
+
+```
+## retrieving sd_update.txt ...
+reading sd_update.txt
+198 bytes read in 4 ms (47.9 KiB/s)
+Verify-boot: forbit no-signed script
+```
+
+and booted the signed FIT normally. So the Rockchip U-Boot enforces script signing under verified boot
+— the fuse-conditional gate §6.6 called for is already present in the platform. `fatload` genuinely
+succeeded (the MBR + recomputed CRC work), so this is the signing check refusing an unsigned script,
+not a failure to find one; only the fused key could sign a runnable `sd_update.txt`.
+
+**No U-Boot console on CTRL+C.** Spamming CTRL+C on the UART from cold power-on reached no `=>` prompt;
+the board booted straight through (§6.5). Confirm UART TX actually reaches U-Boot on a dev board before
+relying on this — an unwired TX line would look identical.
+
+**CONFIRMED — env cmdline smuggling is a pre-verifier root-shell bypass (M1).** Appending
+` rdinit=/bin/sh` to the unsigned env partition's `blkdevparts` value (and recomputing the ENVF CRC)
+put it verbatim into the kernel command line — the boot printed
+`… 6G(rootfs) rdinit=/bin/sh androidboot.fwver=…` — and the kernel ran
+`Run /bin/sh as init process` **instead of** the signed verifier `/init`. No `rootfs-verify:` line
+appeared; `ls` on the resulting `#` prompt showed the initramfs (`pubkey`, `rootfs.sig`, `init`, …),
+i.e. an **interactive root shell in the signed initramfs, from which any rootfs can be mounted and
+`switch_root`ed into.** So the unsigned env can override the one component that is supposed to be
+unbypassable, silently — no red screen, no button, unlike the (consented) escape hatch. This is
+worse than "DoS": `env` is a verifier bypass. It still needs env write (card access), the same
+physical-access class as the escape hatch. **Fix:** `CONFIG_CMDLINE_FORCE=y` (compile the cmdline into
+the signed kernel so the env cannot reach it), or strip `blkdevparts`/`mtdparts` from
+`CONFIG_ENVF_LIST` and carry the layout in the signed `uboot.img`'s compiled-in env. Both are
+untested on the 5.10 kernel and must preserve the per-medium `root=`/`rootfstype=` baking
+(`apply_signed_nand_bootargs`) — implement with a build+boot on each medium. See
+[§6.4](#64-full-kernel-command-line-lockdown).
+
+### 7.12 Provenance
 
 This work started as a feasibility study because **no public Rockchip secure boot document covers
 RV1103/RV1106**. Three were reviewed:
