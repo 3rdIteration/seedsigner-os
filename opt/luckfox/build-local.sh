@@ -393,6 +393,12 @@ apply_sdk_patches() {
     # the rootfs became read-only squashfs, nowhere writable at all.
     bash "$SCRIPT_DIR/apply-partition-layout.sh" "$WORK_DIR/luckfox-pico"
 
+    # Mount /userdata (the only non-IGNORE partition in our layout) noexec,nosuid,nodev:
+    # patches the S20linkmount generator in project/build.sh — see the script for
+    # why the installed init script cannot be patched instead. Shared with CI via
+    # patch-linkmount-hardening.sh.
+    bash "$SCRIPT_DIR/patch-linkmount-hardening.sh" "$WORK_DIR/luckfox-pico"
+
     # Rootfs minisign hooks for signed builds: sign the rootfs during `build.sh
     # firmware` (same pctools-copy constraint as above). No-op unless
     # SEEDSIGNER_FIT_SIGNATURE=1. The UBI hook covers NAND (squashfs/ubifs packed
