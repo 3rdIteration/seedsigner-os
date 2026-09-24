@@ -11,9 +11,14 @@ and hardware-proven** (the bench runs behind that claim are in
   ways ([§2](#2-signing-a-release)).
 - **The fuse is always opt-in.** Burning the one-time fuse that makes a board enforce your key
   ([§3](#3-burning-the-fuse-and-recovery)) is never done by a build.
-- **Not implemented yet** ([§6](#6-possible-future-work)): recognising the physical device
-  (anti-phishing words / device PIN), anti-rollback (a fused board still boots an older genuine
-  release), and full lockdown of the U-Boot console, the kernel command line and `sd_update.txt`.
+- **Closed on fused boards** (bench-confirmed 2026-09-23): the `rdinit=` kernel-command-line bypass via
+  the unsigned env partition ([§6.4](#64-full-kernel-command-line-lockdown)), unsigned `sd_update.txt`
+  execution (the fused U-Boot refuses it — [§6.6](#66-hardening-removable-media)), and the interactive
+  U-Boot console (CTRL+C reached no prompt — [§6.5](#65-locking-the-u-boot-console)).
+- **Not implemented** ([§6](#6-possible-future-work)): recognising the physical device (anti-phishing
+  words / device PIN), which is future work ([§6.1](#61-device-identity-pin-and-anti-phishing-words));
+  and anti-rollback, **deliberately declined** because the trust anchor is the key, not a version — a
+  fused board boots any release signed with its key ([§6.2](#62-anti-rollback)).
 
 **Where to start**
 
@@ -47,9 +52,9 @@ and hardware-proven** (the bench runs behind that claim are in
 | Can it be tested without burning a fuse? | **Yes.** A signed build boots unfused (`Verified-boot: 0`) with the software checks live, so keys, signing and boot are all rehearsed before the fuse ([§3.1](#31-before-you-arm)). Only the BootROM step needs the fuse. |
 | Can the private key stay offline? | Yes. Every tier can be signed air-gapped on a SeedSigner from a BIP85 seed, with nothing but 32–64-byte digests crossing the gap ([§2.4](#24-air-gapped-signing)). |
 | Does it stop someone swapping in a look-alike device? | **No.** Secure boot verifies software, not hardware. Anti-phishing words would close that gap, but they are **not implemented** — design only ([§6.1](#61-device-identity-pin-and-anti-phishing-words)). |
-| Does it stop someone flashing an older, genuine release (downgrade)? | **No — anti-rollback is not implemented at any stage.** A fused board boots anything signed with its key ([§6.2](#62-anti-rollback)). |
-| Does it stop someone at the UART getting a U-Boot prompt? | **No, not yet.** `CONFIG_BOOTDELAY=0` is interruptible ([§6.5](#65-locking-the-u-boot-console)). |
-| Is the kernel command line trusted? | Mostly. On signed builds `root=` is baked into the signed DTB and the env partition cannot set `sys_bootargs`; `mtdparts`/`blkdevparts` remain importable, and `CONFIG_CMDLINE_FORCE=y` is the outstanding full fix ([§4.6](#46-the-kernel-command-line-envf-and-autoboot), [§6.4](#64-full-kernel-command-line-lockdown)). |
+| Does it stop someone flashing an older, genuine release (downgrade)? | **No, by design — anti-rollback is deliberately declined** (it conflicts with the sovereign-key model; the anchor is the key, not a version). A fused board boots any release signed with its key ([§6.2](#62-anti-rollback)). |
+| Does it stop someone at the UART getting a U-Boot prompt? | **On the fused board tested, yes** — spamming CTRL+C at power-on reached no prompt, though `CONFIG_CONSOLE_DISABLE_CLI` is not deliberately set ([§6.5](#65-locking-the-u-boot-console)). |
+| Is the kernel command line trusted? | **Yes on signed builds.** `root=` is baked into the signed DTB, the env cannot set `sys_bootargs`, and since 2026-09-23 the unsigned env can no longer inject `mtdparts`/`blkdevparts` either — the M1 `rdinit=` bypass is fixed ([§6.4](#64-full-kernel-command-line-lockdown)). `CONFIG_CMDLINE_FORCE=y` remains available as extra hardening ([§4.6](#46-the-kernel-command-line-envf-and-autoboot)). |
 | What key size? | **RSA-2048 only** for the boot chain, which is enforced in the SPL ([§7.6](#76-bench-rsa-4096-probe-2026-09-12-unfused-board)). Ed25519 (minisign) for the rootfs. |
 
 **Consequences to decide before touching a fuse:**
@@ -1058,8 +1063,8 @@ only when four things are true:
    signed image is data U-Boot *verifies*. If flashing NAND from a card has to stay, verify each
    image's signature before writing it, and never write the env partition. (`rk_sign_tool sf`/`vf`
    also sign and verify whole `update.img` packages.)
-4. **Old signed images have to be refused** — not implemented today ([§6.2](#62-anti-rollback)),
-   and for `boot.img` it currently needs OP-TEE. A
+4. **Old signed images have to be refused** — deliberately declined ([§6.2](#62-anti-rollback): it
+   conflicts with the sovereign-key model), and for `boot.img` it would need OP-TEE anyway. A
    genuine but outdated `boot.img` passes the signature check. U-Boot proper has
    `CONFIG_FIT_ROLLBACK_PROTECT` (enforced in `common/image-fit.c`), but `fit-sign.sh` refuses a
    `boot.img` rollback index unless `CONFIG_OPTEE_CLIENT` is enabled too: *"Don't support
@@ -1302,10 +1307,11 @@ re-sign methods afterwards. The public key ships *inside the signed initramfs*, 
 not a value" holds: rootfs updates only need re-signing with the same key, no OTP or loader work.
 
 **Known limits.** Verification is a full-volume read per power-on (dm-verity is impossible on UBI,
-§5.1). The env-partition residual in [§4.6](#46-the-kernel-command-line-envf-and-autoboot)
-(`mtdparts`/`blkdevparts`) can redefine the MTD layout and, since the value is appended unfiltered,
-smuggle trailing parameters; it cannot make verification pass (an unsigned volume still fails minisign),
-but `CONFIG_CMDLINE_FORCE` remains the outstanding piece for full lockdown. The escape hatch is a
+§5.1). The env-partition cmdline injection in [§4.6](#46-the-kernel-command-line-envf-and-autoboot)
+(`mtdparts`/`blkdevparts`) — which once let a crafted value smuggle a trailing `rdinit=` past the
+verifier (M1) — is **closed as of 2026-09-23** ([§6.4](#64-full-kernel-command-line-lockdown)): the
+unsigned env can no longer redefine the layout or add tokens to the kernel command line.
+`CONFIG_CMDLINE_FORCE=y` remains available as extra hardening. The escape hatch is a
 deliberate, physical-access-gated exception to fail-closed behaviour — it exists so a bad flash does not
 lock out the only recovery path on a fused board.
 
@@ -1314,18 +1320,18 @@ lock out the only recovery path on a fused board.
 ## 6. Possible future work
 
 Secure boot as implemented answers one question: *is the firmware on this board signed by the key it
-was fused to?* Several related protections are **not implemented yet**. They are collected here with
-what exists today, what the platform offers, and where the details are, so nobody mistakes a design
-note elsewhere in this document for a shipped feature.
+was fused to?* Several related protections are **not implemented, deliberately declined, or only
+recently closed**. They are collected here with what exists today, what the platform offers, and where
+the details are, so nobody mistakes a design note elsewhere in this document for a shipped feature.
 
 | Protection | Status today | Section |
 |---|---|---|
 | Recognising the physical device (anti-phishing words, device PIN) | **Not implemented.** A look-alike running its own correctly signed firmware is not detected | [§6.1](#61-device-identity-pin-and-anti-phishing-words) |
-| Anti-rollback (refusing an older genuine release) | **Not implemented at any stage.** A fused board boots any release signed with its key, including an old one | [§6.2](#62-anti-rollback) |
+| Anti-rollback (refusing an older genuine release) | **Deliberately declined.** A fused board boots any release signed with its key; the trust anchor is the key, not a version (it conflicts with the sovereign-key model) | [§6.2](#62-anti-rollback) |
 | OP-TEE (on-die secret, `boot.img` rollback) | **Not shipped.** The blob is in the SDK; nothing packs or enables it | [§6.3](#63-op-tee) |
-| Full kernel command-line lockdown | **Partial.** `root=` is signed; `mtdparts`/`blkdevparts` are still importable from the env partition | [§6.4](#64-full-kernel-command-line-lockdown) |
-| Locking the U-Boot console | **Not done.** `CONFIG_BOOTDELAY=0` is interruptible from the UART | [§6.5](#65-locking-the-u-boot-console) |
-| Hardening removable media (`sd_update.txt`) | **Not done.** The update script still auto-runs unsigned | [§6.6](#66-hardening-removable-media) |
+| Full kernel command-line lockdown | **The M1 exploit is fixed** (2026-09-23): the unsigned env can no longer inject `mtdparts`/`blkdevparts`; `root=` and the layout are baked into the signed DTB. `CONFIG_CMDLINE_FORCE=y` is optional extra hardening | [§6.4](#64-full-kernel-command-line-lockdown) |
+| Locking the U-Boot console | **Empirically closed on the fused board tested** (CTRL+C reached no prompt), though `CONFIG_CONSOLE_DISABLE_CLI=y` is not deliberately set | [§6.5](#65-locking-the-u-boot-console) |
+| Hardening removable media (`sd_update.txt`) | **Code-exec risk closed on fused boards** — U-Boot refuses an unsigned script (`forbit no-signed script`); the auto-run itself is unchanged (unsigned boards still use it for Provision MicroSD) | [§6.6](#66-hardening-removable-media) |
 | Hardware-held signing keys (HSM/PKCS#11) | **Untested.** The air-gapped SeedSigner signer is the supported custody path | [§6.7](#67-hardware-held-signing-keys) |
 | Recording the OTP hash when arming | **Not done.** Only the burn-time UART log and the NAND idblock record it | [§6.8](#68-recording-the-otp-hash-at-arm-time) |
 | Rootfs signatures independent of `boot.img` (key slots + quorum) | **Not implemented.** One key and one expected signature are baked into the signed `boot.img`, so every rootfs change means rebuilding and reflashing `boot.img` | [§6.9](#69-decoupling-the-rootfs-from-bootimg-key-slots-and-a-signing-quorum) |
@@ -1497,6 +1503,16 @@ fuse itself. For completeness, the mechanics if it were ever wanted:
 None of this is built, on purpose. The OTP-counter mechanics remain **available if a rollback-worthy
 CVE ever ships in a released version** — that is the moment to weigh the one-way-fuse cost against a
 specific threat, not before.
+
+If it is ever turned on, the natural shape is a property of the **vendor-signed tier**
+([§1.6](#16-distribution-and-trust-model)), armed deliberately rather than baked into every build. The
+rollback **index** is chosen at signing time and is bumped only for a release that fixes something a
+board should never run older than — **not incremented per release**. Most releases keep the same index
+(the counter never moves and every earlier image at that index still boots); only a security-grade
+fix raises it, at which point a board that installs it burns its counter up and refuses anything below
+— so recovery images must be kept signed at or above the current index. Self-signers who enable it
+control their own index, at the cost of no longer being able to run their own earlier builds — the
+freedom trade this section declines by default.
 
 ### 6.3 OP-TEE
 
@@ -2007,7 +2023,7 @@ Run over ADB (Linux) and UART @ 115200 (U-Boot) on the stock `Luckfox_Pico_Mini_
 | A3 | `[hwrng]` kthread | **running (pid 41)** | Kernel credits TRNG entropy — confirms `docs/hwrng.md` for Luckfox |
 | A3 | `rngd` | **not running** | Stock image only; the SeedSigner build adds `rng-tools` |
 | A4 | `mtd0` = "env" (256K), contains `sys_bootargs= ... root=ubi0:rootfs ...` | that string appears verbatim in `/proc/cmdline` | §4.6 confirmed: the unsigned env partition sets the kernel command line (unsigned builds) |
-| B1 | Flood CTRL+C on UART during power-on (`bootdelay=0`) | **dropped to `=>` prompt** | §4.6 confirmed: `bootdelay=0` is interruptible; needs `-2` |
+| B1 | Flood CTRL+C on UART during power-on (`bootdelay=0`) | **dropped to `=>` prompt** | On this *unsigned stock* board `bootdelay=0` is interruptible. A **fused, verified-boot** board behaved differently — CTRL+C reached no prompt (2026-09-23, [§6.5](#65-locking-the-u-boot-console)) |
 | B2 | `printenv` | `bootdelay=0`, `bootcmd=boot_fit;boot_android ...`, `sys_bootargs=...`; **no `cli`** | env carries `sys_bootargs`; `cli` absent (ENVF whitelist holds) |
 | — | SPL/U-Boot log | `Verified-boot: 0`, `FIT: no signed, no conf required`, `sha256+ OK` | Baseline: the `sha256+ OK` lines are **hash integrity checks, not signature checks** — they pass on any self-consistent image, an attacker's included |
 
