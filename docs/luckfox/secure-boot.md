@@ -906,9 +906,17 @@ sets no rollback index ([§6.2](#62-anti-rollback)).
 ### 4.6 The kernel command line, ENVF and autoboot
 
 **Current state on signed builds:** `root=` and the rootfs arguments are baked into the signed DTB
-`/chosen`, and the unsigned env partition **cannot** set `sys_bootargs`. `mtdparts`/`blkdevparts` are
-still imported from it and merged into the command line; `CONFIG_CMDLINE_FORCE=y` is the outstanding
-full fix. How that picture was established:
+`/chosen`, and the unsigned env partition contributes **nothing** to the command line: it cannot set
+`sys_bootargs` (both import paths in `envf.c` refuse it under `FIT_SIGNATURE`), and since 2026-09-23
+it no longer carries `mtdparts`/`blkdevparts` either — [`lock-kernel-cmdline.sh`](../../opt/luckfox/lock-kernel-cmdline.sh)
+strips both from U-Boot's `CONFIG_ENVF_LIST`, so they are never imported into the global environment
+that `board.c` merges. The kernel gets its partition layout from the **signed** DTB instead:
+`apply_signed_nand_bootargs` bakes the same string U-Boot used to append (`mtdparts=spi-nand0:` /
+`blkdevparts=mmcblk1|0:` + `RK_PARTITION_CMD_IN_ENV`, exactly what `project/build.sh` wrote into
+env.img) into `/chosen/bootargs`. The env partition itself is untouched — U-Boot/SPL still resolve
+their own partitions from it, because that path (`disk/part_env.c`) reads the ENVF **directly from
+the device** via `envf_get()`, a channel `CONFIG_ENVF_LIST` never governed. How that picture was
+established:
 
 The Luckfox U-Boot builds with `CONFIG_ENVF=y` and:
 
@@ -954,6 +962,15 @@ trivial on SD boards, where it sits on the removable card, and reachable on NAND
   every `CONFIG_ENV_IS_IN_*` unset). What remains importable is `mtdparts`/`blkdevparts`,
   merged verbatim by `bootargs_add_partition()` — bounded (a redefined layout cannot make the rootfs
   verify) but not zero.
+- **2026-09-23 — the import whitelist was not the only consumer.** `CONFIG_ENVF_LIST` governs only
+  what `himport_r()` copies into the *global environment*; `disk/part_env.c` also reads the ENVF
+  **directly** (`envf_get()`) to define the block-layer partitions, and `mtd_part_parse()` serialises
+  those partition **names** into the cmdline via `board.c`'s `CONFIG_MTD_BLK` fallback and the SPL on
+  SPI-NAND. A crafted name containing a space (`(rootfs rdinit=/q)`) injects a bare token, and a
+  failed `rdinit=` falls through to `/bin/sh`; SD/eMMC are unaffected (`devtype="mmc"`). Closed by
+  [`patch-mtd-part-parse.sh`](../../opt/luckfox/patch-mtd-part-parse.sh) (sanitise the names, and do
+  not let the fallback override the signed-DTB layout) — see
+  [§6.4](#64-full-kernel-command-line-lockdown).
 
 **The filter is also good news:** the partition **cannot** set `bootdelay` or Rockchip's `cli`
 variable, because neither is whitelisted.
@@ -963,14 +980,27 @@ Mitigations for full lockdown, in order of preference:
 1. **Kernel `CONFIG_CMDLINE` with `CONFIG_CMDLINE_FORCE=y`.** The command line is compiled into the
    kernel, inside the signed `boot.img`, and the kernel ignores whatever the bootloader passes.
    `root=`, `rootfstype=`, `rk_dma_heap_cma=` and the MTD partition layout then have to be baked in
-   for each board/medium variant. Untested on the SDK's 5.10 kernel.
-2. **Remove `sys_bootargs`, `blkdevparts` and `mtdparts` from `CONFIG_ENVF_LIST`** (or disable
-   `CONFIG_ENVF`) and carry those values in the compiled-in default environment inside the signed
-   `uboot.img`. This repo delivers its partition layout through `RK_PARTITION_CMD_IN_ENV` (see
-   `opt/luckfox/apply-partition-layout.sh`), so that path would have to move.
+   for each board/medium variant. Untested on the SDK's 5.10 kernel. Still available as extra
+   hardening; not needed since (2) landed.
+2. **Remove `blkdevparts` and `mtdparts` from `CONFIG_ENVF_LIST`** so the unsigned env cannot import
+   them, and carry the layout in a signed place instead — implemented 2026-09-23 as
+   [`lock-kernel-cmdline.sh`](../../opt/luckfox/lock-kernel-cmdline.sh) (the strip, signed builds only)
+   plus the `mtdparts=`/`blkdevparts=` token in `apply_signed_nand_bootargs`'s bake of
+   `/chosen/bootargs`. The layout stays sourced from `RK_PARTITION_CMD_IN_ENV`
+   ([`apply-partition-layout.sh`](../../opt/luckfox/apply-partition-layout.sh)) — one source of truth,
+   no second hardcoded copy. (`sys_bootargs` was left in the list: under `FIT_SIGNATURE` both import
+   paths already refuse it.) The generated U-Boot `.config` is re-checked by
+   [`assert-uboot-fit-signature.sh`](../../opt/luckfox/assert-uboot-fit-signature.sh), because Kconfig
+   falls back to its default list (`"blkdevparts mtdparts sys_bootargs app reserved"`) if a defconfig
+   ever stops setting the option. The env's *other* consumer — `mtd_part_parse()` reading the ENVF
+   directly via `disk/part_env.c` (the SPI-NAND path) — is closed by
+   [`patch-mtd-part-parse.sh`](../../opt/luckfox/patch-mtd-part-parse.sh), which sanitises the
+   partition names it emits and stops the `board.c` fallback overriding the signed layout.
 3. **Pin the rootfs device inside the initramfs** instead of reading `root=`.
 
-Only (1) closes the whole class; (2) and (3) are defence in depth.
+(2) plus `patch-mtd-part-parse.sh` (the direct-read consumer) closes the confirmed exploit (M1) on
+all three media; (1) would close the whole class including any future env-imported token; (3) is
+defence in depth.
 
 **Autoboot.** The boot log shows `Hit key to stop autoboot('CTRL+C'):  0`. **`CONFIG_BOOTDELAY=0`
 does not prevent interruption** — the SDK's `common/autoboot.c` runs the abort check whenever
@@ -1547,30 +1577,75 @@ release notes before switching. `RKTRUST/RV1106TOS.ini` points at it
 
 ### 6.4 Full kernel command-line lockdown
 
-**Status: partial, and now known to be exploitable — this is the top open issue.** On signed builds
-`root=` and the rootfs arguments are baked into the signed DTB and the env partition cannot set
-`sys_bootargs`, but `mtdparts`/`blkdevparts` are **still imported from the unsigned env partition and
-merged into the command line**, and that residual is not harmless: appending ` rdinit=/bin/sh` to the
-env's `blkdevparts` value gets it into the cmdline verbatim and the kernel runs a shell from the
-signed initramfs **instead of** the verifier — a silent, persistent, pre-verification root-shell
-bypass on a fused board (confirmed 2026-09-23,
-[§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)). From that shell any rootfs on
-the card can be mounted and `switch_root`ed into, with no signature check.
+**Status: the confirmed exploit (M1) is fixed — hardware-confirmed 2026-09-23 on the fused Mini for
+both MicroSD and SPI-NAND (stock and the re-forged M1 cards both boot to the app; console-on UART
+captures show the clean cmdline and the verifier path). eMMC follows SD's `devtype="mmc"` path —
+expected-closed, untested.** On signed builds `root=` and the rootfs arguments are baked
+into the signed DTB and the env partition cannot set `sys_bootargs`. The residual that made this the
+top open issue — `mtdparts`/`blkdevparts` **imported from the unsigned env partition and merged
+verbatim into the command line**, so appending ` rdinit=/bin/sh` to the env's `blkdevparts` value got
+a shell from the signed initramfs running **instead of** the verifier (confirmed 2026-09-23,
+[§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)) — is closed:
 
-**Fix, in order of preference:**
+* [`lock-kernel-cmdline.sh`](../../opt/luckfox/lock-kernel-cmdline.sh) strips `blkdevparts` and
+  `mtdparts` from U-Boot's `CONFIG_ENVF_LIST` (signed builds only), so `envf.c` never imports them
+  into the global environment that `board.c` merges. The env partition contributes **no** token to
+  the cmdline anymore, so nothing can ride it — including any future variable name an attacker might
+  try, since only whitelisted names are imported at all.
+* `apply_signed_nand_bootargs` now bakes the layout into the signed DTB `/chosen/bootargs`:
+  `mtdparts=spi-nand0:` / `blkdevparts=mmcblk1|0:` + `RK_PARTITION_CMD_IN_ENV` — byte-for-byte what
+  `project/build.sh parse_partition_file()` used to write into env.img, read from the same board
+  config `apply-partition-layout.sh` patches (one source of truth). The kernel still sees its full
+  partition table; it just comes from a signed place now. This matters on every medium: our images
+  carry no MBR (sector 0 is the ENVF), so without the baked token the kernel would see no partitions
+  at all.
+* U-Boot/SPL keep working with the tokens gone from the import list, because their own partition
+  resolution (`disk/part_env.c`, `PartType: ENV`) reads the ENVF **directly from the device** via
+  `envf_get()` — a channel `CONFIG_ENVF_LIST` never governed. `boot_fit` finds its image by partition
+  name through that driver; the SPL's FIT loading is unaffected. The env partition itself is
+  untouched, so Provision MicroSD / `sd_update` behave exactly as before.
+* [`assert-uboot-fit-signature.sh`](../../opt/luckfox/assert-uboot-fit-signature.sh) re-checks the
+  **generated** U-Boot `.config` after the build: a missing or still-whitelisted token is a hard
+  failure (Kconfig would otherwise silently fall back to its default list).
+* **The whitelist is not the only consumer of the env (SPI-NAND).** `disk/part_env.c` reads the ENVF
+  **directly** (`envf_get()`), independent of `CONFIG_ENVF_LIST`, so stripping the whitelist left two
+  env-fed cmdline paths open on NAND: `board.c`'s `#ifdef CONFIG_MTD_BLK` fallback (reachable *only
+  after* the strip — before it, the global `mtdparts` existed and the fallback was skipped) and the
+  SPL's `spl_fit.c` append on `BLK_MTD_SPI_NAND`. Both serialise partition **names** through
+  `mtd_part_parse()`, and a name is everything up to the first `)`, so a space survives: a name like
+  `rootfs rdinit=/q` splits the kernel cmdline token and a failed `rdinit=` falls through to `/bin/sh`
+  in the signed initramfs — M1 again, on SPI-NAND (SD/eMMC never fire it: `devtype="mmc"`). Closed by
+  [`patch-mtd-part-parse.sh`](../../opt/luckfox/patch-mtd-part-parse.sh): sanitise `info.name` in
+  `mtd_part_parse()` to `[A-Za-z0-9_-]` (the only env-controlled field it emits), and only append the
+  env-derived layout when the bootargs do not already carry the signed one, so the DTB bake wins.
+  `assert-uboot-fit-signature.sh` also verifies the built source carries it.
 
-1. **Strip the injection (surgical).** Remove `blkdevparts`/`mtdparts` from `CONFIG_ENVF_LIST` so
-   `envf.c` will not import them from the unsigned env, and extend the `apply_signed_nand_bootargs`
-   bake (which already puts `root=`/`rootfstype=` into the signed DTB `/chosen`) to also carry
-   `blkdevparts`. The env then contributes nothing to the cmdline, so nothing can ride it. Verify on a
-   build that U-Boot still resolves its own partitions with those names gone from the list.
-2. **Force the whole cmdline.** `CONFIG_CMDLINE_FORCE=y` + a compiled-in `CONFIG_CMDLINE`: the kernel
-   ignores the bootloader/env cmdline. Definitive but heavier — the compiled-in string must reproduce
-   the complete per-variant cmdline; `fuse.programmed=1` is dropped (the verifier's OTP-byte fallback
-   covers it).
+Verification status. **Both media hardware-confirmed 2026-09-23 on fused Minis.**
 
-Both are untested on the 5.10 kernel and differ per medium (SD/NAND/eMMC), so implement with a
-build+boot on each. History in [§4.6](#46-the-kernel-command-line-envf-and-autoboot); open question Q13.
+* **MicroSD (whitelist path).** The re-signed stock card boots to the SeedSigner UI, and the same card
+  with the M1 payload re-forged into `env.img`'s `blkdevparts` (` rdinit=/bin/sh`, ENVF CRC recomputed)
+  **also boots to the SeedSigner UI**: the token no longer reaches the kernel cmdline, where before the
+  fix that card dropped to a `/bin/sh` shell (see §7.11). First run on a console-off image — the app
+  coming up was the observation; the follow-up run used a board-key re-sign of a **console-on** build,
+  and the UART shows it directly: kernel cmdline carries only the signed DTB's
+  `blkdevparts=mmcblk1:…,6656M(rootfs)`, the card comes up as clean `p1(env)…p6(rootfs)`, no `rdinit=`
+  anywhere, and the full `rootfs-verify:` sequence runs before `/sbin/init`.
+* **SPI-NAND (direct-read path).** The negative test is the injection inside a partition **name** —
+  `mtdparts=spi-nand0:…,113M(rootfs rdinit=/bin/sh)` in the env, space preserved. Flashed to a fused
+  Mini over USB with raw-sector tooling (the SocToolKit GUI refused the bundle on env-content
+  validation; `upgrade_tool wl` writes sectors without parsing — see §7.11), read-back verified. The
+  console-on UART shows: kernel cmdline carries only the signed DTB's `mtdparts=spi-nand0:…,113M(rootfs)`,
+  six clean MTD partitions, no `rdinit=` anywhere, and the full `rootfs-verify:` sequence runs before
+  `/sbin/init`. This is the path `patch-mtd-part-parse.sh` addresses — confirmed inert.
+
+eMMC follows SD's `devtype="mmc"` path (whitelist only; the NAND direct-read paths never fire) and is
+expected-closed but untested.
+
+**Not done (available as extra hardening):** `CONFIG_CMDLINE_FORCE=y` + a compiled-in
+`CONFIG_CMDLINE` would make the kernel ignore the bootloader cmdline entirely — definitive for the
+whole class, but heavier (the string must reproduce every per-variant arg; `fuse.programmed=1` is
+dropped, which the verifier's OTP-byte fallback covers). History in
+[§4.6](#46-the-kernel-command-line-envf-and-autoboot); open question Q13.
 
 ### 6.5 Locking the U-Boot console
 
@@ -1777,6 +1852,21 @@ other docs and commits refer to them.
   boots (camera works), the equivalent tamper is now **rejected at rootfs verification**, and the
   folded images boot with a working camera on SPI-NAND and eMMC too
   ([§7.10](#710-bench-oem-partition-tamper-2026-09-23)).
+- 2026-09-23: the same fused Mini re-tested `sd_update.txt` (refused under verified boot) and the
+  U-Boot console (unreachable), and **confirmed** env cmdline smuggling as a pre-verifier root-shell
+  bypass (M1): ` rdinit=/bin/sh` appended to the unsigned env's `blkdevparts` ran a shell from the
+  signed initramfs instead of the verifier. Fixed by stripping `blkdevparts`/`mtdparts` from U-Boot's
+  env import whitelist and baking the layout into the signed DTB — plus, because `disk/part_env.c`
+  reads the env *directly*, sanitising the partition names `mtd_part_parse()` serialises (the SPI-NAND
+  path) and guarding the `board.c` fallback ([§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)).
+- 2026-09-23: **M1 negative tests hardware-confirmed on both media.** On fused Minis, re-forged M1
+  cards — ` rdinit=/bin/sh` in the env's `blkdevparts` (MicroSD) and the injection inside a partition
+  *name*, `rootfs rdinit=/bin/sh`, in the env's `mtdparts` (SPI-NAND, flashed over USB with raw-sector
+  tooling after read-back verification) — both boot to the SeedSigner UI. Console-on UART captures show
+  the kernel cmdline carrying only the signed DTB's partition token on each medium, clean partition
+  creation, no `rdinit=` anywhere, and the full `rootfs-verify:` sequence before `/sbin/init`
+  ([§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)). eMMC shares SD's path but is
+  untested.
 
 ### 7.1 Open questions
 
@@ -1792,9 +1882,14 @@ other docs and commits refer to them.
   `rk_sign_tool`'s native HSM mode.
 - **Q10.** What do `mcr` (secondary cert) and `ss --cert` enable? If they support a root/delegate key
   hierarchy, the root key could stay permanently offline.
-- **Q13 (remainder).** Full command-line lockdown: `CONFIG_CMDLINE_FORCE=y` (untested on this 5.10
-  kernel; must carry the *complete* line) or stripping `mtdparts`/`blkdevparts` from
-  `CONFIG_ENVF_LIST` ([§4.6](#46-the-kernel-command-line-envf-and-autoboot)).
+- **Q13 (remainder).** Full command-line lockdown: the surgical option — stripping
+  `mtdparts`/`blkdevparts` from `CONFIG_ENVF_LIST`, baking the layout into the signed DTB, and
+  sanitising the `mtd_part_parse()` names the env reaches *directly* (the SPI-NAND path) — landed and
+  **bench-confirmed on SD and SPI-NAND** 2026-09-23 ([§6.4](#64-full-kernel-command-line-lockdown),
+  [§7.11](#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)); eMMC shares SD's
+  `devtype="mmc"` path but is untested. What remains is the optional `CONFIG_CMDLINE_FORCE=y`
+  hardening (untested on this 5.10 kernel; must carry the *complete* line) if whole-class closure is
+  ever wanted ([§4.6](#46-the-kernel-command-line-envf-and-autoboot)).
 - **Q14.** How should `boot.img` rollback be enforced without OP-TEE? Either patch U-Boot to compare the
   FIT `rollback-index` against a floor compiled into `uboot.img` (SPL protects `uboot.img` from rollback
   via OTP, so that floor can't be rolled back either), or accept that raising the `boot.img` floor means
@@ -1850,13 +1945,18 @@ other docs and commits refer to them.
   `--rollback-index <img> <n>`, writes `rollback-index = <n>` into the ITS, and reads it back with
   `fdtget` to verify. It *errors out* if `CONFIG_SPL_FIT_ROLLBACK_PROTECT=y` and no index is given.
   `--version` is a distinct, non-OTP field.
-- **Q12 — are the ENVF partition's contents imported?** Yes, but only the names in `CONFIG_ENVF_LIST`;
-  `bootdelay` and `cli` aren't on it. On signed builds `sys_bootargs` is ignored too, leaving
-  `mtdparts`/`blkdevparts` ([§4.6](#46-the-kernel-command-line-envf-and-autoboot)).
+- **Q12 — are the ENVF partition's contents imported?** Two ways. Into the *global environment*: yes,
+  but only the names in `CONFIG_ENVF_LIST` (`bootdelay`/`cli` aren't on it, and on signed builds
+  `sys_bootargs` is ignored too, which left `mtdparts`/`blkdevparts`). Separately, `disk/part_env.c`
+  reads the ENVF **directly** to define the block-layer partitions, and `mtd_part_parse()` can
+  serialise those names into the cmdline — the path that kept M1 alive on SPI-NAND and is closed by
+  `patch-mtd-part-parse.sh` ([§4.6](#46-the-kernel-command-line-envf-and-autoboot)).
 - **Q13 — is the kernel command line trusted on signed builds?** Partly: `root=` (plus `ubi.mtd`,
-  `rootfstype`, `rk_dma_heap_cma`) is baked into the signed DTB `/chosen` by
-  `apply_signed_nand_bootargs`, found the hard way when the first fused build hung at
-  `Waiting for root device /dev/mmcblk1p7` with 32M CMA (bench row C7). Remainder in §7.1.
+  `rootfstype`, `rk_dma_heap_cma`, and now the `mtdparts=`/`blkdevparts=` layout) is baked into the
+  signed DTB `/chosen` by `apply_signed_nand_bootargs`, found the hard way when the first fused build
+  hung at `Waiting for root device /dev/mmcblk1p7` with 32M CMA (bench row C7). The env no longer
+  contributes through either the import whitelist or the direct `mtd_part_parse()` path; only the
+  optional `CONFIG_CMDLINE_FORCE` whole-class hardening remains. Remainder in §7.1.
 - **Q16 — the loader/idblock signature format (2026-09-17), which made `rk_sign_tool` unnecessary.**
   Recovered directly from shipped artifacts: scan a signed image for a 256-byte window that RSA-verifies
   (under the committed dev pubkey) to a *structurally valid* PSS block — trailer `0xbc`, and after MGF1
@@ -2155,11 +2255,53 @@ i.e. an **interactive root shell in the signed initramfs, from which any rootfs 
 `switch_root`ed into.** So the unsigned env can override the one component that is supposed to be
 unbypassable, silently — no red screen, no button, unlike the (consented) escape hatch. This is
 worse than "DoS": `env` is a verifier bypass. It still needs env write (card access), the same
-physical-access class as the escape hatch. **Fix:** `CONFIG_CMDLINE_FORCE=y` (compile the cmdline into
-the signed kernel so the env cannot reach it), or strip `blkdevparts`/`mtdparts` from
-`CONFIG_ENVF_LIST` and carry the layout in the signed `uboot.img`'s compiled-in env. Both are
-untested on the 5.10 kernel and must preserve the per-medium `root=`/`rootfstype=` baking
-(`apply_signed_nand_bootargs`) — implement with a build+boot on each medium. See
+physical-access class as the escape hatch.
+
+**Fix implemented (2026-09-23): the surgical option, not `CONFIG_CMDLINE_FORCE`.**
+[`lock-kernel-cmdline.sh`](../../opt/luckfox/lock-kernel-cmdline.sh) strips `blkdevparts`/`mtdparts`
+from U-Boot's `CONFIG_ENVF_LIST` (signed builds), so the env can import neither — and
+`apply_signed_nand_bootargs` bakes the layout (`mtdparts=spi-nand0:` / `blkdevparts=mmcblk1|0:` +
+`RK_PARTITION_CMD_IN_ENV`, exactly what `project/build.sh` used to write into env.img) into the
+signed DTB `/chosen/bootargs`. That alone closes SD/eMMC, but **not SPI-NAND**: the whitelist is not
+the only consumer of the env — `disk/part_env.c` reads it *directly* and `mtd_part_parse()` serialises
+partition **names** into the cmdline through `board.c`'s `CONFIG_MTD_BLK` fallback and the SPL, and a
+name containing a space injects a bare `rdinit=`. So
+[`patch-mtd-part-parse.sh`](../../opt/luckfox/patch-mtd-part-parse.sh) additionally sanitises those
+names (`[A-Za-z0-9_-]`) and stops the fallback overriding the signed layout. U-Boot/SPL keep resolving
+their own partitions, because that path reads the ENVF directly via `envf_get()`, which
+`CONFIG_ENVF_LIST` never governed.
+
+**Hardware-confirmed on SD (2026-09-23).** The re-signed stock Mini card boots to the SeedSigner UI.
+The same card, rebuilt with the M1 payload re-forged into `env.img`'s `blkdevparts`
+(`blkdevparts=mmcblk1:…,6656M(rootfs) rdinit=/bin/sh`; ENVF CRC recomputed, `stored==calc`
+re-verified), **also boots to the SeedSigner UI** — the injected `rdinit=` no longer rides into the
+kernel cmdline. Before the fix that exact card dropped to a `/bin/sh` shell in the signed initramfs
+instead of running the verifier. The two images differ only inside the first 32 KiB (`env`); every
+signed region is byte-identical. That run used a console-off image, so the evidence was the UI coming
+up; the follow-up SD run re-signed a **console-on** build to the board key and captured the UART:
+kernel cmdline `… root=/dev/mmcblk1p6 … blkdevparts=mmcblk1:…,6656M(rootfs) snd_soc_core.…` — only the
+signed DTB's token, no injection; card up as clean `p1(env)…p6(rootfs)` (the `bad MBR sector
+signature 0x0000 / ** Invalid partition 1 **` line is expected — our images carry no MBR by design);
+no `rdinit=` anywhere; the full `rootfs-verify:` sequence (minisign over the streamed rootfs, trusted
+comment OK) before `/sbin/init`.
+
+**Hardware-confirmed on SPI-NAND (2026-09-23).** The NAND negative test is the injection inside a
+partition **name**: `mtdparts=spi-nand0:…,113M(rootfs rdinit=/bin/sh)` in the env (ENVF CRC
+recomputed). Two delivery notes from the bench. First, the SocToolKit GUI **refused** the tampered
+bundle — it validates env contents and rejects a partition name with a space; the CLI does not:
+`upgrade_tool wl 0 512 env.img` writes raw sectors without parsing (the recipe in
+[soctoolkit-cli.md](soctoolkit-cli.md)), so any tool that skips validation can deliver the payload —
+which is exactly why the fix has to be on the boot side. Second, `update.img` embeds a verbatim copy
+of `env.img` guarded only by its global MD5 trailer (no per-component hashes), so it too was patchable
+in place for the test. Flashed via `db download.bin` + one `wl` per partition, with read-back of the
+env and idblock partitions verified byte-for-byte before reset. The console-on UART then showed:
+kernel cmdline `… ubi.mtd=5 … mtdparts=spi-nand0:…,113M(rootfs) snd_soc_core.…` — only the signed
+DTB's token; six clean MTD partitions (`"env"` … `"rootfs"`, no injected name); no `rdinit=` anywhere;
+the full `rootfs-verify:` sequence before `/sbin/init`. This is the direct-read path
+(`disk/part_env.c` → `mtd_part_parse()`) that `patch-mtd-part-parse.sh` sanitises — confirmed inert.
+
+**M1 status: closed on every medium we can bench** (MicroSD and SPI-NAND hardware-confirmed; eMMC
+shares SD's `devtype="mmc"` whitelist path and is expected-closed but untested). See
 [§6.4](#64-full-kernel-command-line-lockdown).
 
 ### 7.12 Provenance

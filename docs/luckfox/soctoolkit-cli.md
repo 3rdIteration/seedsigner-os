@@ -146,6 +146,15 @@ foreach ($p in $plan) { & $t -s $id wl $p[0] $p[1] "$b\$($p[2])" }
 `rl` returns the whole sector range, so compare only the first file-length
 bytes of what it returns with the file you wrote. The rest is padding.
 
+The GUI and the CLI do not validate the same things: SocToolkit's Download mode
+**checks env contents** (it refused a bundle whose `mtdparts` partition name
+contained a space, 2026-09-23), while `wl` writes raw sectors without parsing —
+so a payload the GUI rejects is still deliverable through the CLI or any other
+raw-sector writer. Security-relevant consequences belong on the boot side (see
+[secure-boot.md §7.11](secure-boot.md#711-bench-sd_update-and-console-on-a-fused-board-2026-09-23)),
+not in the flasher. `update.img` is the same story: its embedded `env.img` copy
+is guarded only by the file's global MD5 trailer, with no per-component hashes.
+
 ## Troubleshooting
 
 ### "Download boot failed!  Note: please check ddr, please reset device and retry"

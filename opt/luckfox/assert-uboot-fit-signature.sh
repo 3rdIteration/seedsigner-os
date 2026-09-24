@@ -60,3 +60,42 @@ for sym in CONFIG_FIT_SIGNATURE CONFIG_SPL_FIT_SIGNATURE; do
     fi
 done
 log "✅ FIT signature enforcement present (CONFIG_FIT_SIGNATURE=y, CONFIG_SPL_FIT_SIGNATURE=y)"
+
+# M1 cmdline lock: the unsigned env partition must not be able to import
+# blkdevparts/mtdparts into U-Boot's environment — board.c would append them
+# verbatim to the kernel command line (the rdinit= root-shell bypass).
+# lock-kernel-cmdline.sh strips both from CONFIG_ENVF_LIST in the defconfig;
+# verify they are gone from the GENERATED config, because Kconfig string
+# options fall back to their default ("blkdevparts mtdparts sys_bootargs app
+# reserved") whenever a defconfig stops setting them.
+envf_line="$(grep -E '^CONFIG_ENVF_LIST=' "$UBOOT_CFG" | head -n1 || true)"
+if [ -z "$envf_line" ]; then
+    fail "no CONFIG_ENVF_LIST in the built U-Boot .config — cannot verify the env import whitelist.
+    If CONFIG_ENVF is off that is fine, but this build expects it on (lock-kernel-cmdline.sh); do not ship unverified."
+fi
+if printf '%s\n' "$envf_line" | grep -qw 'blkdevparts\|mtdparts'; then
+    fail "built U-Boot .config still whitelists blkdevparts/mtdparts: $envf_line
+    The unsigned env partition could inject kernel cmdline tokens (M1). Fix lock-kernel-cmdline.sh, do not ship this."
+fi
+log "✅ env import whitelist locked ($envf_line)"
+
+# M1 cmdline lock, part 2 (SPI-NAND). The CONFIG_ENVF_LIST whitelist is not the
+# only consumer of the unsigned env: mtd_part_parse() serialises partition NAMES
+# into the kernel command line via the board.c CONFIG_MTD_BLK fallback and the
+# SPL, and part_env.c copies those names verbatim from env.img (spaces allowed).
+# patch-mtd-part-parse.sh sanitises the names and guards the fallback; verify the
+# built SOURCE carries it, so a reverted or never-run patch cannot ship an
+# injectable SPI-NAND image.
+UBOOT_SRC="$(dirname "$UBOOT_CFG")"
+for f in drivers/mtd/mtd_blk.c arch/arm/mach-rockchip/board.c; do
+    if [ ! -f "$UBOOT_SRC/$f" ]; then
+        warn "source $f not found under $UBOOT_SRC — cannot verify the cmdline sanitisation patch"
+        continue
+    fi
+    if ! grep -q 'SEEDSIGNER-CMDLINE-SANITIZE' "$UBOOT_SRC/$f"; then
+        fail "$f lacks the SEEDSIGNER-CMDLINE-SANITIZE patch — mtd_part_parse() could still inject
+        env-controlled partition names into the kernel cmdline (M1 on SPI-NAND).
+        patch-mtd-part-parse.sh did not run or was reverted; do not ship this."
+    fi
+done
+log "✅ partition-name sanitisation present in the built U-Boot source"
