@@ -199,13 +199,14 @@ export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
 # Serial console (ttyFIQ0). Accepts auto|true|false and the legacy 1|0, matching
 # build-luckfox.yml's disable_uart2_console_debug input.
 #
-# The default used to be a flat 1 -- console always stripped, whatever the
-# variant -- while CI's "auto" keeps the console on a dev build. So a Docker dev
-# image had no serial console and the CI dev image did, from the same source.
-# That is the whole point of a dev image, and it is not something you discover
-# until the board is on the bench and silent.
-#
-# Resolved after SEEDSIGNER_BUILD_VARIANT is known, in resolve_uart2_console().
+# Stripped on EVERY variant by default (auto/true -> 1). The console shares the
+# UART2 pin with the SEC1210 smartcard reader: a console-on image wedges the
+# ccid driver (kernel log output lands in the AT-command stream), so a dev that
+# keeps the console silently loses the reader. Dev images keep their other two
+# bench paths -- adb (USB gadget mode) and telnet (debug_network=on) -- so the
+# console is not the only way in; explicit false/0 remains the bench override
+# for boards with no card reader attached. This restores the flat-1 default
+# build-local.sh has always had, reuniting the three build implementations.
 export DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-auto}"
 export DEFAULT_PYTHON_VERSION="${DEFAULT_PYTHON_VERSION:-3.12}"
 # Host Rust toolchain cache (see rust-toolchain-cache.sh). Unset = no caching,
@@ -229,22 +230,15 @@ print_info() { echo -e "\n${YELLOW}[INFO] $1${NC}\n"; }
 # build-local.sh has always defined it; this is the two drifting apart again.
 print_warning() { echo -e "\n${YELLOW}[WARNING] $1${NC}\n"; }
 
-# Normalise DISABLE_UART2_CONSOLE_DEBUG to a plain 1|0 before anything reads it,
-# applying the same rule as build-luckfox.yml: an explicit true/false (or the
-# legacy 1/0) wins; auto follows the build variant -- non-dev strips the serial
-# console, dev keeps it. The three apply_uart2_* functions below then only ever
-# see 1 or 0, so the policy lives in exactly one place.
+# Normalise DISABLE_UART2_CONSOLE_DEBUG to a plain 1|0 before anything reads it:
+# only an explicit false (or the legacy 0) keeps the console; auto/true/1 -- and
+# anything unrecognised -- strip it, on every build variant. The three
+# apply_uart2_* functions below then only ever see 1 or 0, so the policy lives in
+# exactly one place.
 resolve_uart2_console() {
     case "$DISABLE_UART2_CONSOLE_DEBUG" in
-        1|true)  DISABLE_UART2_CONSOLE_DEBUG=1 ;;
         0|false) DISABLE_UART2_CONSOLE_DEBUG=0 ;;
-        *)
-            if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
-                DISABLE_UART2_CONSOLE_DEBUG=1
-            else
-                DISABLE_UART2_CONSOLE_DEBUG=0
-            fi
-            ;;
+        *)       DISABLE_UART2_CONSOLE_DEBUG=1 ;;
     esac
     export DISABLE_UART2_CONSOLE_DEBUG
 }
@@ -409,7 +403,7 @@ show_usage() {
     echo "  - Mini CMA override via MINI_CMA_SIZE (default: 1M)"
     echo "  - 'both' builds mini+max; use 'pi' to build the Pico Pi (eMMC only)"
     echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=auto|true|false (default: auto)"
-    echo "    auto follows the variant: non-dev strips the console, dev keeps it"
+    echo "    auto/true strip the console on every variant; only false keeps it"
     echo "  - SDK revision pinned by opt/luckfox/SDK_COMMIT"
     echo "    (override with LUCKFOX_COMMIT=<sha> or LUCKFOX_BRANCH=<branch>)"
     echo ""

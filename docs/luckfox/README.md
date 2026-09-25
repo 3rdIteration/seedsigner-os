@@ -74,15 +74,17 @@ debuggable one. **Automatic push/PR CI always builds `dev`** (it validates the f
 manual "Run workflow" defaults to `non-dev` (pick `dev` to override). Local builds set the same thing via
 `SEEDSIGNER_BUILD_VARIANT=dev|non-dev` (default `non-dev`).
 
-For the serial console specifically, the `disable_uart2_console_debug` input defaults to `auto` (follow the
-variant: non-dev strips it, dev keeps it); force it with `true`/`false`. Local Docker builds take the same
-lever as `--disable-uart2-console-debug auto|true|false` on `build.sh`.
+For the serial console specifically, the `disable_uart2_console_debug` input defaults to `auto`, which
+**strips the console + FIQ debugger on every variant, dev included**; only an explicit `false`/`0` keeps
+them. Local Docker builds take the same lever as `--disable-uart2-console-debug auto|true|false` on
+`build.sh`; `build-local.sh` defaults to stripped with an opt-in `--enable-uart2-console`.
 
-**The console and the SEC1210 smartcard HAT share a UART.** A console-on image (any dev build under the
-default) will not initialise the reader: kernel log output is injected into the ccid driver's AT-command
-stream, and with only the active reader on the line early boot wedges instead. Build smartcard bring-up
-images with `disable_uart2_console_debug=true` (or `--disable-uart2-console-debug true`); non-dev images are
-unaffected because they strip the console by default.
+**The console and the SEC1210 smartcard HAT share a UART.** A console-on image will not initialise the
+reader: kernel log output is injected into the ccid driver's AT-command stream, and with only the active
+reader on the line early boot wedges instead. That is why the console is now stripped by default on every
+variant — dev images keep their other two bench paths (adb via USB gadget, and telnet via
+`debug_network=on`), so no image loses the card reader unless it was explicitly built with
+`disable_uart2_console_debug=false` for boards with no reader attached.
 
 The Luckfox implementation differs from the Pi / La Frite profiles (which have parallel `-dev`/non-dev profile
 directories). Luckfox is the Rockchip SDK with a single defconfig + an SDK-provided rootfs, so **non-dev is a
@@ -104,7 +106,7 @@ rootfs squashfs and are covered by the rootfs signature.
 
 | Vector | non-dev closes it via | Where |
 |---|---|---|
-| Kernel serial console | strip `console=ttyFIQ0`/`earlycon`/`user_debug` bootargs (forced on for non-dev; the `disable_uart2_console_debug` input is the dev override) | "Configure UART2 console debug" (all three builds) |
+| Kernel serial console | strip `console=ttyFIQ0`/`earlycon`/`user_debug` bootargs (default on for every variant; `disable_uart2_console_debug=false` is the explicit bench override) | "Configure UART2 console debug" (all three builds) |
 | Serial **login** (getty) | `# BR2_TARGET_GENERIC_GETTY is not set` in the defconfig **and** comment console/tty getty/login/shell `respawn` lines in the rootfs `/etc/inittab` | defconfig sed + `harden-nondev.sh` |
 | **Networking — kernel** | `INET`/`PACKET`/`IPV6`/`NETDEVICES` off plus the Ethernet MAC+PHY (`STMMAC_ETH`/`RK630_PHY`) and `USB_CONFIGFS_RNDIS`: root cannot create an interface or open an AF_INET socket because the stack isn't compiled in. Gated on `debug_network=off` | `strip-kernel-network.sh` (Group A) |
 | **WiFi — kernel** | `WL_ROCKCHIP` (umbrella that `select`s CFG80211+MAC80211 and sources every vendor WiFi Kconfig) + `RTL8723BS` off, so the 802.11 stack and all 8 vendor drivers are never built and can't reach `/oem/usr/ko`. Always stripped on non-dev | `strip-kernel-network.sh` (Group B) |
