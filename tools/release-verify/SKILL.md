@@ -36,6 +36,14 @@ App fields are identical across lineages: `APP_REPO=https://github.com/3rdIterat
 without `.git`; Luckfox lineages record it **with** `.git` — that is correct and expected, they use
 different code paths.)
 
+**Build-shaping inputs differ between lineages too.** The app-repo caller (lineage C) hardcodes
+`build_variant: non-dev` and `disable_uart2_console_debug: 'true'`; lineage D takes whatever the
+dispatcher selected. A non-dev image built with `disable_uart2_console_debug=false` keeps the ttyFIQ0
+serial console + FIQ debugger, so its **kernel, fdt, ramdisk and resource payloads all differ** from
+the same combo built with `auto`/`true` (network strip still applies — it is gated on the variant,
+not this flag). Before comparing two lineages' boot.imgs, confirm both runs used the same value:
+`gh run view <id> --log | grep DISABLE_UART2_CONSOLE_DEBUG=` shows what each build actually ran.
+
 The 5 Luckfox combos: Mini SD_CARD + SPI_NAND, Pro Max SD_CARD + SPI_NAND, Pico Pi EMMC.
 Signed builds (default) tag artifacts `-signed-devkey`; the `fit-sign-tree-<model>.zip` assets are
 the re-signing key trees and differ between lineages C/D because they embed provenance.
@@ -113,7 +121,12 @@ On a mismatch, in order of likelihood:
 1. **Provenance drift** — extract `/etc/seedsigner-os-release` from both images and diff. For Pi
    images it is inside the rootfs; `grep -a SEEDSIGNER_OS_ <img>` usually finds it directly (ext4
    is uncompressed). Check you matched the lineage's rules above, especially `BRANCH=HEAD` for C
-   and `unknown` for A.
+   and `unknown` for A. On Luckfox one provenance byte desyncs the *entire signed chain*: the string
+   changes rootfs.img → its minisign signature (`rootfs.sig`, embedded in the initramfs) → boot.img's
+   FIT hash node + RSA-PSS signature → update.img/SD image. So a single differing os-release line
+   explains mismatches in every artifact that embeds the others; verify by extracting both squashfs
+   trees (UBI-wrapped on NAND: `ubireader_extract_images`) and diffing file-by-file — expect exactly
+   one file to differ, and the ramdisk's only differing entry to be `rootfs.sig`.
 2. **App ref drift** — wrong tag/branch changes app code *and* the image filename.
 3. Real non-determinism — then use `python3 tools/imgdiff.py local.img ci.img` (Pi/Lafrite only;
    it narrows to the file and, for ELFs, the embedded string). Differences **cascade**: the
@@ -132,3 +145,9 @@ On a mismatch, in order of likelihood:
   reuses one clone for boards 2–5 — output is byte-identical either way.
 - Re-running a failed CI job after a transient apt-mirror failure produces the same hashes as its
   siblings (determinism), so verify against whichever copy landed on the release.
+- `uboot.img` ends with "boot.img" — filename filters like `endswith('boot.img')` silently pick up
+  the wrong image when hashing FIT payloads. Match exact basenames.
+- Luckfox boot.img is a raw U-Boot FIT at offset 0 (FDT magic `d0 0d fe ed`, big-endian) despite
+  looking like an opaque blob; `opt/luckfox/secure-boot/verify-fit-payloads.py payloads|compare <img>`
+  lists each payload's stored vs recomputed sha256 and diffs two images' payloads — the fastest way
+  to see *which* of kernel/fdt/ramdisk/resource moved.
