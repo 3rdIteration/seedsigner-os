@@ -17,7 +17,12 @@ export LUCKFOX_REPO_URL="https://github.com/3rdIteration/luckfox-pico.git"
 # what branch was asked for, and the resulting image differed from CI in the one
 # component that is not pinned by this repo. See also: the build records the app
 # branch, not its commit, so "dev" is not a fixed target either.
-export SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner.git}"
+export SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner}"
+# Canonicalise exactly like build.sh does for REPO (no trailing slash, no ".git"): the URL is
+# recorded verbatim in /etc/seedsigner-os-release (APP_REPO), so caller spelling must not leak
+# into the image -- one extra ".git" desyncs rootfs -> minisig -> initramfs -> FIT signature.
+while [ "${SEEDSIGNER_REPO_URL%/}" != "$SEEDSIGNER_REPO_URL" ]; do SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL%/}"; done
+export SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL%.git}"
 # May be a branch, a release tag or a commit -- `git clone -b` accepts all three.
 export SEEDSIGNER_BRANCH="${SEEDSIGNER_REF:-${SEEDSIGNER_BRANCH:-dev}}"
 # Build variant: non-dev (hardened/air-gapped) or dev. Mirrors build-luckfox.yml's build_variant.
