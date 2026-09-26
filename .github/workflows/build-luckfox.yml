@@ -37,7 +37,7 @@ on:
           - EMMC
         default: 'SD_CARD'
       disable_uart2_console_debug:
-        description: 'Serial console (ttyFIQ0) override: auto follows build_variant (non-dev=off, dev=on); or force true/false'
+        description: 'Strip serial console (ttyFIQ0) + FIQ debugger: auto/true = strip on EVERY variant (default; UART2 is shared with the SEC1210 reader); false = keep console for bench debugging (dev images also have adb + telnet)'
         required: false
         type: choice
         options:
@@ -98,7 +98,7 @@ on:
           - 'on'
         default: 'off'
       build_variant:
-        description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (serial console + adb shell). Automatic push/PR CI always builds dev.'
+        description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (adb shell + telnet debug channel; the serial console is stripped by default on both variants — override with disable_uart2_console_debug=false). Automatic push/PR CI always builds dev.'
         required: false
         type: choice
         options:
@@ -401,11 +401,11 @@ jobs:
         # Opt-in: /init verifies the rootfs even when secure boot is not fused
         # (adds /force-rootfs-verify to the initramfs). Off by default.
         SEEDSIGNER_ROOTFS_VERIFY_UNFUSED: ${{ inputs.rootfs_verify_unfused == 'on' && '1' || '0' }}
-        # This input was declared but never forwarded to the build -- wiring it
-        # now. build.sh's passthrough hands it to os-build.sh, where
-        # resolve_uart2_console() normalises auto against the variant (non-dev
-        # strips the console, dev keeps it). Note: a console-on image shares its
-        # UART with the SEC1210 smartcard reader and will not initialise it.
+        # build.sh's passthrough hands this to os-build.sh, where
+        # resolve_uart2_console() normalises auto to strip the console on EVERY
+        # variant; only an explicit false/0 keeps it. Note: a console-on image
+        # shares its UART with the SEC1210 smartcard reader and will not
+        # initialise it — keep false to bench-only, non-smartcard debugging.
         DISABLE_UART2_CONSOLE_DEBUG: ${{ inputs.disable_uart2_console_debug || 'auto' }}
       run: |
         set -euo pipefail
