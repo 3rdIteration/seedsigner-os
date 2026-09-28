@@ -1,3 +1,4 @@
-# md5, sha256 from https://pypi.org/project/embit/#copy-hash-modal-0adf5c0d-26d5-4b77-b9d4-2ebd488fb1c9
-md5  caf6ad1aed678dbf50b00b94e54a8462  embit-0.8.0.tar.gz
-sha256	8bf4b10073c67400370ce523fb16f035fe759f6fdd987c579bdcc268d75ed770  embit-0.8.0.tar.gz
+# Locally computed from the GitHub archives (embit v0.8.2 commit, and the
+# secp256k1-zkp commit embit's secp256k1 submodule pins)
+sha256  29e900d49f98a482035ca4cbe615f75cff50b30029348e41a4ea5a4f7dcbef28  python-embit-eb6104fd85d3becabba628756cd5e1b75619f3a1.tar.gz
+sha256  32089181f72a9be53c4d16b020d466e99004aa0f07331002e02b4ecfec6022cf  secp256k1-zkp-d9560e0af78d9059bba0c4845a310387abfa4e5e.tar.gz

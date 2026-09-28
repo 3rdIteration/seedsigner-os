@@ -107,3 +107,7 @@ if [ "${SEEDSIGNER_TESTING_BUILD:-0}" = "1" ]; then
     mkdir -p "${TARGET_DIR}/etc"
     touch "${TARGET_DIR}/etc/seedsigner-testing-build"
 fi
+
+# Fail the build if embit can't reach the compiled libsecp256k1 or if we detect the
+# pure-python secp256k1 fallback is present.
+"$(dirname "$0")/../../external-packages/python-embit/verify-secp256k1-binary.sh" "${TARGET_DIR}"
