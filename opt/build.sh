@@ -139,9 +139,6 @@ tail_endless() {
 
 compile_translations_and_fonts() {
 
-  # See the pinned pip install below for why this is not simply "latest".
-  local fonttools_version="4.64.0"
-
   # create virtual env to compile translation files and slim down font files
   virtualenv .translation-venv
   source .translation-venv/bin/activate
@@ -149,15 +146,24 @@ compile_translations_and_fonts() {
 
   ss_translations_repo="./src/seedsigner/resources/seedsigner-translations"
 
-  # install depedencies for babel and fonttools(pyftsubset)
+  # install pinned, hash-locked dependencies: babel + setuptools come from the
+  # app repo's own l10n requirements; fonttools (pyftsubset) is a build-only
+  # addition pinned in this repo (see requirements-l10n-build.txt).
+  # --require-hashes fails the build if either file regresses to unhashed pins.
   #
-  # fonttools is PINNED: pyftsubset's GPOS output is not stable across releases
-  # (4.63.0 vs 4.64.0 differ by 532-550 bytes per CJK font with byte-identical
-  # glyf/cmap/GSUB), so an unpinned install makes the rootfs hash depend on when
-  # the build ran. Keep in lockstep with opt/luckfox/compile-translations.sh.
-  retry_network "pip install babel" pip install babel || exit
-  retry_network "pip install fonttools" pip install "fonttools==${fonttools_version}" || exit
-  retry_network "pip install -e ." pip install -e . || exit
+  # SeedSigner fork (3rdIteration): fonttools stays at the fork's 4.64.0 (hash-
+  # locked in requirements-l10n-build.txt): pyftsubset's GPOS output is not
+  # stable across releases, so the version decides the rootfs hash. Keep in
+  # lockstep with FONTTOOLS_VERSION in opt/luckfox/compile-translations.sh.
+  # retry_network rides out flaky mirrors, as elsewhere in this script.
+  if [ ! -f l10n/requirements-l10n.txt ]; then
+    echo "ERROR: app repo has no l10n/requirements-l10n.txt (hash-locked babel/setuptools); cannot compile translations" >&2
+    exit 1
+  fi
+  retry_network "pip install l10n requirements" \
+    pip install --require-hashes -r l10n/requirements-l10n.txt || exit
+  retry_network "pip install l10n build requirements" \
+    pip install --require-hashes -r "${cur_dir}/requirements-l10n-build.txt" || exit
 
   # remove any existing binary mo files if they exist
   rm -rf ${ss_translations_repo}/l10n/**/**/*.mo
@@ -208,6 +214,37 @@ compile_translations_and_fonts() {
 
 }
 
+write_version_json() {
+  # Writes ${rootfs_overlay}/opt/src/seedsigner/version.json, which SeedSigner OS reads
+  # at runtime. A missing or incomplete file makes the app raise at the splash screen,
+  # so failures here are fatal.
+  # Must run while .git/ and tools/ are still present (delete_unnecessary_files drops them).
+  app_dir="${rootfs_overlay}/opt"
+
+  if [ -f "${app_dir}/src/seedsigner/version.json" ]; then
+    # Already written: either by an earlier build_image call (--all) or by the caller.
+    echo "version.json already present, leaving as-is"
+    cat "${app_dir}/src/seedsigner/version.json"
+    return
+  fi
+
+  if [ ! -f "${app_dir}/tools/write_versionfile.py" ]; then
+    echo "ERROR: ${app_dir}/tools/write_versionfile.py not found; cannot write version.json" >&2
+    exit 1
+  fi
+
+  # In CI the overlay is a bind-mounted host checkout owned by a different uid than the
+  # root user in this container. git refuses such repos ("dubious ownership") and
+  # version.py silently discards the error, yielding a version.json that bricks boot.
+  git config --global --add safe.directory "$(cd "${app_dir}" && pwd)"
+
+  # PYTHONPATH=src is enough; write_versionfile.py's imports are stdlib-only.
+  export SEEDSIGNER_OS_BUILDER=1
+  # -B (PYTHONDONTWRITEBYTECODE) is required for reproducible builds. Without it CPython
+  # caches that import chain as timestamp-invalidated __pycache__/*.pyc 
+  (cd "${app_dir}" && PYTHONPATH=src python3 -B tools/write_versionfile.py) || exit
+}
+
 download_app_repo() {
   # remove previous opt seedsigner app repo code if it already exists
   rm -fr ${rootfs_overlay}/opt/
@@ -231,17 +268,17 @@ download_app_repo() {
       --recurse-submodules --depth 1 -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
   fi
 
-  # Record the app commit time for display on device
+  # SeedSigner fork (3rdIteration): record the app commit time for display on
+  # device, and stamp the OS identity + provenance marker into the rootfs overlay
+  # (baked in via BR2_ROOTFS_OVERLAY). App git data is read from the freshly
+  # cloned repo here, before delete_unnecessary_files strips its .git; OS git
+  # data (SEEDSIGNER_OS_*) is inherited from the environment (set by CI).
   repo_commit_epoch=$(git -C "${rootfs_overlay}/opt" log -1 --format=%ct 2>/dev/null || true)
   if [ -n "$repo_commit_epoch" ]; then
     repo_commit_time=$(date -u -d "@${repo_commit_epoch}" "+%Y-%m-%d %H:%M")
     echo "${repo_commit_time}" > "${rootfs_overlay}/opt/src/.build_commit_time"
   fi
 
-  # Generate the SeedSigner OS identity + provenance marker into the rootfs
-  # overlay (baked into the image via BR2_ROOTFS_OVERLAY). App git data is read
-  # from the freshly-cloned repo here, before its .git is stripped below; OS git
-  # data (SEEDSIGNER_OS_*) is inherited from the environment (set by CI).
   SEEDSIGNER_APP_REPO="${seedsigner_app_repo}" \
   SEEDSIGNER_APP_BRANCH="${seedsigner_app_repo_branch}" \
   SEEDSIGNER_APP_GIT_DIR="${rootfs_overlay}/opt" \
@@ -254,8 +291,12 @@ download_app_repo() {
   else
     echo "Translation catalog directory not found, skipping compile_translations_and_fonts"
   fi
+}
 
-  # Delete unnecessary files to save space
+delete_unnecessary_files() {
+  # Delete unnecessary files to save space. Runs independently of download_app_repo so
+  # that --skip-repo builds (CI, which populates rootfs-overlay/opt itself) are trimmed
+  # too. Must run after write_version_json, which needs .git/ and tools/.
   # folders
   rm -rf ${rootfs_overlay}/opt/.github
   rm -rf ${rootfs_overlay}/opt/docker
@@ -263,8 +304,12 @@ download_app_repo() {
   rm -rf ${rootfs_overlay}/opt/enclosures
   rm -rf ${rootfs_overlay}/opt/l10n
   rm -rf ${rootfs_overlay}/opt/seedsigner-screenshots
+  rm -rf ${rootfs_overlay}/opt/src/seedsigner.egg-info
   rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/.git*
+  rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/.tx
+  rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/tools
   rm -rf ${rootfs_overlay}/opt/tests
+  # SeedSigner fork (3rdIteration): tools/ is kept in the image (cd383b9).
   #rm -rf ${rootfs_overlay}/opt/tools
   rm -rf ${rootfs_overlay}/opt/.git*
   rm -rf ${rootfs_overlay}/opt/docker-compose.yml
@@ -274,6 +319,7 @@ download_app_repo() {
   rm -rf ${rootfs_overlay}/opt/README.md
   rm -rf ${rootfs_overlay}/opt/requirements-raspi.txt
   rm -rf ${rootfs_overlay}/opt/requirements.txt
+  rm -rf ${rootfs_overlay}/opt/SECURITY.md
   rm -rf ${rootfs_overlay}/opt/seedsigner_pubkey.gpg
   rm -rf ${rootfs_overlay}/opt/setup.*
 
@@ -374,6 +420,11 @@ build_image() {
   if [ "${3}" != "skip-repo" ]; then
     download_app_repo
   fi
+
+  # Both run unconditionally so --skip-repo builds get the same treatment. Order
+  # matters: write_version_json needs the .git/ and tools/ that the other removes.
+  write_version_json
+  delete_unnecessary_files
 
   install_secure_boot_tools
 
