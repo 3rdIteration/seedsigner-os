@@ -179,30 +179,27 @@ or login shell away from the existing debug UART.
 
 ---
 
-### 6. python-embit — AArch64 prebuilt `libsecp256k1`
+### 6. python-embit — `libsecp256k1` built for the target
 
-**Problem:** The `python-embit` package bundles prebuilt `libsecp256k1`
-shared libraries for several architectures (`armv6l`, `armv7l`, `aarch64`).
-The standard `0001-SeedSignerOS-RPi-Arch.patch` (used for ARM32 Pi targets)
-filters the wheel to keep only the ARM32 variants. On AArch64 these are
-rejected by Buildroot's `pyinstaller.py` with:
+**Background:** embit up to 0.8.0 bundled prebuilt `libsecp256k1` libraries
+for several architectures, and La Frite (AArch64) needed a hook to swap in the
+`aarch64` one; Buildroot's `pyinstaller.py` rejects the ARM32 ones with
+`architecture for libsecp256k1_linux_armv6l.so is "ARM", should be "AArch64"`.
 
-```
-ERROR: architecture for libsecp256k1_linux_armv6l.so is "ARM", should be "AArch64"
-```
-
-**Solution:** A `PYTHON_EMBIT_POST_PATCH_HOOKS` hook in
-`opt/external-packages/python-embit/python-embit.mk` (applied only when
-`BR2_aarch64=y`):
-- Edits `pyproject.toml` to reference `libsecp256k1_linux_aarch64.so` instead
-  of the ARM wildcard
-- Physically deletes `libsecp256k1_linux_armv6l.so` and
-  `libsecp256k1_linux_armv7l.so` from the source tree so setuptools cannot
-  include them regardless of any `SOURCES.txt` manifest
+**Now (embit 0.8.2):** embit ships no binaries. `python-embit.mk` builds
+`libsecp256k1` from the `secp256k1-zkp` commit embit pins, with the target
+compiler, so every board -- AArch64 included -- gets a library for its own
+architecture with no per-arch handling. It is installed as
+`embit/util/prebuilt/libsecp256k1.so`. There is no pure-Python fallback: the
+package patches `secp256k1.py` to bind only the compiled library, removes
+`py_secp256k1.py`, and fails the build if the library lacks any symbol the
+bindings use; `verify-secp256k1-binary.sh` (end of `post-build.sh`) checks the
+final image.
 
 **Relevant files:**
 - `opt/external-packages/python-embit/python-embit.mk`
-- `opt/external-packages/python-embit/0001-SeedSignerOS-AArch64-Arch.patch`
+- `opt/external-packages/python-embit/0001-SeedSignerOS-secp256k1-compiled-library-only.patch`
+- `opt/external-packages/python-embit/verify-secp256k1-binary.sh`
 
 ---
 
