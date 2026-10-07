@@ -210,8 +210,8 @@ only sees its child process die â€” reports the generic "Download boot failed â€
 check ddr" message above. Nothing about the loader, the key, or the board is
 wrong.
 
-This bites exactly where re-signed releases live: a OneDrive folder such as
-`C:\Users\<u>\OneDrive - <Company>\Development Notes\seedsigner-luckfox-pico\`
+This bites exactly where re-signed releases live: a synced-drive folder such as
+`C:\Users\<user>\OneDrive\<work>\Notes\some-project\re-signed builds\<commit>\fit-sign-tree\`
 plus the bundle's own long artifact name passes 260 characters with room to
 spare, and Windows' long-path support does not help because `upgrade_tool` is
 not manifest-enabled for it.
