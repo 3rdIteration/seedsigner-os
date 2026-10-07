@@ -166,7 +166,9 @@ refused the loader, or the loader never came up. Work through these in order:
    fail as well: a known-good loader failed straight after a rejected one, then
    passed from a clean power cycle. Unplug the board, hold BOOT, plug it back
    in, and send one loader per power cycle, or a bad result tells you nothing.
-2. **Check what was actually sent**, in SocToolkit's log (above).
+2. **Check what was actually sent**, in SocToolkit's log (above). If the path
+   in the log is very long (OneDrive, deep folders), see the next section — the
+   file may never have been read.
 3. **On a fused board**, the loader must match the OTP key hash. Ask Rockchip's
    tool which hash it needs, and compare with what was burned:
 
@@ -195,9 +197,46 @@ refused the loader, or the loader never came up. Work through these in order:
    ./tools/rk_sign_tool sl --loader rv1106_download_v*.bin     # after cc/lk with the fused key
    ```
 
-   If this passes `db` and ours does not, the difference is in our loader, not
-   the board. It uses the stock rkbin DDR/usbplug blobs, which is fine for
-   `db` and for writing NAND.
+    If this passes `db` and ours does not, the difference is in our loader, not
+    the board. It uses the stock rkbin DDR/usbplug blobs, which is fine for
+    `db` and for writing NAND.
+
+### `db` fails only from a long path (OneDrive) — the file never gets read
+
+A path over Windows' 260-char `MAX_PATH` limit makes `upgrade_tool.exe` fail to
+open the file before it ever talks to the board. `upgrade_tool` does not print
+an error: it crashes outright (exit status `0xC0000409`), and SocToolkit — which
+only sees its child process die — reports the generic "Download boot failed …
+check ddr" message above. Nothing about the loader, the key, or the board is
+wrong.
+
+This bites exactly where re-signed releases live: a synced-drive folder such as
+`C:\Users\<user>\OneDrive\<work>\Notes\some-project\re-signed builds\<commit>\fit-sign-tree\`
+plus the bundle's own long artifact name passes 260 characters with room to
+spare, and Windows' long-path support does not help because `upgrade_tool` is
+not manifest-enabled for it.
+
+**Diagnose** by running `db` directly and looking at the exit status (a
+loader the board accepts prints `Download boot ok.` and exits 0):
+
+```powershell
+& "<SocToolKit>\bin\windows\upgrade_tool.exe" -s <id> db "<bundle>\download.bin"
+$LASTEXITCODE   # -1073740791 (0xC0000409) = could not open the file, not a board failure
+```
+
+If the same file flashed from a short path works — or `rkloader.py inspect` and
+`luckfox_release.py check` say VALID while a byte-identical copy elsewhere
+flashes fine — the path is the bug.
+
+**Fix:** copy the whole bundle to a short path and flash from there. Every file
+argument is affected (`db`, `wl`, `uf`), so move the folder, not just
+`download.bin`:
+
+```powershell
+Copy-Item "<long\bundle\path>\*" C:\LuckfoxPico\flash\ -Force
+```
+
+Or keep release folders near the drive root (`C:\releases\…`) to begin with.
 
 ### The board only prints `RKUART` on UART
 
