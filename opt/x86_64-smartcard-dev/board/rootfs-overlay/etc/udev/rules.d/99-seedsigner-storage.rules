@@ -1,0 +1,11 @@
+# Mount inserted USB storage / card-reader partitions through the shared
+# SeedSigner hotplug helper (/etc/mdev/mdev.sh, driven by the
+# seedsigner-storage.sh wrapper): mounts at /mnt/microsd
+# noexec,nosuid,nodev and notifies the app via /tmp/mdev_fifo.
+#
+# sd[a-z][0-9] covers USB mass storage and USB/Memstick card readers (the same
+# enumeration the La Frite board overlay uses for its USB-attached slot).
+# mmcblk rules are deliberately absent: x86 devices with eMMC would have it as
+# the boot disk, not removable media.
+KERNEL=="sd[a-z][0-9]", SUBSYSTEM=="block", ACTION=="add", RUN+="/usr/lib/udev/seedsigner-storage.sh add %k"
+KERNEL=="sd[a-z][0-9]", SUBSYSTEM=="block", ACTION=="remove", RUN+="/usr/lib/udev/seedsigner-storage.sh remove %k"

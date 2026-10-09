@@ -1,0 +1,80 @@
+#!/bin/sh
+# Desktop launcher for the x86_64 profile.
+#
+# Respawned directly by init on tty1 (post-build.sh swaps the getty line in
+# /etc/inittab), which gives it tty1 as controlling terminal -- what X needs
+# to own the VT. Replaces the S02seedsigner -> /start.sh headless flow the
+# Pi/La Frite/Luckfox profiles use, but keeps its semantics: wait for
+# removable storage, honour a MicroSD dev-source override, prime the clock,
+# then run the app -- here inside a minimal X server via startx.
+#
+# When the app (and therefore X) exits, this script exits and init respawns
+# it: crash-loop on failure, reboot-into-app on success.
+
+MICROSD_MOUNTPOINT="/mnt/microsd"
+MICROSD_DEV_DIR="$MICROSD_MOUNTPOINT/seedsigner/src"
+MAX_WAIT=10
+COUNT=0
+
+echo "Waiting for removable storage to mount (up to ${MAX_WAIT}s)..."
+while [ $COUNT -lt $MAX_WAIT ] && ! mountpoint -q "$MICROSD_MOUNTPOINT"; do
+    COUNT=$((COUNT + 1))
+    sleep 1
+done
+
+# Bring up wired interfaces with a persistent DHCP client (dev builds; same
+# behaviour as the shared dev start.sh). eudev names interfaces eth0/wlan0.
+for i in $(seq 1 5); do
+    ETH_IFACES=$(ls /sys/class/net 2>/dev/null | grep '^eth' || true)
+    if [ -n "$ETH_IFACES" ]; then
+        for IFACE in $ETH_IFACES; do
+            ifconfig "$IFACE" up 2>/dev/null || true
+            udhcpc -i "$IFACE" -b -t 0 -s /usr/share/udhcpc/default.script >/dev/null 2>&1 &
+        done
+        break
+    fi
+    sleep 1
+done
+
+if mountpoint -q "$MICROSD_MOUNTPOINT" && [ -d "$MICROSD_DEV_DIR" ]; then
+    echo "Running SeedSigner from external MicroSD source"
+    SS_APP_DIR="$MICROSD_DEV_DIR"
+else
+    echo "Running SeedSigner from embedded source"
+    SS_APP_DIR="/opt/src"
+fi
+
+# Set the date so that GPG can work even on machines with a dead RTC. Must
+# run BEFORE the app is launched: the app validates a new GPG key's expiry
+# against the current clock. The commit-time default exists in both source
+# trees' parent images; on x86 the hardware clock usually wins over it only
+# in the sense that date is already correct -- setting it again is harmless.
+TIME_DEFAULT_FILE="/opt/src/.build_commit_time"
+TIME_FALLBACK="2025-02-28 12:00"
+TIME_FILE="$MICROSD_MOUNTPOINT/time.txt"
+TIME_VALUE="$TIME_FALLBACK"
+
+if [ -f "$TIME_DEFAULT_FILE" ]; then
+    TIME_FROM_DEFAULT=$(tr -d '\r\n' < "$TIME_DEFAULT_FILE")
+    if [ -n "$TIME_FROM_DEFAULT" ]; then
+        TIME_VALUE="$TIME_FROM_DEFAULT"
+    fi
+fi
+
+if [ -f "$TIME_FILE" ]; then
+    TIME_FROM_FILE=$(tr -d '\r\n' < "$TIME_FILE")
+    if [ -n "$TIME_FROM_FILE" ]; then
+        TIME_VALUE="$TIME_FROM_FILE"
+    fi
+fi
+
+# Only override the clock if the RTC never got set (1970s reads are proof it
+# did not; a real RTC lands us in this decade and we leave it alone).
+CURRENT_YEAR=$(/bin/date +%Y)
+if [ "$CURRENT_YEAR" -lt 2010 ]; then
+    /bin/date -s "$TIME_VALUE" || /bin/date -s "$TIME_FALLBACK"
+fi
+
+export SS_APP_DIR
+export HOME=/root
+exec startx /etc/X11/xinit/xinitrc-seedsigner -- :0 vt1

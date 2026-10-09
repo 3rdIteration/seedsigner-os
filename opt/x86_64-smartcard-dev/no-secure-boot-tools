@@ -1,0 +1,3 @@
+x86_64 machines are the signing target's opposite: nothing here will ever
+sign a Luckfox release on-device. Keep the secure-boot signers out of the
+image (see install_secure_boot_tools() in opt/build.sh).

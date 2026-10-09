@@ -44,6 +44,7 @@ on:
           - pi2
           - pi4
           - lafrite
+          - x86_64
       variant:
         description: 'dev (serial console + dev marker) or non-dev (hardened release image)'
         required: false
@@ -75,8 +76,12 @@ jobs:
             suffix="-dev"
           fi
           matrix=$(jq -cn --arg board "$BOARD" --arg suffix "$suffix" '
-            ["pi0", "pi02w", "pi2", "pi4", "lafrite"]
+            ["pi0", "pi02w", "pi2", "pi4", "lafrite", "x86_64"]
             | map(select($board == "all" or . == $board))
+            # x86_64 only ships a -dev profile until the hardened release
+            # variant lands: drop it from non-dev runs instead of failing on
+            # a missing defconfig.
+            | map(select(. != "x86_64" or $suffix == "-dev"))
             | {include: map({config: (. + "-smartcard" + $suffix), board_flag: ("--" + .)})}')
           echo "Selected targets: $matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
