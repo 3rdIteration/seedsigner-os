@@ -1,0 +1,138 @@
+BR2_x86_64=y
+
+BR2_DL_DIR="$(TOPDIR)/../../buildroot_dl"
+BR2_CCACHE=y
+BR2_REPRODUCIBLE=y
+BR2_TOOLCHAIN_BUILDROOT_VENDOR="Buildroot"
+BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_6=y
+BR2_PACKAGE_GLIBC_UTILS=y
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_TARGET_GENERIC_HOSTNAME="seedsigner-os"
+# Text console on the laptop's own screen; post-build.sh replaces the getty
+# respawn line with the desktop launcher (seedsigner-console) on tty1.
+BR2_TARGET_GENERIC_GETTY_PORT="tty1"
+# X11 (xserver + libinput) requires udev for device discovery, and udev also
+# owns the sd* hotplug rules that mount inserted cards at /mnt/microsd -- so
+# this profile uses eudev instead of the mdev /dev management of the Pi and
+# La Frite profiles (post-build.sh removes the shared overlay's S00mdev).
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
+BR2_TARGET_GENERIC_ROOT_PASSWD="passworDT"
+BR2_ROOTFS_OVERLAY="../rootfs-overlay/ ../x86_64-smartcard-dev/board/rootfs-overlay/"
+BR2_ROOTFS_POST_BUILD_SCRIPT="../x86_64-smartcard-dev/board/post-build.sh"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="../x86_64-smartcard-dev/board/post-image-seedsigner.sh"
+BR2_LINUX_KERNEL=y
+# Same kernel tarball URL as the La Frite profile so the shared CI download
+# cache serves both.
+BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.22.tar.xz"
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="../x86_64-smartcard-dev/board/linux.config"
+BR2_LINUX_KERNEL_INSTALL_TARGET=y
+BR2_LINUX_KERNEL_NEEDS_HOST_OPENSSL=y
+BR2_LINUX_KERNEL_NEEDS_HOST_LIBELF=y
+BR2_PACKAGE_BUSYBOX_CONFIG="../x86_64-smartcard-dev/board/busybox.config"
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
+BR2_PACKAGE_PYTHON3=y
+# BR2_PACKAGE_PYTHON3_PY_ONLY=y
+BR2_PACKAGE_PYTHON_ECDSA=y
+BR2_PACKAGE_PYTHON_PILLOW_EP=y
+BR2_PACKAGE_PYTHON_PYAES=y
+BR2_PACKAGE_PYTHON_PYQRCODE=y
+BR2_PACKAGE_FREETYPE=y
+BR2_PACKAGE_LIBRAQM=y
+BR2_PACKAGE_LIBQRENCODE=y
+BR2_PACKAGE_LIBQRENCODE_TOOLS=y
+BR2_PACKAGE_PYTHON_NUMPY=y
+# USB webcam (UVC) capture path, identical to La Frite: OpenCV with V4L2.
+BR2_PACKAGE_OPENCV4=y
+BR2_PACKAGE_OPENCV4_LIB_IMGCODECS=y
+BR2_PACKAGE_OPENCV4_LIB_IMGPROC=y
+BR2_PACKAGE_OPENCV4_LIB_PYTHON=y
+BR2_PACKAGE_OPENCV4_LIB_VIDEOIO=y
+BR2_PACKAGE_OPENCV4_WITH_V4L=y
+BR2_PACKAGE_LIBV4L_UTILS=y
+# Desktop UI backend: pygame display + keyboard/mouse input. The app selects
+# the desktop code path precisely because python-periphery / python-spidev /
+# picamera are ABSENT from this image (see hardware/buttons.py fallback).
+BR2_PACKAGE_PYTHON_PYGAME_CE=y
+BR2_PACKAGE_SDL2=y
+BR2_PACKAGE_SDL2_X11=y
+BR2_PACKAGE_ZBAR=y
+BR2_PACKAGE_P7ZIP=y
+BR2_PACKAGE_P7ZIP_7ZA=y
+# Minimal X11 desktop: fbdev video driver (DRM-emulated or VESA/EFI fb),
+# libinput for keyboard/touchpad hotplug, xinit to start X around the app.
+BR2_PACKAGE_XORG7=y
+BR2_PACKAGE_XSERVER_XORG_SERVER=y
+BR2_PACKAGE_XDRIVER_XF86_VIDEO_FBDEV=y
+BR2_PACKAGE_XDRIVER_XF86_INPUT_LIBINPUT=y
+BR2_PACKAGE_XAPP_XINIT=y
+BR2_PACKAGE_CCID=y
+# BR2_PACKAGE_LIBNFC_ARYGON is not set
+BR2_PACKAGE_LIBNFC_PN532_I2C=y
+# BR2_PACKAGE_LIBNFC_PN53X_USB is not set
+# ext4 rootfs with a fixed (deterministic) filesystem UUID for blkid/debug;
+# the kernel finds it at boot via root=PARTUUID=ba5eba11-02 (MBR disk
+# signature pinned by the post-image script), because a USB stick enumerates
+# as sda/sdb/sdc depending on the machine's own disks -- and because the
+# kernel cannot resolve a filesystem UUID without an initramfs.
+BR2_TARGET_ROOTFS_EXT2=y
+BR2_TARGET_ROOTFS_EXT2_4=y
+BR2_TARGET_ROOTFS_EXT2_SIZE="900M"
+BR2_TARGET_ROOTFS_EXT2_MKFS_OPTIONS="-O ^64bit -U ba5eba11-0000-4000-a000-000000000519"
+# BR2_TARGET_ROOTFS_TAR is not set
+BR2_PACKAGE_HOST_DOSFSTOOLS=y
+BR2_PACKAGE_HOST_E2FSPROGS=y
+BR2_PACKAGE_HOST_GENIMAGE=y
+BR2_PACKAGE_HOST_MTOOLS=y
+BR2_PACKAGE_PYTHON_URTYPES=y
+BR2_PACKAGE_PYTHON_PYZBAR=y
+BR2_PACKAGE_PYTHON_MOCK=y
+BR2_PACKAGE_PYTHON_EMBIT=y
+BR2_PACKAGE_PYTHON_QRCODE=y
+BR2_PACKAGE_PYTHON_PYSATOCHIP=y
+BR2_PACKAGE_PYTHON_KEYCARD_PY=y
+BR2_PACKAGE_PYTHON_PYSCARD=y
+BR2_PACKAGE_PYTHON_MNEMONIC=y
+BR2_PACKAGE_PYTHON_NDEFLIB=y
+BR2_PACKAGE_PYTHON_SHAMIR_MNEMONIC=y
+BR2_PACKAGE_PYTHON_PGPY=y
+BR2_PACKAGE_PYTHON_SPECTER_CARD=y
+BR2_PACKAGE_PYTHON_PYGP=y
+BR2_PACKAGE_PYTHON_PYASN1=y
+BR2_PACKAGE_IFDNFC=y
+BR2_PACKAGE_OPENCT=y
+BR2_PACKAGE_NFC_BINDINGS=y
+BR2_PACKAGE_PYTHON_PYCRYPTODOMEX=y
+BR2_PACKAGE_GNUPG2=y
+BR2_PACKAGE_NANO=y
+BR2_PACKAGE_MC=y
+BR2_PACKAGE_PINENTRY=y
+BR2_PACKAGE_PINENTRY_NCURSES=y
+BR2_PACKAGE_CCID_SEC1210=y
+BR2_PACKAGE_RNG_TOOLS=y
+BR2_PACKAGE_DROPBEAR=y
+BR2_PACKAGE_RSYNC=y
+BR2_PACKAGE_GIT=y
+BR2_PACKAGE_LIBCURL=y
+BR2_PACKAGE_LIBCURL_MBEDTLS=y
+BR2_PACKAGE_LIBCURL_HTTP2=y
+BR2_PACKAGE_LIBCURL_CURL=y
+BR2_PACKAGE_WGET=y
+BR2_PACKAGE_NGHTTP2=y
+BR2_PACKAGE_CA_CERTIFICATES=y
+BR2_PACKAGE_PYTHON3_SSL=y
+BR2_PACKAGE_PYTHON_PIP=y
+BR2_PACKAGE_PYTHON_SETUPTOOLS=y
+BR2_PACKAGE_PYTHON_WHEEL=y
+BR2_PACKAGE_PYTHON3_BZIP2=y
+# Hybrid boot: BIOS (i386-pc core in the MBR gap) + EFI (x86_64 and the
+# 32-bit bootia32.efi for Bay Trail era machines). install-tools puts
+# /lib/grub/i386-pc/boot.img on the target so post-build.sh can hand it to
+# genimage for the MBR stage.
+BR2_TARGET_GRUB2=y
+BR2_TARGET_GRUB2_I386_PC=y
+BR2_TARGET_GRUB2_I386_EFI=y
+BR2_TARGET_GRUB2_X86_64_EFI=y
+BR2_TARGET_GRUB2_INSTALL_TOOLS=y

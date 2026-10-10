@@ -1,0 +1,32 @@
+SeedSignerOS: skip the portmidi fallback when the midi feature is disabled
+
+On a cross build (buildroot) with -Dmidi=disabled, meson still enters the
+portmidi fallback branch: cc.find_library('portmidi', required: <false>)
+returns a not-found library, but the surrounding declare_dependency() is
+reported as found(), so `if portmidi_dep.found()` in src_c/meson.build is
+true and the pypm extension is built anyway. That fallback is also the only
+dependency whose include_directories come from pg_inc_dirs (every other dep
+resolves via pkg-config), and pg_inc_dirs is seeded from bases that include
+/usr/local -- so pypm is compiled with -I/usr/local/include, which buildroot's
+cross gcc rejects with "unsafe header/library path used in cross-compilation",
+failing the build.
+
+Gate the fallback on get_option('midi').enabled(): with midi disabled the
+dependency stays the (not-found) pkg-config result, pypm is skipped, and no
+/usr path leaks into the compile. Behaviour is unchanged whenever midi is
+enabled/auto and portmidi is genuinely present.
+
+Upstream-issue: https://github.com/pygame-community/pygame-ce/issues (cross
+build with midi disabled still compiles pypm via the /usr/local fallback).
+
+--- a/meson.build
++++ b/meson.build
+@@ -450,7 +450,7 @@
+ endif # emscripten
+ 
+ portmidi_dep = dependency('portmidi', required: false)
+-if not portmidi_dep.found() and not plat.startswith('emscripten')
++if get_option('midi').enabled() and not portmidi_dep.found() and not plat.startswith('emscripten')
+     portmidi_dep = declare_dependency(
+         include_directories: pg_inc_dirs,
+         dependencies: cc.find_library(
