@@ -23,9 +23,13 @@ and talking to CCID smartcard readers over USB.
   pinned diy-tools squashfs.
 - **Hybrid BIOS+EFI bootable USB image.** One FAT32 ESP carries `/bzImage`,
   `EFI/BOOT/{bootx64.efi,bootia32.efi,grub.cfg}` and `boot/grub/grub.cfg`;
-  the MBR gap carries grub's i386-pc core. Root is ext4 with a fixed UUID
-  (`root=UUID=...`) because the stick enumerates as `sda`/`sdb`/`sdc`
-  depending on the machine.
+  the MBR gap carries grub's i386-pc core. Root is ext4 found via
+  `root=PARTUUID=ba5eba11-02` (MBR disk signature pinned after genimage)
+  because the stick enumerates as `sda`/`sdb`/`sdc` depending on the
+  machine's own disks — and because a kernel with no initramfs cannot
+  resolve a filesystem `root=UUID=` at all (`early_lookup_bdev` parses only
+  `PARTUUID=`/`PARTLABEL=`/`/dev/...`/major:minor; a real device failed to
+  boot with "Disabling rootwait; root= is invalid" before this was fixed).
 - **Console launcher.** post-build.sh replaces the getty respawn line with
   `/usr/bin/seedsigner-console` (wait for storage, dev-source override,
   clock priming, `startx`), replacing `S02seedsigner`.

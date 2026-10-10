@@ -49,4 +49,60 @@ fi
 
 "${GENIMAGE_SH}" -c "${BINARIES_DIR}/genimage-seedsigner.cfg"
 
+# Pin the MBR disk signature and verify the layout the boot chain promises.
+#
+# The kernel has no notion of a filesystem UUID for root= (early_lookup_bdev
+# parses only PARTUUID=/PARTLABEL=/dev/.../major:minor; a bare "UUID=" is an
+# initramfs convention and panics this image with "Disabling rootwait; root=
+# is invalid"). grub therefore boots with root=PARTUUID=ba5eba11-02: for dos
+# tables the kernel derives PARTUUID from the MBR disk signature at 0x1b8
+# (u32 little-endian, formatted %08x) plus the 1-based table slot. genimage
+# pins the same value (disk-signature in genimage-seedsigner.cfg) but
+# defaults to 0 when unset, so re-pin it here idempotently and fail the
+# build unless the resulting table matches what grub promises -- same
+# ba5eba11 constant the Pi/La Frite deterministic scripts use for their
+# label-id. Nothing checksums these bytes (the MBR code's holes region starts
+# exactly at 440, so grub's boot.img never owns them).
+echo *****Pinning MBR disk signature and verifying partition table*****
+python3 - "${BINARIES_DIR}/seedsigner_os.img" <<'PYEOF'
+import struct
+import sys
+
+path = sys.argv[1]
+DISK_SIGNATURE = 0xBA5EBA11
+BOOT_PART_TYPE = 0xEF   # EFI System, table slot 1
+ROOT_PART_TYPE = 0x83   # Linux rootfs, table slot 2 -> PARTUUID=ba5eba11-02
+
+with open(path, "r+b") as f:
+    f.seek(0x1B8)
+    f.write(struct.pack("<I", DISK_SIGNATURE))
+
+with open(path, "rb") as f:
+    f.seek(0x1B8)
+    sig = struct.unpack("<I", f.read(4))[0]
+    f.seek(0x1BE)
+    table = f.read(64)
+    f.seek(0x1FE)
+    bootmark = struct.unpack("<H", f.read(2))[0]
+
+types = [table[i * 16 + 4] for i in range(4)]
+print(
+    "MBR disk signature 0x{0:08x}, boot mark 0x{1:04x}, partition types {2}".format(
+        sig, bootmark, [hex(t) for t in types]
+    )
+)
+
+if sig != DISK_SIGNATURE:
+    sys.exit("ERROR: failed to write MBR disk signature")
+if bootmark != 0xAA55:
+    sys.exit("ERROR: missing 0x55AA MBR boot mark")
+if types[0] != BOOT_PART_TYPE or types[1] != ROOT_PART_TYPE:
+    sys.exit(
+        "ERROR: unexpected partition layout {0}; grub boots "
+        "root=PARTUUID=ba5eba11-02 (rootfs must be table slot 2)".format(
+            [hex(t) for t in types]
+        )
+    )
+PYEOF
+
 exit $?

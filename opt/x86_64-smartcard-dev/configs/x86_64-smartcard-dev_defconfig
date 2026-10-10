@@ -72,8 +72,11 @@ BR2_PACKAGE_CCID=y
 # BR2_PACKAGE_LIBNFC_ARYGON is not set
 BR2_PACKAGE_LIBNFC_PN532_I2C=y
 # BR2_PACKAGE_LIBNFC_PN53X_USB is not set
-# ext4 rootfs with a FIXED UUID: grub.cfg boots with root=UUID=... because a
-# USB stick enumerates as sda/sdb/sdc depending on the machine's own disks.
+# ext4 rootfs with a fixed (deterministic) filesystem UUID for blkid/debug;
+# the kernel finds it at boot via root=PARTUUID=ba5eba11-02 (MBR disk
+# signature pinned by the post-image script), because a USB stick enumerates
+# as sda/sdb/sdc depending on the machine's own disks -- and because the
+# kernel cannot resolve a filesystem UUID without an initramfs.
 BR2_TARGET_ROOTFS_EXT2=y
 BR2_TARGET_ROOTFS_EXT2_4=y
 BR2_TARGET_ROOTFS_EXT2_SIZE="900M"
