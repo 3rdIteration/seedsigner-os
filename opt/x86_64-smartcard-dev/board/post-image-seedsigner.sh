@@ -14,7 +14,10 @@ set -e
 # FAT date. Same clamp as the La Frite script keeps entries in range.
 export SOURCE_DATE_EPOCH="1672575305"
 
-BOARD_DIR="$(dirname "$0")"
+# Absolute board dir: buildroot invokes post-image scripts with CWD = the
+# buildroot source tree and passes $0 relative to it, but resolve to an
+# absolute path so the cp calls below never depend on that.
+BOARD_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Sanity checks first: genimage happily produces a partitioned image out of
 # missing pieces only for the inputs it opens late, so verify every artifact
@@ -32,7 +35,18 @@ cp "${BOARD_DIR}/genimage-seedsigner.cfg" "${BINARIES_DIR}/genimage-seedsigner.c
 
 echo *****Generating Hybrid BIOS+EFI USB Image*****
 
-cd buildroot
-support/scripts/genimage.sh -c "${BINARIES_DIR}/genimage-seedsigner.cfg"
+# buildroot's genimage wrapper resolves everything from the environment
+# (BINARIES_DIR exported, BUILD_DIR from EXTRA_ENV) and takes the config via an
+# absolute -c path, so it needs no particular CWD. Invoke it from wherever it
+# actually lives: prefer the CWD buildroot source tree (the dir buildroot runs
+# post-image scripts from, per board/pc/post-image-efi.sh), else fall back to
+# the source tree located relative to this board directory (../../buildroot).
+if [ -x "./support/scripts/genimage.sh" ]; then
+	GENIMAGE_SH="./support/scripts/genimage.sh"
+else
+	GENIMAGE_SH="${BOARD_DIR}/../../buildroot/support/scripts/genimage.sh"
+fi
+
+"${GENIMAGE_SH}" -c "${BINARIES_DIR}/genimage-seedsigner.cfg"
 
 exit $?
