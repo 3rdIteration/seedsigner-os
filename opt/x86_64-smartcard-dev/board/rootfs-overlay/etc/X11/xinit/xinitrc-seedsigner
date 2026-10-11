@@ -2,7 +2,12 @@
 # X session for the SeedSigner desktop UI: no window manager -- SDL2 takes
 # input focus itself -- just the app rendering the 240x240 UI (scaled) onto
 # the root window. stdout/stderr go to /tmp/seedsigner-app.log so app output
-# cannot scribble over the display; tail it over ssh on dev builds.
+# cannot scribble over the display; tail it over ssh on dev builds. When the
+# USB boot log is active (seedsigner-console exports SS_BOOT_LOG) the app
+# output goes there instead, so it survives on the FAT stick for machines
+# without serial or network access.
+
+APP_LOG="${SS_BOOT_LOG:-/tmp/seedsigner-app.log}"
 
 if [ -z "$SS_APP_DIR" ]; then
     SS_APP_DIR="/opt/src"
@@ -12,5 +17,5 @@ export SDL_VIDEODRIVER=x11
 export SDL_AUDIODRIVER=alsa
 
 cd "$SS_APP_DIR" || exit 1
-echo "$(date) starting SeedSigner desktop UI from $SS_APP_DIR" >> /tmp/seedsigner-app.log
-exec /usr/bin/python3 main.py >> /tmp/seedsigner-app.log 2>&1
+echo "$(date) starting SeedSigner desktop UI from $SS_APP_DIR" >> "$APP_LOG"
+exec /usr/bin/python3 main.py >> "$APP_LOG" 2>&1

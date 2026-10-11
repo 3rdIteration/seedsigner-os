@@ -10,6 +10,60 @@
 #
 # When the app (and therefore X) exits, this script exits and init respawns
 # it: crash-loop on failure, reboot-into-app on success.
+#
+# Debug boot log (DEV BUILDS ONLY -- lives in the -dev profile's board
+# overlay, never in the shared rootfs-overlay, so a hardened release profile
+# cannot inherit it): if the FAT boot partition (label SEEDSIGNOS, readable
+# from any PC) carries a file named seedsigner-bootlog.txt at its root,
+# mount the partition and append everything to seedsigner-boot.log there --
+# dmesg, the live kernel ring, this script's output, the app (via
+# SS_BOOT_LOG in the xinitrc) and the Xorg log on exit. The marker is checked
+# at every respawn and toggling it from a PC needs no reflash. Timestamps are
+# only meaningful after the clock step below (an unset RTC reads as 1970).
+
+BOOT_LOG=""
+setup_boot_log() {
+    ESP=$(blkid 2>/dev/null | awk '/LABEL="SEEDSIGNOS"/{sub(/:$/, "", $1); print $1; exit}')
+    [ -n "$ESP" ] || return 0
+    mkdir -p /mnt/bootlog
+    # The hotplug wrapper excludes this partition from the /mnt/microsd
+    # dance, so it is unmounted here and ours alone. 'flush' keeps FAT
+    # writes lazy; the sync loop below lands them every few seconds anyway.
+    mountpoint -q /mnt/bootlog || mount -o flush "$ESP" /mnt/bootlog 2>/dev/null \
+        || mount "$ESP" /mnt/bootlog 2>/dev/null || return 0
+    if [ ! -f /mnt/bootlog/seedsigner-bootlog.txt ]; then
+        # Logging off: drop the mount again so the stick is not held busy.
+        umount /mnt/bootlog 2>/dev/null
+        return 0
+    fi
+
+    BOOT_LOG=/mnt/bootlog/seedsigner-boot.log
+    # Cap the FAT log at ~512 KiB per generation: keep one .old backup.
+    if [ -f "$BOOT_LOG" ] && [ "$(wc -c < "$BOOT_LOG")" -gt 524288 ]; then
+        mv -f "$BOOT_LOG" /mnt/bootlog/seedsigner-boot.old.log
+    fi
+
+    {
+        echo ""
+        echo "===== SeedSigner OS x86_64 boot: $(date -u '+%Y-%m-%dT%H:%M:%SZ') ====="
+        uname -a
+        dmesg
+    } >> "$BOOT_LOG" 2>&1
+
+    # Stream kernel messages into the log for the rest of this boot. Guarded
+    # by a tmpfs marker so init respawns don't stack multiple cats onto the
+    # same /dev/kmsg reader.
+    if [ ! -e /tmp/ss-bootlog-kmsg ]; then
+        : > /tmp/ss-bootlog-kmsg
+        cat /dev/kmsg >> "$BOOT_LOG" 2>/dev/null &
+    fi
+}
+setup_boot_log
+
+if [ -n "$BOOT_LOG" ]; then
+    export SS_BOOT_LOG="$BOOT_LOG"
+    exec >> "$BOOT_LOG" 2>&1
+fi
 
 MICROSD_MOUNTPOINT="/mnt/microsd"
 MICROSD_DEV_DIR="$MICROSD_MOUNTPOINT/seedsigner/src"
@@ -77,4 +131,16 @@ fi
 
 export SS_APP_DIR
 export HOME=/root
-exec startx /etc/X11/xinit/xinitrc-seedsigner -- :0 vt1
+startx /etc/X11/xinit/xinitrc-seedsigner -- :0 vt1
+RC=$?
+
+if [ -n "$BOOT_LOG" ]; then
+    # The X server writes its own log even when the session never gets a
+    # screen -- the single most useful artifact for a black-boot debug.
+    [ -f /var/log/Xorg.0.log ] && cp -f /var/log/Xorg.0.log /mnt/bootlog/seedsigner-xorg.log
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') session exited rc=$RC; respawning" >> "$BOOT_LOG"
+    # Hard power-cuts are common while debugging a black screen: land the
+    # FAT writes before the user pulls the stick.
+    sync
+fi
+exit $RC

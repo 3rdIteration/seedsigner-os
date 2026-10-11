@@ -45,6 +45,19 @@ SS_ARGS="--x86_64 --smartcard --dev" docker compose up
 Result: `images/seedsigner_os.<branch>.x86_64-smartcard-dev.img` — `dd` to a
 USB stick; boots on legacy BIOS, x86_64 EFI, and 32-bit EFI machines.
 
+## Debug boot log (dev builds only)
+
+For machines with no usable serial port or network: create an empty file
+named `seedsigner-bootlog.txt` in the root of the `SEEDSIGNOS` FAT partition
+from any PC and boot. The launcher mounts that partition read-write and
+appends to `seedsigner-boot.log` on it — full dmesg, the live kernel ring,
+launcher output, the SeedSigner app's stdout/stderr — plus a copy of
+`/var/log/Xorg.0.log` as `seedsigner-xorg.log` whenever the X session exits
+(the key artifact for a black-screen failure). The log survives a hard
+power-cut (flushed FAT + a periodic sync). Delete the marker file to turn it
+off; nothing is logged when it is absent. This mechanism lives entirely in
+this dev profile's board overlay — release profiles never carry it.
+
 ## Dev scope caveats
 
 - Dev build only (dropbear/SSH, verbose console). A hardened `x86_64-

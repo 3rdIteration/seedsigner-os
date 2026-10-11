@@ -16,4 +16,15 @@ ACTION="$1"
 MDEV="$2"
 SS_SKIP_DIY=1
 export ACTION MDEV SS_SKIP_DIY
+
+# Never treat the boot stick's own FAT partition as a user card: it carries
+# the label baked in by genimage, and seedsigner-console mounts it at
+# /mnt/bootlog for the debug boot log when the marker file is present. Left
+# unguarded, the coldplug "add" of the ESP would win the single
+# /mnt/microsd slot and the REMOVE handler would rip the mount away.
+if [ "$ACTION" = "add" ] && [ -n "$MDEV" ] && \
+   blkid "/dev/$MDEV" 2>/dev/null | grep -q 'LABEL="SEEDSIGNOS"'; then
+    exit 0
+fi
+
 exec /etc/mdev/mdev.sh
