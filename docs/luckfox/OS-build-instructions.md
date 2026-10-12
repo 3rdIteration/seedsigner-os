@@ -350,7 +350,7 @@ cd output/image
 
 # Determine board label (mini or max based on your build)
 BOARD_LABEL="mini"  # or "max"
-# Artifact name tag: <appref>-os<develop|production>-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>
+# Artifact name tag: <appref>-os<develop|production>[-dev-<lever>...]-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>
 # (match build-local.sh's artifact_tag so manual and scripted builds compare by name)
 TAG="dev-os-production-unsigned"
 IMAGE_NAME="seedsigner-luckfox-pico-${BOARD_LABEL}-sd-${TAG}.img"

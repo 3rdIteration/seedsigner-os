@@ -95,28 +95,29 @@ print_info() { echo -e "${YELLOW}[INFO] $1${NC}"; }
 # Alias for os-build.sh's print_step (ported secure-boot functions call it).
 print_step() { print_info "$*"; }
 
-# Artifact name tag: <appref>-os<develop|production>-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>.
-# MUST match os-build.sh's artifact naming byte-for-byte, so a legacy local build and a
-# Docker/CI build of the same inputs produce comparable filenames. The variant is spelled
-# develop/production (NOT dev/nondev) to avoid colliding with an app ref of "dev"; the
-# secure-boot token is safety-relevant: "burnable" images write the OTP fuses on first
-# boot -- irreversibly. Computed at call time so CLI-parsed SEEDSIGNER_REF / BUILD_VARIANT
-# (set later in main) are honoured.
+# Artifact name tag: <appref>-os<develop|production>[-dev-<lever>...]-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>.
+# Computed by artifact-tag.sh, shared with os-build.sh, so a legacy local build and a
+# Docker/CI build of the same inputs produce the same filenames. Computed at call time so
+# CLI-parsed SEEDSIGNER_REF / BUILD_VARIANT (set later in main) are honoured. This path
+# has no harden-adb lever (it always strips the adb userspace), so harden_adb is on.
 artifact_tag() {
-    local variant_tag sb_state
-    case "$BUILD_VARIANT" in
-        dev)     variant_tag="develop" ;;
-        non-dev) variant_tag="production" ;;
-        *) print_error "unknown build variant '$BUILD_VARIANT' (expected dev or non-dev)"; exit 1 ;;
-    esac
-    case "${SEEDSIGNER_FIT_SIGNATURE:-0}" in
-        1)
-            if [ "${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" = "1" ]; then sb_state="burnable"; else sb_state="signed"; fi
-            if [ -n "${SEEDSIGNER_FIT_KEY_DIR:-}" ]; then sb_state="${sb_state}-realkey"; else sb_state="${sb_state}-devkey"; fi
-            ;;
-        *) sb_state="unsigned" ;;
-    esac
-    printf '%s' "$(printf '%s' "$SEEDSIGNER_REF" | tr -c 'A-Za-z0-9_.-' '_')-os${variant_tag}-${sb_state}"
+    local uart_console="off" real_key=0
+    [ "$DISABLE_UART2_CONSOLE_DEBUG" = "1" ] || uart_console="on"
+    [ -z "${SEEDSIGNER_FIT_KEY_DIR:-}" ] || real_key=1
+    bash "$SCRIPT_DIR/artifact-tag.sh" \
+        appref="$SEEDSIGNER_REF" \
+        variant="$BUILD_VARIANT" \
+        uart_console="$uart_console" \
+        testing="${SEEDSIGNER_TESTING_BUILD:-0}" \
+        usb_mode="$USB_MODE" \
+        debug_network="$DEBUG_NETWORK" \
+        readonly_rootfs="${SS_RO_ROOTFS:-auto}" \
+        boot_log="$SEEDSIGNER_BOOT_LOG" \
+        harden_adb=on \
+        fit_signature="${SEEDSIGNER_FIT_SIGNATURE:-0}" \
+        burn_key_hash="${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" \
+        real_key="$real_key" \
+        || { print_error "artifact-tag.sh failed"; exit 1; }
 }
 
 debug_uart_bootargs_file() {
@@ -2702,7 +2703,7 @@ create_sd_image() {
         *) board_label="unknown" ;;
     esac
     
-    local tag="$(artifact_tag)"
+    local tag; tag="$(artifact_tag)" || exit 1
     local image_name="seedsigner-luckfox-pico-${board_label}-sd-${tag}.img"
     
     print_info "Creating image: $image_name"
@@ -2737,7 +2738,7 @@ create_nand_bundle() {
         *) board_label="unknown" ;;
     esac
     
-    local tag="$(artifact_tag)"
+    local tag; tag="$(artifact_tag)" || exit 1
     local nand_bundle_dir="seedsigner-luckfox-pico-${board_label}-nand-files-${tag}"
     
     mkdir -p "$nand_bundle_dir"
@@ -2812,7 +2813,7 @@ create_emmc_bundle() {
         *) board_label="unknown" ;;
     esac
     
-    local tag="$(artifact_tag)"
+    local tag; tag="$(artifact_tag)" || exit 1
     local emmc_bundle_dir="seedsigner-luckfox-pico-${board_label}-emmc-files-${tag}"
     
     mkdir -p "$emmc_bundle_dir"

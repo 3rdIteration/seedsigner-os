@@ -63,11 +63,12 @@ name, so a local build can reproduce what CI ships):
   --usb-mode V          - auto|gadget|host|otg (default: auto)
   --debug-network V     - auto|on|off (default: auto)
   --disable-uart2-console-debug V - auto|true|false. Strip the UART2 serial
-                           console (true); auto follows the variant: non-dev
-                           strips it, dev keeps it (default: auto). The console
+                           console (true); auto strips it on every variant
+                           (default: auto). false keeps it — such an image does
+                           not boot through to the app on the Pico and is
+                           tagged -dev-uart in its file name. The console also
                            shares its UART with the SEC1210 smartcard reader,
-                           so a console-on image will not initialise the HAT —
-                           pass true for smartcard bring-up images
+                           so a console-on image will not initialise the HAT
   --harden-adb V        - on|off. Strip the adb userspace on non-dev
                           (default: on)
   --testing-build V     - on|off. Ship /etc/seedsigner-testing-build, which
@@ -729,7 +730,7 @@ main() {
                 ;;
             # UART2 serial console. Mirrors the CI input of the same name;
             # forwarded as DISABLE_UART2_CONSOLE_DEBUG, which os-build.sh's
-            # resolve_uart2_console() normalises (auto follows the variant).
+            # resolve_uart2_console() normalises (auto strips it on every variant).
             --disable-uart2-console-debug)
                 if [[ -n "$2" && "$2" =~ ^(auto|true|false)$ ]]; then
                     export DISABLE_UART2_CONSOLE_DEBUG="$2"; shift 2

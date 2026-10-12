@@ -197,15 +197,8 @@ export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-seedsigner-os}"
 export BUILD_MODEL="${BUILD_MODEL:-both}"
 export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
 # Serial console (ttyFIQ0). Accepts auto|true|false and the legacy 1|0, matching
-# build-luckfox.yml's disable_uart2_console_debug input.
-#
-# The default used to be a flat 1 -- console always stripped, whatever the
-# variant -- while CI's "auto" keeps the console on a dev build. So a Docker dev
-# image had no serial console and the CI dev image did, from the same source.
-# That is the whole point of a dev image, and it is not something you discover
-# until the board is on the bench and silent.
-#
-# Resolved after SEEDSIGNER_BUILD_VARIANT is known, in resolve_uart2_console().
+# build-luckfox.yml's disable_uart2_console_debug input. auto strips the console
+# on EVERY variant; only an explicit false keeps it. See resolve_uart2_console().
 export DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-auto}"
 export DEFAULT_PYTHON_VERSION="${DEFAULT_PYTHON_VERSION:-3.12}"
 # Host Rust toolchain cache (see rust-toolchain-cache.sh). Unset = no caching,
@@ -229,22 +222,22 @@ print_info() { echo -e "\n${YELLOW}[INFO] $1${NC}\n"; }
 # build-local.sh has always defined it; this is the two drifting apart again.
 print_warning() { echo -e "\n${YELLOW}[WARNING] $1${NC}\n"; }
 
-# Normalise DISABLE_UART2_CONSOLE_DEBUG to a plain 1|0 before anything reads it,
-# applying the same rule as build-luckfox.yml: an explicit true/false (or the
-# legacy 1/0) wins; auto follows the build variant -- non-dev strips the serial
-# console, dev keeps it. The three apply_uart2_* functions below then only ever
-# see 1 or 0, so the policy lives in exactly one place.
+# Normalise DISABLE_UART2_CONSOLE_DEBUG to a plain 1|0 before anything reads it.
+# An explicit true/false (or the legacy 1/0) wins; auto strips the console on
+# BOTH variants. The three apply_uart2_* functions below then only ever see 1 or
+# 0, so the policy lives in exactly one place.
+#
+# auto used to keep the console on dev builds. Those images show the secure-boot
+# screen and then never reach the app on the Pico, which is how push-CI and
+# seedsigner-os release images reached users and looked like a bad flash
+# (2026-10). The debug channel on a dev build is adb/telnet, so the console is
+# now opt-in (disable_uart2_console_debug=false) and the image name carries
+# -dev-uart (artifact-tag.sh). build-local.sh has always defaulted to stripped.
 resolve_uart2_console() {
     case "$DISABLE_UART2_CONSOLE_DEBUG" in
-        1|true)  DISABLE_UART2_CONSOLE_DEBUG=1 ;;
-        0|false) DISABLE_UART2_CONSOLE_DEBUG=0 ;;
-        *)
-            if [[ "$SEEDSIGNER_BUILD_VARIANT" == "non-dev" ]]; then
-                DISABLE_UART2_CONSOLE_DEBUG=1
-            else
-                DISABLE_UART2_CONSOLE_DEBUG=0
-            fi
-            ;;
+        1|true|auto|"") DISABLE_UART2_CONSOLE_DEBUG=1 ;;
+        0|false)        DISABLE_UART2_CONSOLE_DEBUG=0 ;;
+        *) print_error "DISABLE_UART2_CONSOLE_DEBUG must be auto|true|false, got '$DISABLE_UART2_CONSOLE_DEBUG'"; exit 1 ;;
     esac
     export DISABLE_UART2_CONSOLE_DEBUG
 }
@@ -408,8 +401,8 @@ show_usage() {
     echo "  - Model selector via BUILD_MODEL=mini|max|pi|both"
     echo "  - Mini CMA override via MINI_CMA_SIZE (default: 1M)"
     echo "  - 'both' builds mini+max; use 'pi' to build the Pico Pi (eMMC only)"
-    echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=auto|true|false (default: auto)"
-    echo "    auto follows the variant: non-dev strips the console, dev keeps it"
+    echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=auto|true|false (default: auto = stripped on every variant)"
+    echo "    auto strips the console on both variants; false keeps it (artifacts tagged -dev-uart)"
     echo "  - SDK revision pinned by opt/luckfox/SDK_COMMIT"
     echo "    (override with LUCKFOX_COMMIT=<sha> or LUCKFOX_BRANCH=<branch>)"
     echo ""
@@ -3153,27 +3146,33 @@ s/^endef\nendif/endef\nendif\nendif/
     # production -- NOT dev/nondev -- precisely to avoid re-colliding with an
     # app ref of "dev". The secure-boot token is safety-relevant: "burnable"
     # images write the OTP fuses on first boot -- irreversibly.
-    #   <appref>-os<develop|production>-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>
-    # The key class mirrors provision_fit_build_keys: no SEEDSIGNER_FIT_KEY_DIR
-    # means the committed PUBLIC dev placeholder (no protection); one supplied
-    # means a real secret key.
+    #   <appref>-os<develop|production>[-dev-<lever>...]-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>
+    # The -dev-<lever> tokens name every debug setting left on (the serial
+    # console on any variant, plus each lever away from its production default
+    # on a production build). The rules live in artifact-tag.sh, shared with
+    # build-local.sh. The key class mirrors provision_fit_build_keys: no
+    # SEEDSIGNER_FIT_KEY_DIR means the committed PUBLIC dev placeholder (no
+    # protection); one supplied means a real secret key.
     #
     # The four LAST_*_BUILD_TS exports that used to live here had no readers
     # anywhere in the repo and are gone.
-    local tag variant_tag sb_state
-    case "$SEEDSIGNER_BUILD_VARIANT" in
-        dev)     variant_tag="develop" ;;
-        non-dev) variant_tag="production" ;;
-        *) print_error "unknown build variant '$SEEDSIGNER_BUILD_VARIANT' (expected dev or non-dev)"; exit 1 ;;
-    esac
-    case "${SEEDSIGNER_FIT_SIGNATURE:-0}" in
-        1)
-            if [ "${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" = "1" ]; then sb_state="burnable"; else sb_state="signed"; fi
-            if [ -n "${SEEDSIGNER_FIT_KEY_DIR:-}" ]; then sb_state="${sb_state}-realkey"; else sb_state="${sb_state}-devkey"; fi
-            ;;
-        *) sb_state="unsigned" ;;
-    esac
-    tag="$(printf '%s' "$SEEDSIGNER_BRANCH" | tr -c 'A-Za-z0-9_.-' '_')-os${variant_tag}-${sb_state}"
+    local tag uart_console="off" real_key=0
+    [[ "$DISABLE_UART2_CONSOLE_DEBUG" == "1" ]] || uart_console="on"
+    [[ -z "${SEEDSIGNER_FIT_KEY_DIR:-}" ]] || real_key=1
+    tag="$(bash "$SEEDSIGNER_LUCKFOX_DIR/artifact-tag.sh" \
+        appref="$SEEDSIGNER_BRANCH" \
+        variant="$SEEDSIGNER_BUILD_VARIANT" \
+        uart_console="$uart_console" \
+        testing="${SEEDSIGNER_TESTING_BUILD:-0}" \
+        usb_mode="$SEEDSIGNER_USB_MODE" \
+        debug_network="$SEEDSIGNER_DEBUG_NETWORK" \
+        readonly_rootfs="${SS_RO_ROOTFS:-auto}" \
+        boot_log="$SEEDSIGNER_BOOT_LOG" \
+        harden_adb="$SEEDSIGNER_HARDEN_ADB" \
+        fit_signature="${SEEDSIGNER_FIT_SIGNATURE:-0}" \
+        burn_key_hash="${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" \
+        real_key="$real_key")" || { print_error "artifact-tag.sh failed"; exit 1; }
+    print_info "Artifact tag: $tag"
 
     if [[ "$boot_medium" == "sd" ]]; then
         print_step "Creating Final SD Image (${board_profile})"
@@ -3391,7 +3390,7 @@ assert_shared_build_files() {
                 patch-mtd-part-parse.sh retry-network.sh \
                 patch-otp-size.sh assert-otp-size.sh \
                harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
-               strip-whitespace-filenames.sh \
+               strip-whitespace-filenames.sh artifact-tag.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
                prepare-oem-for-rootfs.sh \
              install-gnupg-home.sh install-build-time.sh \
