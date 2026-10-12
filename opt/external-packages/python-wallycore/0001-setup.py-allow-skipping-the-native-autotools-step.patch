@@ -1,0 +1,23 @@
+setup.py: allow skipping the native autotools step
+
+setup.py runs autogen + ./configure for the *build* host before compiling
+the amalgamation, which regenerates src/config.h for the wrong platform
+when cross compiling. Buildroot runs configure for the target itself and
+sets WALLY_SKIP_AUTOTOOLS=1 to keep that result.
+
+--- a/setup.py
++++ b/setup.py
+@@ -99,7 +99,12 @@
+             CONFIGURE_ENV['CFLAGS'] = DISTUTILS_ENV['PY_CFLAGS']
+             CONFIGURE_ENV['LDFLAGS'] = DISTUTILS_ENV['PY_LDFLAGS']
+ 
+-if not IS_WINDOWS and (USE_LIB == 'no' or not os.path.exists('src/Makefile')):
++# Cross builds (e.g. Buildroot) run libwally's configure for the target
++# themselves; running it again here would regenerate config.h for the build
++# host instead.
++SKIP_AUTOTOOLS = os.environ.get('WALLY_SKIP_AUTOTOOLS', '') == '1'
++
++if not SKIP_AUTOTOOLS and not IS_WINDOWS and (USE_LIB == 'no' or not os.path.exists('src/Makefile')):
+     # Run the autotools/make build up front to generate our sources,
+     # then build using the standard Python ext module machinery.
+     # (Windows requires source generation to be done separately).

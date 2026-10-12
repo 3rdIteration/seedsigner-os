@@ -1,0 +1,12 @@
+config BR2_PACKAGE_PYTHON_WALLYCORE
+	bool "python-wallycore"
+	help
+	  Python bindings for libwally-core, Blockstream's Bitcoin
+	  wallet library (with its bundled libsecp256k1-zkp).
+
+	  SeedSigner uses it as an independent second implementation
+	  that cross-checks embit: seeds, descriptors, addresses, psbt
+	  parsing and every signature (src/seedsigner/crosscheck).
+	  The app refuses to sign on device without it.
+
+	  https://github.com/ElementsProject/libwally-core
