@@ -29,7 +29,7 @@ setup_boot_log() {
     # The hotplug wrapper excludes this partition from the /mnt/microsd
     # dance, so it is unmounted here and ours alone. 'flush' keeps FAT
     # writes lazy; the sync loop below lands them every few seconds anyway.
-    mountpoint -q /mnt/bootlog || mount -o flush "$ESP" /mnt/bootlog 2>/dev/null \
+    mountpoint -q /mnt/bootlog || mount -t vfat -o flush "$ESP" /mnt/bootlog 2>/dev/null \
         || mount "$ESP" /mnt/bootlog 2>/dev/null || return 0
     if [ ! -f /mnt/bootlog/seedsigner-bootlog.txt ]; then
         # Logging off: drop the mount again so the stick is not held busy.
@@ -131,6 +131,10 @@ fi
 
 export SS_APP_DIR
 export HOME=/root
+# Init runs exactly one copy of this launcher (on tty1), so any display-0
+# lock seen here is a leftover from a dead server -- a crashed session, or a
+# power-cut if /tmp is ever disk-backed again. X refuses to start over it.
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
 startx /etc/X11/xinit/xinitrc-seedsigner -- :0 vt1
 RC=$?
 

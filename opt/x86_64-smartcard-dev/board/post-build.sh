@@ -12,6 +12,14 @@ cp -a "${BR2_EXTERNAL_RPI_SEEDSIGNER_PATH}/../rootfs-overlay-dev/." "${TARGET_DI
 grep -qE '^tty1::respawn:/usr/bin/seedsigner-console$' ${TARGET_DIR}/etc/inittab || \
 sed -i 's|^.*respawn:/sbin/getty.*$|tty1::respawn:/usr/bin/seedsigner-console|' ${TARGET_DIR}/etc/inittab
 
+# /tmp must be RAM-backed. The shared overlay's fstab has no tmpfs line: the
+# other profiles' rootfs vanishes at power-off anyway, but this one boots a
+# persistent, rw-remounted ext4 -- so /tmp/.X0-lock from a power-cut X session
+# survived the reboot and every later startx died with "Server is already
+# active for display 0" (blank screen, respawn loop).
+grep -qE '^tmpfs[[:space:]]+/tmp[[:space:]]' ${TARGET_DIR}/etc/fstab || \
+echo 'tmpfs		/tmp		tmpfs	mode=1777	0	0' >> ${TARGET_DIR}/etc/fstab
+
 # The shared/dev overlay's /start.sh is superseded by the console launcher on
 # this profile; keep it functional for manual invocation (S02seedsigner is
 # removed below, so nothing runs it automatically -- X must own the VT, which
