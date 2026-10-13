@@ -90,6 +90,34 @@ gh release create "$TAG" --repo 3rdIteration/seedsigner --target dev --prereleas
   --title "SeedSigner $TAG" --notes-file notes.md
 ```
 
+### Required release-notes sections (maintainer convention)
+
+Beyond the feature notes, every app release body must carry these sections (see the B12/B13 releases for
+the canonical layout). CI auto-appends a *partial* hash list — replace it with the full block, never keep
+both:
+
+1. **Dev images link** — a line pointing at the paired OS-repo release (`SeSi-X.Y.Z+ShSi-Bnn`) for
+   Pi/La Frite/Luckfox bench builds.
+2. **Note on Reproducibility** — which lineages were independently rebuilt and verified byte-identical
+   (after Phase 7 completes; update the body then if it was written earlier).
+3. **To Build** — the clone/checkout/docker-compose block with `$TAG` substituted:
+   ```
+   git clone https://github.com/3rdIteration/seedsigner-os/
+   cd seedsigner-os
+   git checkout SeSi-X.Y.Z+ShSi-Bnn
+   git submodule init && git submodule update
+   SS_ARGS="--all --app-repo=https://github.com/3rdIteration/seedsigner --app-branch=SeSi-X.Y.Z+ShSi-Bnn --smartcard" docker compose up --force-recreate --build
+   ```
+4. **SHA256 Checksums (And message to verify)** — a `- - -` fenced block listing every production asset
+   with `<exact asset filename>: <sha256>`: all Pi/La Frite `.img` files **and** all Luckfox artifacts
+   (SD `.img`s + NAND/eMMC `.zip`s). Filenames must match the release assets byte-for-byte, since the
+   whole block is the signed message.
+5. **Bitcoin Message Signature** — between `- - -` fences, the Electrum-format signature over the
+   checksum block above, signed with the maintainer's key for address `37hiiSB1Poj6Shs8WawPS2HjT2jzHkFSQi`.
+   The maintainer signs it manually (out-of-band) — if not yet available, write `TBC` and leave it; never
+   generate or guess a signature. Follow with the standard **Signature Verification** paragraph (tip-address
+   attestation links + verifybitcoinmessage.com/bitaps hints) copied verbatim from the previous release.
+
 ## Phase 6 — Dispatch the CI builds
 
 Two groups. **Pass every build-shaping input explicitly** (commands below match current UI defaults)
