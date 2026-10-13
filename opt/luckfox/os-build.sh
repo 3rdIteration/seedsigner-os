@@ -17,7 +17,12 @@ export LUCKFOX_REPO_URL="https://github.com/3rdIteration/luckfox-pico.git"
 # what branch was asked for, and the resulting image differed from CI in the one
 # component that is not pinned by this repo. See also: the build records the app
 # branch, not its commit, so "dev" is not a fixed target either.
-export SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner.git}"
+export SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL:-https://github.com/3rdIteration/seedsigner}"
+# Canonicalise exactly like build.sh does for REPO (no trailing slash, no ".git"): the URL is
+# recorded verbatim in /etc/seedsigner-os-release (APP_REPO), so caller spelling must not leak
+# into the image -- one extra ".git" desyncs rootfs -> minisig -> initramfs -> FIT signature.
+while [ "${SEEDSIGNER_REPO_URL%/}" != "$SEEDSIGNER_REPO_URL" ]; do SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL%/}"; done
+export SEEDSIGNER_REPO_URL="${SEEDSIGNER_REPO_URL%.git}"
 # May be a branch, a release tag or a commit -- `git clone -b` accepts all three.
 export SEEDSIGNER_BRANCH="${SEEDSIGNER_REF:-${SEEDSIGNER_BRANCH:-dev}}"
 # Build variant: non-dev (hardened/air-gapped) or dev. Mirrors build-luckfox.yml's build_variant.
@@ -197,8 +202,21 @@ export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-seedsigner-os}"
 export BUILD_MODEL="${BUILD_MODEL:-both}"
 export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
 # Serial console (ttyFIQ0). Accepts auto|true|false and the legacy 1|0, matching
-# build-luckfox.yml's disable_uart2_console_debug input. auto strips the console
-# on EVERY variant; only an explicit false keeps it. See resolve_uart2_console().
+# build-luckfox.yml's disable_uart2_console_debug input.
+#
+# Stripped on EVERY variant by default (auto/true -> 1). The console shares the
+# UART2 pin with the SEC1210 smartcard reader: a console-on image wedges the
+# ccid driver (kernel log output lands in the AT-command stream), so a dev that
+# keeps the console silently loses the reader. Dev images keep their other two
+# bench paths -- adb (USB gadget mode) and telnet (debug_network=on) -- so the
+# console is not the only way in; explicit false/0 remains the bench override
+# for boards with no card reader attached. This restores the flat-1 default
+# build-local.sh has always had, reuniting the three build implementations.
+#
+# A console-on image also shows the secure-boot screen and then never reaches
+# the app on the Pico; seedsigner-os dev/release images built that way reached
+# users and looked like a bad flash (2026-10). Such images are tagged -dev-uart
+# in their file name (artifact-tag.sh).
 export DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-auto}"
 export DEFAULT_PYTHON_VERSION="${DEFAULT_PYTHON_VERSION:-3.12}"
 # Host Rust toolchain cache (see rust-toolchain-cache.sh). Unset = no caching,
@@ -222,22 +240,15 @@ print_info() { echo -e "\n${YELLOW}[INFO] $1${NC}\n"; }
 # build-local.sh has always defined it; this is the two drifting apart again.
 print_warning() { echo -e "\n${YELLOW}[WARNING] $1${NC}\n"; }
 
-# Normalise DISABLE_UART2_CONSOLE_DEBUG to a plain 1|0 before anything reads it.
-# An explicit true/false (or the legacy 1/0) wins; auto strips the console on
-# BOTH variants. The three apply_uart2_* functions below then only ever see 1 or
-# 0, so the policy lives in exactly one place.
-#
-# auto used to keep the console on dev builds. Those images show the secure-boot
-# screen and then never reach the app on the Pico, which is how push-CI and
-# seedsigner-os release images reached users and looked like a bad flash
-# (2026-10). The debug channel on a dev build is adb/telnet, so the console is
-# now opt-in (disable_uart2_console_debug=false) and the image name carries
-# -dev-uart (artifact-tag.sh). build-local.sh has always defaulted to stripped.
+# Normalise DISABLE_UART2_CONSOLE_DEBUG to a plain 1|0 before anything reads it:
+# only an explicit false (or the legacy 0) keeps the console; auto/true/1 -- and
+# anything unrecognised -- strip it, on every build variant. The three
+# apply_uart2_* functions below then only ever see 1 or 0, so the policy lives in
+# exactly one place.
 resolve_uart2_console() {
     case "$DISABLE_UART2_CONSOLE_DEBUG" in
-        1|true|auto|"") DISABLE_UART2_CONSOLE_DEBUG=1 ;;
-        0|false)        DISABLE_UART2_CONSOLE_DEBUG=0 ;;
-        *) print_error "DISABLE_UART2_CONSOLE_DEBUG must be auto|true|false, got '$DISABLE_UART2_CONSOLE_DEBUG'"; exit 1 ;;
+        0|false) DISABLE_UART2_CONSOLE_DEBUG=0 ;;
+        *)       DISABLE_UART2_CONSOLE_DEBUG=1 ;;
     esac
     export DISABLE_UART2_CONSOLE_DEBUG
 }
@@ -401,8 +412,8 @@ show_usage() {
     echo "  - Model selector via BUILD_MODEL=mini|max|pi|both"
     echo "  - Mini CMA override via MINI_CMA_SIZE (default: 1M)"
     echo "  - 'both' builds mini+max; use 'pi' to build the Pico Pi (eMMC only)"
-    echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=auto|true|false (default: auto = stripped on every variant)"
-    echo "    auto strips the console on both variants; false keeps it (artifacts tagged -dev-uart)"
+    echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=auto|true|false (default: auto)"
+    echo "    auto/true strip the console on every variant; only false keeps it (artifacts tagged -dev-uart)"
     echo "  - SDK revision pinned by opt/luckfox/SDK_COMMIT"
     echo "    (override with LUCKFOX_COMMIT=<sha> or LUCKFOX_BRANCH=<branch>)"
     echo ""
