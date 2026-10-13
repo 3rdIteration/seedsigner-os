@@ -64,10 +64,12 @@ name, so a local build can reproduce what CI ships):
   --debug-network V     - auto|on|off (default: auto)
   --disable-uart2-console-debug V - auto|true|false. Strip the UART2 serial
                            console: auto/true strip it on EVERY variant
-                           (default: auto); only false keeps it. The console
-                           shares its UART with the SEC1210 smartcard reader,
-                           so a console-on image will not initialise the HAT;
-                           dev images keep adb + telnet for bench access
+                           (default: auto); only false keeps it — such an
+                           image does not boot through to the app on the Pico
+                           and is tagged -dev-uart in its file name. The
+                           console shares its UART with the SEC1210 smartcard
+                           reader, so a console-on image will not initialise
+                           the HAT; dev images keep adb + telnet for bench access
   --harden-adb V        - on|off. Strip the adb userspace on non-dev
                           (default: on)
   --testing-build V     - on|off. Ship /etc/seedsigner-testing-build, which

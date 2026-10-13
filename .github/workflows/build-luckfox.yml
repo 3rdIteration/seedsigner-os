@@ -37,7 +37,7 @@ on:
           - EMMC
         default: 'SD_CARD'
       disable_uart2_console_debug:
-        description: 'Strip serial console (ttyFIQ0) + FIQ debugger: auto/true = strip on EVERY variant (default; UART2 is shared with the SEC1210 reader); false = keep console for bench debugging (dev images also have adb + telnet)'
+        description: 'Strip serial console (ttyFIQ0) + FIQ debugger: auto/true = strip on EVERY variant (default; UART2 is shared with the SEC1210 reader); false = keep console for bench debugging only (the Pico then stalls after the secure-boot screen; artifacts are tagged -dev-uart; dev images also have adb + telnet)'
         required: false
         type: choice
         options:
@@ -97,14 +97,10 @@ on:
           - 'off'
           - 'on'
         default: 'off'
-      build_variant:
-        description: 'Build variant: non-dev (hardened/air-gapped: no serial login, no USB adb/RNDIS, no logging, no dev tools) or dev (adb shell + telnet debug channel; the serial console is stripped by default on both variants — override with disable_uart2_console_debug=false). Automatic push/PR CI always builds dev.'
-        required: false
-        type: choice
-        options:
-          - 'non-dev'
-          - 'dev'
-        default: 'non-dev'
+      # No build_variant input here: every image built in seedsigner-os is a
+      # dev (non-production) image -- see the "Build image in Docker" step.
+      # Production images are built by the seedsigner app repo, which calls
+      # this workflow via workflow_call (build_variant: non-dev).
       signing:
         description: 'Secure boot: on = sign the U-Boot FIT images and the rootfs (FIT + minisign, verified by the initramfs before switch_root) with the committed public dev keys; artifacts are tagged -signed-devkey. off = unsigned, byte-identical to pre-secure-boot builds.'
         required: false
@@ -403,10 +399,17 @@ jobs:
         SEEDSIGNER_ROOTFS_VERIFY_UNFUSED: ${{ inputs.rootfs_verify_unfused == 'on' && '1' || '0' }}
         # build.sh's passthrough hands this to os-build.sh, where
         # resolve_uart2_console() normalises auto to strip the console on EVERY
-        # variant; only an explicit false/0 keeps it. Note: a console-on image
-        # shares its UART with the SEC1210 smartcard reader and will not
-        # initialise it — keep false to bench-only, non-smartcard debugging.
+        # variant; only an explicit false/0 keeps it (and tags the artifacts
+        # -dev-uart). Note: a console-on image shares its UART with the SEC1210
+        # smartcard reader and will not initialise it, and on the Pico it stalls
+        # after the secure-boot screen — keep false to bench-only debugging.
         DISABLE_UART2_CONSOLE_DEBUG: ${{ inputs.disable_uart2_console_debug || 'auto' }}
+        # Images built in seedsigner-os itself (or a fork of it) are never
+        # production: users downloaded a seedsigner-os release image whose name
+        # said "osproduction" and treated it as one. Inside a workflow_call,
+        # github.repository is the CALLER (the seedsigner app repo), so its
+        # production builds keep the variant they pass.
+        BUILD_VARIANT: ${{ endsWith(github.repository, '/seedsigner-os') && 'dev' || (inputs.build_variant || 'dev') }}
       run: |
         set -euo pipefail
         cd seedsigner-os/opt/luckfox
@@ -425,7 +428,7 @@ jobs:
           --repos-dir    "$GITHUB_WORKSPACE/luckfox-repos" \
           --cache-dir    "$GITHUB_WORKSPACE/luckfox-cache" \
           --ccache-dir   "$GITHUB_WORKSPACE/luckfox-ccache" \
-          --variant         "${{ inputs.build_variant || 'dev' }}" \
+          --variant         "$BUILD_VARIANT" \
           --usb-mode        "${{ inputs.usb_mode || 'auto' }}" \
           --debug-network   "${{ inputs.debug_network || 'auto' }}" \
           --readonly-rootfs "${{ inputs.readonly_rootfs || 'auto' }}" \

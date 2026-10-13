@@ -25,8 +25,9 @@ SeedSigner packages, defconfig, rootfs files and patches into it. Everything Luc
 
 `.github/workflows/build-luckfox.yml` — **"Build SeedSigner OS (Luckfox Pico)"**. Run it from the Actions tab
 (or `gh workflow run`) choosing `hardware_type`, `boot_medium`, and `seedsigner_branch` (the app branch to
-build). Specific inputs build a single combo; a push builds the full matrix. It is also a **reusable
-workflow** — the seedsigner app repo's "Build Luckfox" workflow calls it to build an image from an app branch.
+build). Specific inputs build a single combo; a push builds the full matrix. Runs in this repo always build
+**dev** (non-production) images. It is also a **reusable workflow**: the seedsigner app repo's "Build
+Luckfox" workflow calls it to build release (non-dev) images from an app branch.
 
 ### Local — Docker
 
@@ -69,15 +70,20 @@ tolerates its absence).
 
 ## Build variants — dev vs non-dev
 
-The `build_variant` workflow input (choice; `non-dev` or `dev`) selects a hardened production image vs a
-debuggable one. **Automatic push/PR CI always builds `dev`** (it validates the full debuggable stack); a
-manual "Run workflow" defaults to `non-dev` (pick `dev` to override). Local builds set the same thing via
+The `build_variant` input selects a hardened production image (`non-dev`) or a debuggable one (`dev`).
+**Every image built in seedsigner-os itself is `dev`**: push/PR CI and manual "Run workflow" runs alike,
+and so are the images attached to seedsigner-os releases. The workflow forces this whenever it runs in a
+repo named `*/seedsigner-os`, and its `workflow_dispatch` form has no `build_variant` input. **Production
+images come from the seedsigner app repo**, whose "Build Luckfox" workflow calls this one as a reusable
+workflow and passes `build_variant: non-dev`. Local builds set the variant via
 `SEEDSIGNER_BUILD_VARIANT=dev|non-dev` (default `non-dev`).
 
 For the serial console specifically, the `disable_uart2_console_debug` input defaults to `auto`, which
 **strips the console + FIQ debugger on every variant, dev included**; only an explicit `false`/`0` keeps
 them. Local Docker builds take the same lever as `--disable-uart2-console-debug auto|true|false` on
-`build.sh`; `build-local.sh` defaults to stripped with an opt-in `--enable-uart2-console`.
+`build.sh`; `build-local.sh` defaults to stripped with an opt-in `--enable-uart2-console`. A console-on
+image shows the secure-boot screen and then never reaches the app on the Pico, so its file name carries
+`-dev-uart` (see [Artifact names](#artifact-names)).
 
 **The console and the SEC1210 smartcard HAT share a UART.** A console-on image will not initialise the
 reader: kernel log output is injected into the ccid driver's AT-command stream, and with only the active
@@ -85,6 +91,30 @@ reader on the line early boot wedges instead. That is why the console is now str
 variant — dev images keep their other two bench paths (adb via USB gadget, and telnet via
 `debug_network=on`), so no image loses the card reader unless it was explicitly built with
 `disable_uart2_console_debug=false` for boards with no reader attached.
+
+### Artifact names
+
+Every image and bundle is named `seedsigner-luckfox-pico-<model>-<sd|nand-files|emmc-files>-<tag>`, where
+`<tag>` comes from `opt/luckfox/artifact-tag.sh` (shared by `os-build.sh` and `build-local.sh`):
+
+```
+<appref>-os<develop|production>[-dev-<lever>...]-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>
+```
+
+The `-dev-<lever>` tokens mean an image whose name says `production` cannot quietly carry a debug setting:
+
+| Token | Meaning | Added on |
+|---|---|---|
+| `-dev-uart` | serial console left on (does not boot through to the app) | every variant |
+| `-dev-testing` | testing build (hardware test menu instead of Home) | every variant |
+| `-dev-adb` / `-dev-otg` | USB gadget / dual-role instead of host | production |
+| `-dev-net` | Ethernet debug channel (telnet/ssh) kept | production |
+| `-dev-rw` | writable rootfs instead of read-only squashfs | production |
+| `-dev-bootlog` | persistent boot log written to `/userdata` | production |
+| `-dev-adbfiles` | adb userspace not stripped (`harden_adb=off`) | production |
+
+A clean production image is therefore exactly `<appref>-osproduction-<signing>`, e.g.
+`SeSi-0.8.7_ShSi-B13-osproduction-signed-devkey`.
 
 The Luckfox implementation differs from the Pi / La Frite profiles (which have parallel `-dev`/non-dev profile
 directories). Luckfox is the Rockchip SDK with a single defconfig + an SDK-provided rootfs, so **non-dev is a
@@ -482,6 +512,42 @@ Notes:
 - **Maskrom** (BootROM USB download — needed only for a bricked/blank device or to rewrite the loader itself)
   is **not enabled yet**: it requires adding a device-tree `mode-maskrom = <0xef08a53c>` entry to the board DTS
   plus a firmware rebuild. The physical **BOOT button remains the guaranteed fallback** for maskrom.
+
+## Troubleshooting
+
+### Shows the secure-boot screen, then never reaches SeedSigner
+
+**Most likely a UART-console (dev) image, not a bad flash.** An image built with the serial console on
+shows the initramfs secure-boot screen and then stalls before the app starts. Reflashing the same file
+reproduces the stall exactly.
+
+- **Check the file name.** Use a production image from the
+  [seedsigner app repo's releases](https://github.com/3rdIteration/seedsigner/releases). Its name ends
+  `-osproduction-signed-devkey` (or `-unsigned`) with **no `-dev-…` token**. Anything containing `-dev-uart`
+  has the console on. (Names: [Artifact names](#artifact-names).)
+- **seedsigner-os releases are not production images.** Before this was enforced, a seedsigner-os release
+  shipped the same file name as the app release despite having the console on. The
+  `SeSi-0.8.7+ShSi-B13-pre` Mini SD image (`…-mini-sd-SeSi-0.8.7_ShSi-B13-pre-osproduction-signed-devkey.img`)
+  exists in both repos with different contents. Compare the file's SHA-256 with the digest on the
+  app repo's release page, not just the name.
+- **Diagnosing a card someone already flashed:** read the image back and inspect boot.img's kernel
+  command line. `console=ttyFIQ0` / `earlycon=` means a console-on build. `/etc/seedsigner-os-release`
+  in the rootfs says where it came from. `SEEDSIGNER_OS_BRANCH=main` with an app branch ending `-pre`
+  means a seedsigner-os CI build.
+
+### SocToolKit shows no Maskrom / Loader device
+
+The Rockchip USB driver is missing. Windows does not ship it, so SocToolKit sees nothing even when the
+board is correctly in download mode (BOOT held while plugging in, or KEY3 / "Reboot to flash mode").
+
+1. Download **RK Driver Assistant** (`DriverAssitant`) as linked from the Luckfox wiki's
+   [Flash Image page](https://wiki.luckfox.com/Luckfox-Pico-Plus-Mini/Flash-image), section *Install Driver*.
+2. Run it and click to install the USB driver. No board needs to be connected.
+3. **Restart the computer**, then run SocToolKit **as administrator** and select **RV1106** (also used for
+   the RV1103 Mini).
+
+If it still doesn't appear, try another USB cable (many are charge-only) and power-cycle the board
+between attempts. For a fused board stuck in maskrom, see [soctoolkit-cli.md](soctoolkit-cli.md).
 
 ## Other reference docs in this folder
 
