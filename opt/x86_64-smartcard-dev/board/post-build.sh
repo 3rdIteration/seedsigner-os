@@ -37,6 +37,11 @@ rm -f ${TARGET_DIR}/etc/init.d/S00mdev
 rm -f ${TARGET_DIR}/etc/init.d/S02mdev
 rm -f ${TARGET_DIR}/etc/init.d/S10mdev
 rm -f ${TARGET_DIR}/etc/init.d/S02seedsigner
+# Buildroot's xserver_xorg-server installs S40xorg, which starts a bare
+# "Xorg :0 vt01" at boot. It grabs display :0 and vt1 before the launcher's
+# startx runs, so the launcher's server dies ("server already running") and
+# the screen shows S40xorg's empty black root window forever.
+rm -f ${TARGET_DIR}/etc/init.d/S40xorg
 
 # Clean up files included in skeleton not needed
 rm -f ${TARGET_DIR}/etc/init.d/S01syslogd

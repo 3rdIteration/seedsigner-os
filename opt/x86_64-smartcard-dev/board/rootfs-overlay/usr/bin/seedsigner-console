@@ -131,10 +131,17 @@ fi
 
 export SS_APP_DIR
 export HOME=/root
-# Init runs exactly one copy of this launcher (on tty1), so any display-0
-# lock seen here is a leftover from a dead server -- a crashed session, or a
-# power-cut if /tmp is ever disk-backed again. X refuses to start over it.
-rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+# Clear a display-0 lock left by a dead server (crashed session, or a
+# power-cut if /tmp is ever disk-backed again) -- X refuses to start over it.
+# Only when its PID is gone: a live holder is a real conflict to surface.
+if [ -f /tmp/.X0-lock ]; then
+    X0_PID=$(tr -d ' \n' < /tmp/.X0-lock 2>/dev/null)
+    if [ -n "$X0_PID" ] && kill -0 "$X0_PID" 2>/dev/null; then
+        echo "display :0 held by live PID $X0_PID: $(cat /proc/$X0_PID/cmdline 2>/dev/null | tr '\0' ' ')"
+    else
+        rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+    fi
+fi
 startx /etc/X11/xinit/xinitrc-seedsigner -- :0 vt1
 RC=$?
 
