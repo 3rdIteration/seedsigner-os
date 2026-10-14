@@ -37,6 +37,13 @@ rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/embit/util/prebuilt/libsecp25
 rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/embit/util/prebuilt/libsecp256k1_linux_x86_64.so
 rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/embit/util/prebuilt/libsecp256k1_windows_amd64.dll
 
+# Remove embit's pure-Python secp256k1 fallback: we must run only on the pre-compiled
+# libsecp256k1 C code or not at all. We explicitly opt for hard failure over silent
+# fallback.
+# We must delete both the .py and the .pyc to fully remove the fallback.
+rm -f ${TARGET_DIR}/usr/lib/python3/site-packages/embit/util/py_secp256k1.py
+rm -f ${TARGET_DIR}/usr/lib/python3/site-packages/embit/util/py_secp256k1.pyc
+
 # Clean up tests/docs in other python included libs
 rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/pyzbar/tests
 rm -rf ${TARGET_DIR}/usr/lib/python3/site-packages/qrcode/tests
@@ -53,11 +60,102 @@ rm -rf ${TARGET_DIR}/usr/lib/python3/turtledemo
 rm -rf ${TARGET_DIR}/usr/lib/python3/unittest
 rm -rf ${TARGET_DIR}/usr/lib/python3/ensurepip
 
+# ### Cross-arch reproducibility normalization
+# ### Two files record the *build machine* architecture, which makes images built on
+# ### an aarch64 host differ from x86_64-host builds:
+# ###   - libstdc++: nothing in the image links against it, and its .text differs by build
+# ###     host (GCC 13.3 orders two spill slots in from_chars differently) => remove it.
+# ###   - python sysconfigdata: embeds the configure build triplet; only loaded via
+# ###     sysconfig.get_config_var(), which nothing on the device calls => remove it.
+# ### (numpy's __config__.py is handled at the source instead: see the python-numpy patch
+# ###  in BR2_GLOBAL_PATCH_DIR, opt/patches/python-numpy/.)
+
+# Remove libstdc++ (unused: no binary in the image links against it)
+rm -f ${TARGET_DIR}/usr/lib/libstdc++.so.6.0.32 \
+      ${TARGET_DIR}/usr/lib/libstdc++.so.6 \
+      ${TARGET_DIR}/usr/lib/libstdc++.so \
+      ${TARGET_DIR}/usr/lib/libstdc++.so.6.0.32-gdb.py
+
+# Remove python sysconfigdata (build-host metadata; unused at runtime)
+rm -f ${TARGET_DIR}/usr/lib/python3.12/_sysconfigdata__linux_arm-linux-gnueabihf.py
+
+# ### Image slimming: files verified unused by the seedsigner app
+# ### (dependency-closure scan of every ELF + import scan of every shipped pyc)
+
+# rpi-userland demo/diagnostic binaries; picamera talks to libmmal* directly
+for f in containers_check_frame_int containers_datagram_receiver containers_datagram_sender \
+         containers_dump_pktfile containers_rtp_decoder containers_stream_client \
+         containers_stream_server containers_test containers_test_bits containers_test_uri \
+         containers_uri_pipe raspistill raspivid raspividyuv raspiyuv mmal_vc_diag \
+         vchiq_test vcsmem vcmailbox tvservice vcgencmd dtoverlay dtoverlay-pre \
+         dtoverlay-post dtmerge read_zbar read_zbar.py zbarcam fribidi qr; do
+  rm -f ${TARGET_DIR}/usr/bin/${f}
+done
+
+# Libraries nothing in the image links against (GL stack, media-container plugins,
+# dtoverlay helpers, v4l compat shims, harfbuzz subsetter)
+rm -rf ${TARGET_DIR}/usr/lib/plugins \
+       ${TARGET_DIR}/usr/lib/libv4l
+rm -f  ${TARGET_DIR}/usr/lib/libharfbuzz-subset.so* \
+       ${TARGET_DIR}/usr/lib/libdtovl.so \
+       ${TARGET_DIR}/usr/lib/libdebug_sym.so \
+       ${TARGET_DIR}/usr/lib/libvcilcs.so \
+       ${TARGET_DIR}/usr/lib/libkhrn_client.so \
+       ${TARGET_DIR}/usr/lib/libopenmaxil.so \
+       ${TARGET_DIR}/usr/lib/libEGL.so \
+       ${TARGET_DIR}/usr/lib/libGLESv2.so \
+       ${TARGET_DIR}/usr/lib/libOpenVG.so \
+       ${TARGET_DIR}/usr/lib/libWFC.so \
+       ${TARGET_DIR}/usr/lib/libbrcmEGL.so \
+       ${TARGET_DIR}/usr/lib/libbrcmGLESv2.so \
+       ${TARGET_DIR}/usr/lib/libbrcmOpenVG.so \
+       ${TARGET_DIR}/usr/lib/libbrcmWFC.so
+
+# Python stdlib subsystems with no importers in the image (scan of all pyc string tables;
+# concurrent/ stays: picamera.mmal uses concurrent.futures)
+rm -rf ${TARGET_DIR}/usr/lib/python3.12/asyncio \
+       ${TARGET_DIR}/usr/lib/python3.12/email \
+       ${TARGET_DIR}/usr/lib/python3.12/xml \
+       ${TARGET_DIR}/usr/lib/python3.12/http \
+       ${TARGET_DIR}/usr/lib/python3.12/multiprocessing \
+       ${TARGET_DIR}/usr/lib/python3.12/wsgiref \
+       ${TARGET_DIR}/usr/lib/python3.12/venv \
+       ${TARGET_DIR}/usr/lib/python3.12/pydoc_data \
+       ${TARGET_DIR}/usr/lib/python3.12/zoneinfo
+rm -f  ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_asyncio.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_multiprocessing.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_posixshmem.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_zoneinfo.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/audioop.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_lsprof.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/spwd.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/syslog.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/xxlimited*.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_xxinterpchannels.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_xxsubinterpreters.*
+# ### Cross-arch reproducibility normalization
+# ### Two files record the *build machine* architecture, which makes images built on
+# ### an aarch64 host differ from x86_64-host builds:
+# ###   - libstdc++: nothing in the image links against it, and its .text differs by build
+# ###     host (GCC 13.3 orders two spill slots in from_chars differently) => remove it.
+# ###   - python sysconfigdata: embeds the configure build triplet; only loaded via
+# ###     sysconfig.get_config_var(), which nothing on the device calls => remove it.
+# ### (numpy's __config__.py is handled at the source instead: see the python-numpy patch
+# ###  in BR2_GLOBAL_PATCH_DIR, opt/patches/python-numpy/.)
+
+# Remove libstdc++ (unused: no binary in the image links against it)
+rm -f ${TARGET_DIR}/usr/lib/libstdc++.so.6.0.32 \
+      ${TARGET_DIR}/usr/lib/libstdc++.so.6 \
+      ${TARGET_DIR}/usr/lib/libstdc++.so \
+      ${TARGET_DIR}/usr/lib/libstdc++.so.6.0.32-gdb.py
+
+# Remove python sysconfigdata (build-host metadata; unused at runtime)
+rm -f ${TARGET_DIR}/usr/lib/python3.12/_sysconfigdata__linux_arm-linux-gnueabihf.py
+
 # ### Reproducibility experimentation
 # ### Remove all pyc files I can seem to make reproducible and keep the py versions
 
 rm -f ${TARGET_DIR}/usr/lib/python3/config-3.12-arm-linux-gnueabihf/Makefile
-rm -f ${TARGET_DIR}/usr/lib/python3/multiprocessing/connection.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/json/decoder.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/site-packages/numpy/core/_string_helpers.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/site-packages/numpy/distutils/ccompiler.pyc
@@ -75,7 +173,6 @@ rm -f ${TARGET_DIR}/usr/lib/python3/traceback.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/_sysconfigdata__linux_arm-linux-gnueabihf.pyc
 
 find ${TARGET_DIR}/usr/lib/python3.12 -name '*.py' \
-	-not -path "*/python3.12/multiprocessing/connection.py" \
 	-not -path "*/python3.12/json/decoder.py" \
 	-not -path "*/python3.12/site-packages/numpy/core/_string_helpers.py" \
 	-not -path "*/python3.12/site-packages/numpy/distutils/ccompiler.py" \
@@ -90,7 +187,6 @@ find ${TARGET_DIR}/usr/lib/python3.12 -name '*.py' \
 	-not -path "*/python3.12/site-packages/numpy/lib/recfunctions.py" \
 	-not -path "*/python3.12/site-packages/numpy/lib/stride_tricks.py" \
 	-not -path "*/python3.12/traceback.py" \
-	-not -path "*/python3.12/_sysconfigdata__linux_arm-linux-gnueabihf.py" \
 	-print0 | \
 	xargs -0 --no-run-if-empty rm -f
 
@@ -100,3 +196,7 @@ find "${TARGET_DIR}" -name '.DS_Store' -print0 | xargs -0 --no-run-if-empty rm -
 SOURCE_DATE_EPOCH=1 PYTHONHASHSEED=0 ${HOST_DIR}/bin/python3.12 \
   "${BUILD_DIR}/python3-3.12.10/Lib/compileall.py" \
   -f --invalidation-mode=checked-hash "${TARGET_DIR}/opt/src"
+
+# Fail the build if embit can't reach the pre-compiled libsecp256k1 or if we detect the
+# pure-python secp256k1 fallback is present.
+"$(dirname "$0")/../../external-packages/python-embit/verify-secp256k1-binary.sh" "${TARGET_DIR}"

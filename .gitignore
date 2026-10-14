@@ -1,6 +1,7 @@
 *.DS_Store
 .idea/
 .buildroot-ccache/
+.buildroot_dl/
 .ccache/
 buildroot_dl/
 opt/output/

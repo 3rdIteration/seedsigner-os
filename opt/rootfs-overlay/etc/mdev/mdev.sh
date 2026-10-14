@@ -31,7 +31,11 @@ if [ "$ACTION" = "add" ] && [ -n "$DEVNAME" ]; then
     # via python3, which reads .py files as data. Caveat: noexec blocks direct
     # execve only; `sh /mnt/microsd/x.sh` still works because the interpreter
     # reads the file as data (see AGENTS.md).
-    if ! mount -o sync,noexec,nosuid,nodev "$DEVNAME" /mnt/microsd 2>>"$LOG"; then
+    # nodirty (custom kernel patch) keeps the mount from writing the FAT
+    # volume dirty flag; fall back for kernels without the patch (dev boards,
+    # and the fork's non-Pi boards).
+    if ! mount -o sync,noexec,nosuid,nodev,nodirty "$DEVNAME" /mnt/microsd 2>>"$LOG" \
+        && ! mount -o sync,noexec,nosuid,nodev "$DEVNAME" /mnt/microsd 2>>"$LOG"; then
         emit_result MICROSD_MOUNT_FAILED "could not mount microSD partition $DEVNAME" dev="$DEVNAME"
         exit 1
     fi
