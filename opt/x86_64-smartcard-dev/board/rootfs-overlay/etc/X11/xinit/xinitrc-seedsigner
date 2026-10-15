@@ -14,6 +14,11 @@ if [ -z "$SS_APP_DIR" ]; then
 fi
 
 export SDL_VIDEODRIVER=x11
+# The app's desktop UI is a fixed 960x480 layout. This is the hook for it to
+# scale that to fill the screen at its native resolution; the display mode
+# itself is left to the kernel/X default for compatibility. App refs without
+# that support ignore the variable.
+export SEEDSIGNER_DESKTOP_FULLSCREEN=1
 export SDL_AUDIODRIVER=alsa
 
 cd "$SS_APP_DIR" || exit 1

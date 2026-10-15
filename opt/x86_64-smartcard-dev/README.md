@@ -31,13 +31,13 @@ and talking to CCID smartcard readers over USB.
   embedded in the kernel, which keeps a rootfs of several hundred MB (X11,
   OpenCV, numpy) out of bzImage. The ESP is sized at build time from the
   payload.
-- **Display mode.** The app's desktop window is a fixed 960×480 (240×240 LCD
-  plus button panels, scaled 2×). grub.cfg passes
-  `video=eDP-1:960x480 video=LVDS-1:960x480`, so the internal panel runs at
-  exactly that mode and the GPU scales it to fill the screen. External
-  monitors keep their own mode. To change or remove it, edit `grub.cfg`
-  (both `EFI/BOOT/grub.cfg` and `boot/grub/grub.cfg`) on the `SEEDSIGNOS`
-  partition from any PC.
+- **Display.** The screen stays at its native resolution for compatibility
+  (no `video=` override). `xinitrc-seedsigner` sets
+  `SEEDSIGNER_DESKTOP_FULLSCREEN=1` as the hook for the app to scale its
+  fixed 960×480 desktop layout (240×240 LCD plus button panels) to fill
+  the screen. Scaling is app-side work in the seedsigner repo; until an app
+  ref honours the variable, the UI is a 960×480 window on the native-
+  resolution screen.
 - **Card handling.** Before mounting, the udev wrapper runs `fsck.fat -a`
   on FAT cards, which clears the "not properly unmounted" dirty bit every
   reboot leaves. It also lazily unmounts a dead mount left by a yanked
