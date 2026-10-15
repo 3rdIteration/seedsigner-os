@@ -21,15 +21,29 @@ and talking to CCID smartcard readers over USB.
   `/etc/mdev/mdev.sh` helper (mount at `/mnt/microsd`, `noexec,nosuid,nodev`,
   `/tmp/mdev_fifo` notification), with `SS_SKIP_DIY=1` since x86_64 has no
   pinned diy-tools squashfs.
-- **Hybrid BIOS+EFI bootable USB image.** One FAT32 ESP carries `/bzImage`,
+- **Hybrid BIOS+EFI bootable USB image, running from RAM.** One FAT32 ESP
+  (the only partition) carries `/bzImage`, `/rootfs.cpio.gz`,
   `EFI/BOOT/{bootx64.efi,bootia32.efi,grub.cfg}` and `boot/grub/grub.cfg`;
-  the MBR gap carries grub's i386-pc core. Root is ext4 found via
-  `root=PARTUUID=ba5eba11-02` (MBR disk signature pinned after genimage)
-  because the stick enumerates as `sda`/`sdb`/`sdc` depending on the
-  machine's own disks — and because a kernel with no initramfs cannot
-  resolve a filesystem `root=UUID=` at all (`early_lookup_bdev` parses only
-  `PARTUUID=`/`PARTLABEL=`/`/dev/...`/major:minor; a real device failed to
-  boot with "Disabling rootwait; root= is invalid" before this was fixed).
+  the MBR gap carries grub's i386-pc core. grub loads the whole rootfs as an
+  initrd that is unpacked into RAM, the same "run from RAM" model as the Pi
+  and La Frite images, so **the USB stick can be removed once the app is
+  up**. Unlike those profiles the cpio is a separate initrd rather than
+  embedded in the kernel, which keeps a rootfs of several hundred MB (X11,
+  OpenCV, numpy) out of bzImage. The ESP is sized at build time from the
+  payload.
+- **Display mode.** The app's desktop window is a fixed 960×480 (240×240 LCD
+  plus button panels, scaled 2×). grub.cfg passes
+  `video=eDP-1:960x480 video=LVDS-1:960x480`, so the internal panel runs at
+  exactly that mode and the GPU scales it to fill the screen. External
+  monitors keep their own mode. To change or remove it, edit `grub.cfg`
+  (both `EFI/BOOT/grub.cfg` and `boot/grub/grub.cfg`) on the `SEEDSIGNOS`
+  partition from any PC.
+- **Card handling.** Before mounting, the udev wrapper runs `fsck.fat -a`
+  on FAT cards, which clears the "not properly unmounted" dirty bit every
+  reboot leaves. It also lazily unmounts a dead mount left by a yanked
+  card, and on removal it only unmounts `/mnt/microsd` if the removed device
+  is the one mounted there. Pulling the boot stick never takes the card
+  away.
 - **Console launcher.** post-build.sh replaces the getty respawn line with
   `/usr/bin/seedsigner-console` (wait for storage, dev-source override,
   clock priming, `startx`), replacing `S02seedsigner`.
@@ -52,7 +66,9 @@ named `seedsigner-bootlog.txt` in the root of the `SEEDSIGNOS` FAT partition
 from any PC and boot. The launcher mounts that partition read-write and
 appends to `seedsigner-boot.log` on it — full dmesg, the live kernel ring,
 launcher output, the SeedSigner app's stdout/stderr — plus a copy of
-`/var/log/Xorg.0.log` as `seedsigner-xorg.log` whenever the X session exits
+`/var/log/Xorg.0.log` as `seedsigner-xorg.log` whenever the X session exits,
+and a `--- storage at app start ---` block (card mount, settings.json,
+fsck/mount logs) just before the app launches
 (the key artifact for a black-screen failure). The log survives a hard
 power-cut (flushed FAT + a periodic sync). Delete the marker file to turn it
 off; nothing is logged when it is absent. This mechanism lives entirely in

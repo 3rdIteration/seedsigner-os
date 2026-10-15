@@ -129,6 +129,17 @@ if [ "$CURRENT_YEAR" -lt 2010 ]; then
     /bin/date -s "$TIME_VALUE" || /bin/date -s "$TIME_FALLBACK"
 fi
 
+if [ -n "$BOOT_LOG" ]; then
+    # Card state as the app will see it at startup: whether /mnt/microsd is
+    # mounted decides if Persistent Settings is offered and settings.json is
+    # loaded. The hotplug helpers log to tmpfs; capture them here.
+    echo "--- storage at app start ---"
+    grep -E ' /mnt/(microsd|bootlog) ' /proc/mounts || echo "(no card mounted at /mnt/microsd)"
+    ls -l /mnt/microsd/settings.json 2>&1
+    cat /tmp/fsck.log /tmp/diy-mount.log 2>/dev/null
+    echo "--- end storage ---"
+fi
+
 export SS_APP_DIR
 export HOME=/root
 # Clear a display-0 lock left by a dead server (crashed session, or a
