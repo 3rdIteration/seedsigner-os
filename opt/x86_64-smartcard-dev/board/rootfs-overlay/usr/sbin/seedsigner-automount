@@ -16,11 +16,18 @@
 #     on top -- FAT "unable to read inode block" errors);
 #   * pulling some other stick never unmounts the card.
 #
-# What counts as a card: a partition (or partition-less disk) on a USB or SD
-# (not eMMC) bus, with a vfat/exfat/ext* filesystem, that is not the boot
-# stick's own ESP (label SEEDSIGNOS). Internal SATA/NVMe/eMMC disks are never
-# touched, so a laptop's own EFI or data partitions are never mistaken for a
-# card.
+# SECURITY RULE: only removable media is ever mounted. A device qualifies only
+# if its sysfs path is on a USB bus or on an MMC host whose card type is "SD"
+# (a microSD/SD card). Internal SATA/NVMe disks and eMMC (type "MMC") are
+# rejected before their filesystem is even probed, so the machine's own disks
+# -- its EFI partition, an OS install, user data -- are never mounted, read,
+# or written. NVMe is not even scanned. Keep it that way: widening this check
+# exposes whatever is on the host's internal storage to the app (which runs
+# as root) and to anything that ends up on the card.
+#
+# Beyond that, a card is a partition (or partition-less disk) with a
+# vfat/exfat/ext* filesystem that is not the boot stick's own ESP (label
+# SEEDSIGNOS).
 #
 # Mounting, options (noexec,nosuid,nodev) and the /tmp/mdev_fifo app
 # notification stay in the shared /etc/mdev/mdev.sh helper. Its FIFO write

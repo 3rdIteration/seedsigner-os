@@ -23,14 +23,23 @@
 
 BOOT_LOG=""
 setup_boot_log() {
-    ESP=$(blkid 2>/dev/null | awk '/LABEL="SEEDSIGNOS"/{sub(/:$/, "", $1); print $1; exit}')
+    # Only a SEEDSIGNOS partition on a USB device (the boot stick) is ever
+    # used. Matching the label alone could mount an internal disk's partition
+    # that happens to carry it, and nothing on internal storage is mounted
+    # (same rule as seedsigner-automount).
+    ESP=""
+    for dev in $(blkid 2>/dev/null | awk '/LABEL="SEEDSIGNOS"/{sub(/:$/, "", $1); print $1}'); do
+        case "$(readlink -f "/sys/class/block/${dev#/dev/}" 2>/dev/null)" in
+            */usb[0-9]*) ESP="$dev"; break ;;
+        esac
+    done
     [ -n "$ESP" ] || return 0
     mkdir -p /mnt/bootlog
-    # The hotplug wrapper excludes this partition from the /mnt/microsd
-    # dance, so it is unmounted here and ours alone. 'flush' keeps FAT
-    # writes lazy; the sync loop below lands them every few seconds anyway.
-    mountpoint -q /mnt/bootlog || mount -t vfat -o flush "$ESP" /mnt/bootlog 2>/dev/null \
-        || mount "$ESP" /mnt/bootlog 2>/dev/null || return 0
+    # The auto-mount daemon skips this partition, so it is unmounted here and
+    # ours alone. 'flush' keeps FAT writes lazy; the sync loop below lands
+    # them every few seconds anyway.
+    mountpoint -q /mnt/bootlog || \
+        mount -t vfat -o flush,noexec,nosuid,nodev "$ESP" /mnt/bootlog 2>/dev/null || return 0
     if [ ! -f /mnt/bootlog/seedsigner-bootlog.txt ]; then
         # Logging off: drop the mount again so the stick is not held busy.
         umount /mnt/bootlog 2>/dev/null

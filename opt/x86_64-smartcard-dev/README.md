@@ -19,8 +19,12 @@ and talking to CCID smartcard readers over USB.
   `/etc/init.d/S30seedsigner-automount`) polls once a second and keeps one
   removable card mounted at `/mnt/microsd`, where the app looks for it. A
   card is a partition, or a disk with no partition table, on a USB or SD bus
-  (internal SATA/NVMe/eMMC disks are never touched) with a vfat/exfat/ext*
-  filesystem, excluding the boot stick's `SEEDSIGNOS` ESP. FAT cards are
+  with a vfat/exfat/ext* filesystem, excluding the boot stick's `SEEDSIGNOS`
+  ESP. **Security rule: only removable media is ever mounted.** The host's
+  internal SATA/NVMe/eMMC storage (its EFI partition, an installed OS, user
+  data) is rejected by bus before its filesystem is even probed, and NVMe is
+  never scanned. The dev boot log applies the same rule: it only uses a
+  `SEEDSIGNOS` partition on a USB device. FAT cards are
   repaired with `fsck.fat -a` first, which clears the "not properly
   unmounted" dirty bit every reboot leaves. Mount options and the
   `/tmp/mdev_fifo` app notification come from the shared `/etc/mdev/mdev.sh`
