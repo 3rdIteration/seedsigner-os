@@ -1,0 +1,30 @@
+#!/bin/sh
+#
+# Starts the removable-card auto-mount daemon (/usr/sbin/seedsigner-automount).
+# Runs after udev (S10udev) has populated /dev, and before the tty1 launcher
+# waits for /mnt/microsd, so a card inserted at boot is mounted on its first
+# pass.
+
+DAEMON=/usr/sbin/seedsigner-automount
+PIDFILE=/var/run/seedsigner-automount.pid
+
+case "$1" in
+	start)
+		printf "Starting seedsigner-automount: "
+		start-stop-daemon -S -q -b -m -p "$PIDFILE" -x /bin/sh -- "$DAEMON"
+		[ $? = 0 ] && echo "OK" || echo "FAIL"
+		;;
+	stop)
+		printf "Stopping seedsigner-automount: "
+		start-stop-daemon -K -q -p "$PIDFILE"
+		[ $? = 0 ] && echo "OK" || echo "FAIL"
+		rm -f "$PIDFILE"
+		;;
+	restart|reload)
+		"$0" stop
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+esac

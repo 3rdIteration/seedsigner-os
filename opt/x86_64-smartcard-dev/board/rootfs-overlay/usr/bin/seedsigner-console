@@ -1,0 +1,178 @@
+#!/bin/sh
+# Desktop launcher for the x86_64 profile.
+#
+# Respawned directly by init on tty1 (post-build.sh swaps the getty line in
+# /etc/inittab), which gives it tty1 as controlling terminal -- what X needs
+# to own the VT. Replaces the S02seedsigner -> /start.sh headless flow the
+# Pi/La Frite/Luckfox profiles use, but keeps its semantics: wait for
+# removable storage, honour a MicroSD dev-source override, prime the clock,
+# then run the app -- here inside a minimal X server via startx.
+#
+# When the app (and therefore X) exits, this script exits and init respawns
+# it: crash-loop on failure, reboot-into-app on success.
+#
+# Debug boot log (DEV BUILDS ONLY -- lives in the -dev profile's board
+# overlay, never in the shared rootfs-overlay, so a hardened release profile
+# cannot inherit it): if the FAT boot partition (label SEEDSIGNOS, readable
+# from any PC) carries a file named seedsigner-bootlog.txt at its root,
+# mount the partition and append everything to seedsigner-boot.log there --
+# dmesg, the live kernel ring, this script's output, the app (via
+# SS_BOOT_LOG in the xinitrc) and the Xorg log on exit. The marker is checked
+# at every respawn and toggling it from a PC needs no reflash. Timestamps are
+# only meaningful after the clock step below (an unset RTC reads as 1970).
+
+BOOT_LOG=""
+setup_boot_log() {
+    # Only a SEEDSIGNOS partition on a USB device (the boot stick) is ever
+    # used. Matching the label alone could mount an internal disk's partition
+    # that happens to carry it, and nothing on internal storage is mounted
+    # (same rule as seedsigner-automount).
+    ESP=""
+    for dev in $(blkid 2>/dev/null | awk '/LABEL="SEEDSIGNOS"/{sub(/:$/, "", $1); print $1}'); do
+        case "$(readlink -f "/sys/class/block/${dev#/dev/}" 2>/dev/null)" in
+            */usb[0-9]*) ESP="$dev"; break ;;
+        esac
+    done
+    [ -n "$ESP" ] || return 0
+    mkdir -p /mnt/bootlog
+    # The auto-mount daemon skips this partition, so it is unmounted here and
+    # ours alone. 'flush' keeps FAT writes lazy; the sync loop below lands
+    # them every few seconds anyway.
+    mountpoint -q /mnt/bootlog || \
+        mount -t vfat -o flush,noexec,nosuid,nodev "$ESP" /mnt/bootlog 2>/dev/null || return 0
+    if [ ! -f /mnt/bootlog/seedsigner-bootlog.txt ]; then
+        # Logging off: drop the mount again so the stick is not held busy.
+        umount /mnt/bootlog 2>/dev/null
+        return 0
+    fi
+
+    BOOT_LOG=/mnt/bootlog/seedsigner-boot.log
+    # Cap the FAT log at ~512 KiB per generation: keep one .old backup.
+    if [ -f "$BOOT_LOG" ] && [ "$(wc -c < "$BOOT_LOG")" -gt 524288 ]; then
+        mv -f "$BOOT_LOG" /mnt/bootlog/seedsigner-boot.old.log
+    fi
+
+    {
+        echo ""
+        echo "===== SeedSigner OS x86_64 boot: $(date -u '+%Y-%m-%dT%H:%M:%SZ') ====="
+        uname -a
+        dmesg
+    } >> "$BOOT_LOG" 2>&1
+
+    # Stream kernel messages into the log for the rest of this boot. Guarded
+    # by a tmpfs marker so init respawns don't stack multiple cats onto the
+    # same /dev/kmsg reader.
+    if [ ! -e /tmp/ss-bootlog-kmsg ]; then
+        : > /tmp/ss-bootlog-kmsg
+        cat /dev/kmsg >> "$BOOT_LOG" 2>/dev/null &
+    fi
+}
+setup_boot_log
+
+if [ -n "$BOOT_LOG" ]; then
+    export SS_BOOT_LOG="$BOOT_LOG"
+    exec >> "$BOOT_LOG" 2>&1
+fi
+
+MICROSD_MOUNTPOINT="/mnt/microsd"
+MICROSD_DEV_DIR="$MICROSD_MOUNTPOINT/seedsigner/src"
+MAX_WAIT=10
+COUNT=0
+
+echo "Waiting for removable storage to mount (up to ${MAX_WAIT}s)..."
+while [ $COUNT -lt $MAX_WAIT ] && ! mountpoint -q "$MICROSD_MOUNTPOINT"; do
+    COUNT=$((COUNT + 1))
+    sleep 1
+done
+
+# Bring up wired interfaces with a persistent DHCP client (dev builds; same
+# behaviour as the shared dev start.sh). eudev names interfaces eth0/wlan0.
+for i in $(seq 1 5); do
+    ETH_IFACES=$(ls /sys/class/net 2>/dev/null | grep '^eth' || true)
+    if [ -n "$ETH_IFACES" ]; then
+        for IFACE in $ETH_IFACES; do
+            ifconfig "$IFACE" up 2>/dev/null || true
+            udhcpc -i "$IFACE" -b -t 0 -s /usr/share/udhcpc/default.script >/dev/null 2>&1 &
+        done
+        break
+    fi
+    sleep 1
+done
+
+if mountpoint -q "$MICROSD_MOUNTPOINT" && [ -d "$MICROSD_DEV_DIR" ]; then
+    echo "Running SeedSigner from external MicroSD source"
+    SS_APP_DIR="$MICROSD_DEV_DIR"
+else
+    echo "Running SeedSigner from embedded source"
+    SS_APP_DIR="/opt/src"
+fi
+
+# Set the date so that GPG can work even on machines with a dead RTC. Must
+# run BEFORE the app is launched: the app validates a new GPG key's expiry
+# against the current clock. The commit-time default exists in both source
+# trees' parent images; on x86 the hardware clock usually wins over it only
+# in the sense that date is already correct -- setting it again is harmless.
+TIME_DEFAULT_FILE="/opt/src/.build_commit_time"
+TIME_FALLBACK="2025-02-28 12:00"
+TIME_FILE="$MICROSD_MOUNTPOINT/time.txt"
+TIME_VALUE="$TIME_FALLBACK"
+
+if [ -f "$TIME_DEFAULT_FILE" ]; then
+    TIME_FROM_DEFAULT=$(tr -d '\r\n' < "$TIME_DEFAULT_FILE")
+    if [ -n "$TIME_FROM_DEFAULT" ]; then
+        TIME_VALUE="$TIME_FROM_DEFAULT"
+    fi
+fi
+
+if [ -f "$TIME_FILE" ]; then
+    TIME_FROM_FILE=$(tr -d '\r\n' < "$TIME_FILE")
+    if [ -n "$TIME_FROM_FILE" ]; then
+        TIME_VALUE="$TIME_FROM_FILE"
+    fi
+fi
+
+# Only override the clock if the RTC never got set (1970s reads are proof it
+# did not; a real RTC lands us in this decade and we leave it alone).
+CURRENT_YEAR=$(/bin/date +%Y)
+if [ "$CURRENT_YEAR" -lt 2010 ]; then
+    /bin/date -s "$TIME_VALUE" || /bin/date -s "$TIME_FALLBACK"
+fi
+
+if [ -n "$BOOT_LOG" ]; then
+    # Card state as the app will see it at startup: whether /mnt/microsd is
+    # mounted decides if Persistent Settings is offered and settings.json is
+    # loaded. The auto-mount daemon and mount helper log to tmpfs; capture
+    # them here.
+    echo "--- storage at app start ---"
+    grep -E ' /mnt/(microsd|bootlog) ' /proc/mounts || echo "(no card mounted at /mnt/microsd)"
+    ls -l /mnt/microsd/settings.json 2>&1
+    cat /tmp/automount.log /tmp/fsck.log /tmp/diy-mount.log 2>/dev/null
+    echo "--- end storage ---"
+fi
+
+export SS_APP_DIR
+export HOME=/root
+# Clear a display-0 lock left by a dead server (crashed session, or a
+# power-cut if /tmp is ever disk-backed again) -- X refuses to start over it.
+# Only when its PID is gone: a live holder is a real conflict to surface.
+if [ -f /tmp/.X0-lock ]; then
+    X0_PID=$(tr -d ' \n' < /tmp/.X0-lock 2>/dev/null)
+    if [ -n "$X0_PID" ] && kill -0 "$X0_PID" 2>/dev/null; then
+        echo "display :0 held by live PID $X0_PID: $(cat /proc/$X0_PID/cmdline 2>/dev/null | tr '\0' ' ')"
+    else
+        rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+    fi
+fi
+startx /etc/X11/xinit/xinitrc-seedsigner -- :0 vt1
+RC=$?
+
+if [ -n "$BOOT_LOG" ]; then
+    # The X server writes its own log even when the session never gets a
+    # screen -- the single most useful artifact for a black-boot debug.
+    [ -f /var/log/Xorg.0.log ] && cp -f /var/log/Xorg.0.log /mnt/bootlog/seedsigner-xorg.log
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') session exited rc=$RC; respawning" >> "$BOOT_LOG"
+    # Hard power-cuts are common while debugging a black screen: land the
+    # FAT writes before the user pulls the stick.
+    sync
+fi
+exit $RC

@@ -1,0 +1,34 @@
+#!/bin/sh
+# X session for the SeedSigner desktop UI: no window manager -- SDL2 takes
+# input focus itself -- just the app rendering the 240x240 UI (scaled) onto
+# the root window. stdout/stderr go to /tmp/seedsigner-app.log so app output
+# cannot scribble over the display; tail it over ssh on dev builds. When the
+# USB boot log is active (seedsigner-console exports SS_BOOT_LOG) the app
+# output goes there instead, so it survives on the FAT stick for machines
+# without serial or network access.
+
+APP_LOG="${SS_BOOT_LOG:-/tmp/seedsigner-app.log}"
+
+if [ -z "$SS_APP_DIR" ]; then
+    SS_APP_DIR="/opt/src"
+fi
+
+export SDL_VIDEODRIVER=x11
+export SDL_AUDIODRIVER=alsa
+
+cd "$SS_APP_DIR" || exit 1
+
+# Fullscreen desktop mode: the app scales its fixed 960x480 desktop layout to
+# fill the screen at its native resolution (the display mode itself is left
+# to the kernel/X default for compatibility). Pass --fullscreen only when this
+# app checkout knows it -- argparse rejects an unknown flag, which would
+# crash-loop an older APP_BRANCH into a black screen. The env var is the
+# same switch and is simply ignored by refs that predate it.
+export SEEDSIGNER_DESKTOP_FULLSCREEN=1
+set --
+if grep -q -- '"--fullscreen"' main.py 2>/dev/null; then
+    set -- --fullscreen
+fi
+
+echo "$(date) starting SeedSigner desktop UI from $SS_APP_DIR $*" >> "$APP_LOG"
+exec /usr/bin/python3 main.py "$@" >> "$APP_LOG" 2>&1

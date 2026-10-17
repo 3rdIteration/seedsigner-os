@@ -1,0 +1,169 @@
+#!/bin/sh
+# Auto-mount daemon for removable cards on the x86_64 desktop profile.
+#
+# Keeps exactly one removable card mounted at /mnt/microsd -- where the
+# SeedSigner app looks for persistent settings and file-based features --
+# and unmounts it when the device disappears. Started by
+# /etc/init.d/S30seedsigner-automount.
+#
+# Why a polling daemon instead of udev RUN rules (which this replaces):
+#   * coldplug: a card already inserted at boot is mounted on the first pass,
+#     with no dependence on udev trigger ordering;
+#   * cards formatted without a partition table (whole-disk FAT) are found,
+#     which an "sd[a-z][0-9]" rule never matched;
+#   * a yanked card always gets its dead mount cleared (a busy umount in a
+#     remove handler used to leave it behind, and the next card was stacked
+#     on top -- FAT "unable to read inode block" errors);
+#   * pulling some other stick never unmounts the card.
+#
+# SECURITY RULE: only removable media is ever mounted. A device qualifies only
+# if its sysfs path is on a USB bus or on an MMC host whose card type is "SD"
+# (a microSD/SD card). Internal SATA/NVMe disks and eMMC (type "MMC") are
+# rejected before their filesystem is even probed, so the machine's own disks
+# -- its EFI partition, an OS install, user data -- are never mounted, read,
+# or written. NVMe is not even scanned. Keep it that way: widening this check
+# exposes whatever is on the host's internal storage to the app (which runs
+# as root) and to anything that ends up on the card.
+#
+# Beyond that, a card is a partition (or partition-less disk) with a
+# vfat/exfat/ext* filesystem that is not the boot stick's own ESP (label
+# SEEDSIGNOS).
+#
+# Mounting, options (noexec,nosuid,nodev) and the /tmp/mdev_fifo app
+# notification stay in the shared /etc/mdev/mdev.sh helper. Its FIFO write
+# blocks while no app is reading -- between app respawns, and forever if the
+# app recreated the FIFO meanwhile -- so the helper runs in the background
+# with a deadline and is killed if still blocked. That only drops the
+# notification, which is harmless: the app treats the mount state as the
+# truth and the FIFO as a wake-up hint (and polls the mount state anyway).
+
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# No pinned diy-tools squashfs exists for x86_64; tell mdev.sh to stop after
+# mounting instead of hashing a squashfs that can never verify here.
+SS_SKIP_DIY=1
+export SS_SKIP_DIY
+
+MOUNT_POINT=/mnt/microsd
+BOOTLOG_MOUNT=/mnt/bootlog
+INTERVAL=1
+LOG=/tmp/automount.log
+FSCK_LOG=/tmp/fsck.log
+
+log() { echo "$(date) $*" >> "$LOG"; }
+
+# Device mounted at mountpoint $1 (e.g. /dev/sdb1), or empty.
+mounted_dev() {
+    awk -v m="$1" '$2==m {d=$1} END {print d}' /proc/mounts
+}
+
+# Is block device $1 (kernel name) on a removable-media bus?
+on_removable_bus() {
+    path="$(readlink -f "/sys/class/block/$1" 2>/dev/null)"
+    case "$path" in
+        */usb[0-9]*) return 0 ;;
+        */mmc_host/*)
+            # SD cards only: an eMMC (type "MMC") is an internal boot disk.
+            disk="${1%p[0-9]*}"
+            [ "$(cat "/sys/class/block/$disk/device/type" 2>/dev/null)" = "SD" ]
+            return ;;
+    esac
+    return 1
+}
+
+# First mountable card device name, or empty.
+find_card() {
+    for sysdev in /sys/class/block/sd* /sys/class/block/mmcblk*; do
+        [ -e "$sysdev" ] || continue
+        name="${sysdev##*/}"
+        case "$name" in
+            mmcblk*boot*|mmcblk*rpmb) continue ;;
+        esac
+        # A whole disk that has partitions is represented by its partitions.
+        if [ ! -e "$sysdev/partition" ] && ls -d "$sysdev/$name"* >/dev/null 2>&1; then
+            continue
+        fi
+        on_removable_bus "$name" || continue
+        info="$(blkid "/dev/$name" 2>/dev/null)"
+        case "$info" in
+            *'LABEL="SEEDSIGNOS"'*) continue ;;
+            *'TYPE="vfat"'*|*'TYPE="exfat"'*|*'TYPE="ext2"'*|*'TYPE="ext3"'*|*'TYPE="ext4"'*)
+                echo "$name"
+                return ;;
+        esac
+    done
+}
+
+# Run the shared helper: $1 = add|remove, $2 = kernel name. Waits until the
+# mount state matches the action (or the helper exits) for up to
+# HELPER_DEADLINE seconds, then kills a helper still blocked on the FIFO.
+HELPER_DEADLINE=5
+run_helper() {
+    ACTION="$1" MDEV="$2" /etc/mdev/mdev.sh &
+    pid=$!
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$HELPER_DEADLINE" ]; do
+        if [ "$1" = add ] && [ "$(mounted_dev "$MOUNT_POINT")" = "/dev/$2" ]; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    # Mounted (or finished) and only the FIFO write is left: give the app a
+    # last moment to read it, then drop it.
+    sleep 1
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+}
+
+failed_dev=""
+
+log "started"
+while :; do
+    # Dead mount: the device node is gone (devtmpfs removes it on unplug).
+    # Lazy, because the app may hold files open on it.
+    cur="$(mounted_dev "$MOUNT_POINT")"
+    if [ -n "$cur" ] && [ ! -b "$cur" ]; then
+        log "card $cur removed"
+        umount -l "$MOUNT_POINT" 2>>"$LOG"
+        run_helper remove "${cur#/dev/}"
+        cur=""
+    fi
+
+    # Same for the boot stick's FAT, held by the dev boot log: the system runs
+    # from RAM, so the stick may be pulled.
+    bl="$(mounted_dev "$BOOTLOG_MOUNT")"
+    if [ -n "$bl" ] && [ ! -b "$bl" ]; then
+        umount -l "$BOOTLOG_MOUNT" 2>>"$LOG"
+    fi
+
+    # Forget a device that failed to mount once it is gone, so re-inserting
+    # it is retried (without retrying a bad card every second meanwhile).
+    if [ -n "$failed_dev" ] && [ ! -b "/dev/$failed_dev" ]; then
+        failed_dev=""
+    fi
+
+    if [ -z "$cur" ]; then
+        dev="$(find_card)"
+        if [ -n "$dev" ] && [ "$dev" != "$failed_dev" ]; then
+            # Repair FAT first: every power-off with the card mounted leaves the
+            # dirty bit, and fsck.fat -a clears it and fixes what it safely can.
+            if blkid "/dev/$dev" 2>/dev/null | grep -q 'TYPE="vfat"'; then
+                echo "$(date) fsck.fat -a /dev/$dev" >> "$FSCK_LOG"
+                fsck.fat -a -w "/dev/$dev" >> "$FSCK_LOG" 2>&1
+                echo "$(date) fsck.fat exit $?" >> "$FSCK_LOG"
+            fi
+            log "mounting /dev/$dev"
+            run_helper add "$dev"
+            if [ "$(mounted_dev "$MOUNT_POINT")" = "/dev/$dev" ]; then
+                log "mounted /dev/$dev at $MOUNT_POINT"
+            else
+                # Not retried until the device goes away (see failed_dev).
+                log "mount of /dev/$dev failed"
+                failed_dev="$dev"
+            fi
+            continue
+        fi
+    fi
+
+    sleep "$INTERVAL"
+done

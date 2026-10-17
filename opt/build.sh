@@ -116,6 +116,7 @@ help()
 	  --pi02w-smartcard
       --pi4         Build for pi4 and pi4cmio
       --lafrite     Build for La Frite AML-S805X-AC
+      --x86_64      Build for x86_64 PCs/laptops (desktop UI; dev only)
   
   Options:
   -h, --help           Display a help screen and quit
@@ -454,6 +455,9 @@ while (( "$#" )); do
   --lafrite)
     LAFRITE_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
     ;;
+  --x86_64)
+    X86_64_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
+    ;;
   --no-clean)
     NOCLEAN=0; shift
     ;;
@@ -565,6 +569,11 @@ if ! [ -z ${ALL_FLAG} ]; then
   build_image "pi2${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
   build_image "pi4${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
   build_image "lafrite${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  # x86_64 ships only the -dev profile for now; --all without --dev simply
+  # skips it instead of failing on a missing config directory.
+  if ! [ -z $DEVBUILD ]; then
+    build_image "x86_64${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  fi
 fi
 
 # Build only for pi0, pi0w, and pi1
@@ -590,6 +599,17 @@ fi
 # build for La Frite AML-S805X-AC
 if ! [ -z ${LAFRITE_FLAG} ]; then
   build_image "lafrite${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+fi
+
+# build for x86_64 PCs and laptops (desktop UI)
+if ! [ -z ${X86_64_FLAG} ]; then
+  # only the -smartcard-dev profile exists yet; fail loudly instead of
+  # reporting the misleading "config not found" from build_image
+  if [ -z $DEVBUILD ]; then
+    echo "Error: --x86_64 currently supports only --dev (no hardened x86_64-smartcard profile yet)" >&2
+    exit 4
+  fi
+  build_image "x86_64${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 exit 0

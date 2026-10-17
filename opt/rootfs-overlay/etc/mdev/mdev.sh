@@ -39,6 +39,15 @@ if [ "$ACTION" = "add" ] && [ -n "$DEVNAME" ]; then
     # Notify userspace that a microSD was inserted.
     echo -n "add" > /tmp/mdev_fifo 2>/dev/null
 
+    # Profiles that have no hash-pinned diy-tools squashfs for their
+    # architecture (x86_64) opt out with SS_SKIP_DIY=1 in their hotplug
+    # wrapper: the card is still mounted and the app still notified, but the
+    # verify-and-mount-squashfs dance below would only ever log NO_PINNED_HASH.
+    if [ "${SS_SKIP_DIY:-0}" = "1" ]; then
+        log "SS_SKIP_DIY=1: diy-tools verification skipped on $(uname -m)"
+        exit 0
+    fi
+
     # Locate sha256sum (minimal PATH under mdev).
     SHA256SUM="$(command -v sha256sum 2>/dev/null || echo /usr/bin/sha256sum)"
 
