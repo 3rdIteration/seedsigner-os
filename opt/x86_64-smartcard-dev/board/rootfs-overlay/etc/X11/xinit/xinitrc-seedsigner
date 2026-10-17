@@ -14,13 +14,21 @@ if [ -z "$SS_APP_DIR" ]; then
 fi
 
 export SDL_VIDEODRIVER=x11
-# The app's desktop UI is a fixed 960x480 layout. This is the hook for it to
-# scale that to fill the screen at its native resolution; the display mode
-# itself is left to the kernel/X default for compatibility. App refs without
-# that support ignore the variable.
-export SEEDSIGNER_DESKTOP_FULLSCREEN=1
 export SDL_AUDIODRIVER=alsa
 
 cd "$SS_APP_DIR" || exit 1
-echo "$(date) starting SeedSigner desktop UI from $SS_APP_DIR" >> "$APP_LOG"
-exec /usr/bin/python3 main.py >> "$APP_LOG" 2>&1
+
+# Fullscreen desktop mode: the app scales its fixed 960x480 desktop layout to
+# fill the screen at its native resolution (the display mode itself is left
+# to the kernel/X default for compatibility). Pass --fullscreen only when this
+# app checkout knows it -- argparse rejects an unknown flag, which would
+# crash-loop an older APP_BRANCH into a black screen. The env var is the
+# same switch and is simply ignored by refs that predate it.
+export SEEDSIGNER_DESKTOP_FULLSCREEN=1
+set --
+if grep -q -- '"--fullscreen"' main.py 2>/dev/null; then
+    set -- --fullscreen
+fi
+
+echo "$(date) starting SeedSigner desktop UI from $SS_APP_DIR $*" >> "$APP_LOG"
+exec /usr/bin/python3 main.py "$@" >> "$APP_LOG" 2>&1

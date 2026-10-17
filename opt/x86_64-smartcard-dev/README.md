@@ -15,12 +15,21 @@ and talking to CCID smartcard readers over USB.
 - **X11 + eudev.** The X server and its libinput driver require udev, so
   `/dev` management is eudev (shared overlay's `S00mdev` is removed in
   post-build); `xinit` starts X around the app.
-- **Hotplug storage via udev rules.** `etc/udev/rules.d/99-seedsigner-storage.rules`
-  feeds `sd[a-z][0-9]` add/remove events through
-  `/usr/lib/udev/seedsigner-storage.sh` into the shared
-  `/etc/mdev/mdev.sh` helper (mount at `/mnt/microsd`, `noexec,nosuid,nodev`,
-  `/tmp/mdev_fifo` notification), with `SS_SKIP_DIY=1` since x86_64 has no
-  pinned diy-tools squashfs.
+- **Card auto-mount daemon.** `/usr/sbin/seedsigner-automount` (started by
+  `/etc/init.d/S30seedsigner-automount`) polls once a second and keeps one
+  removable card mounted at `/mnt/microsd`, where the app looks for it. A
+  card is a partition, or a disk with no partition table, on a USB or SD bus
+  (internal SATA/NVMe/eMMC disks are never touched) with a vfat/exfat/ext*
+  filesystem, excluding the boot stick's `SEEDSIGNOS` ESP. FAT cards are
+  repaired with `fsck.fat -a` first, which clears the "not properly
+  unmounted" dirty bit every reboot leaves. Mount options and the
+  `/tmp/mdev_fifo` app notification come from the shared `/etc/mdev/mdev.sh`
+  helper (`SS_SKIP_DIY=1`, since x86_64 has no pinned diy-tools squashfs). A
+  yanked card's dead mount is always lazily cleared, and pulling another
+  stick, the boot stick included, never unmounts the card. This replaces
+  the earlier udev RUN rules, which missed cards without a partition table
+  and could leave dead mounts behind. Logs: `/tmp/automount.log`,
+  `/tmp/fsck.log`.
 - **Hybrid BIOS+EFI bootable USB image, running from RAM.** One FAT32 ESP
   (the only partition) carries `/bzImage`, `/rootfs.cpio.gz`,
   `EFI/BOOT/{bootx64.efi,bootia32.efi,grub.cfg}` and `boot/grub/grub.cfg`;
@@ -32,18 +41,12 @@ and talking to CCID smartcard readers over USB.
   OpenCV, numpy) out of bzImage. The ESP is sized at build time from the
   payload.
 - **Display.** The screen stays at its native resolution for compatibility
-  (no `video=` override). `xinitrc-seedsigner` sets
-  `SEEDSIGNER_DESKTOP_FULLSCREEN=1` as the hook for the app to scale its
-  fixed 960×480 desktop layout (240×240 LCD plus button panels) to fill
-  the screen. Scaling is app-side work in the seedsigner repo; until an app
-  ref honours the variable, the UI is a 960×480 window on the native-
-  resolution screen.
-- **Card handling.** Before mounting, the udev wrapper runs `fsck.fat -a`
-  on FAT cards, which clears the "not properly unmounted" dirty bit every
-  reboot leaves. It also lazily unmounts a dead mount left by a yanked
-  card, and on removal it only unmounts `/mnt/microsd` if the removed device
-  is the one mounted there. Pulling the boot stick never takes the card
-  away.
+  (no `video=` override). `xinitrc-seedsigner` launches the app with
+  `--fullscreen` (plus `SEEDSIGNER_DESKTOP_FULLSCREEN=1`), which scales its
+  fixed 960×480 desktop layout (240×240 LCD plus button panels) to fill the
+  screen, centred with its aspect ratio kept. The flag is passed only when
+  the app checkout's `main.py` knows it, so an older `APP_BRANCH` still
+  boots, as a 960×480 window.
 - **Console launcher.** post-build.sh replaces the getty respawn line with
   `/usr/bin/seedsigner-console` (wait for storage, dev-source override,
   clock priming, `startx`), replacing `S02seedsigner`.
