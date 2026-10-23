@@ -1,0 +1,15 @@
+config BR2_PACKAGE_PYTHON_PYGAME_CE
+	bool "python-pygame-ce"
+	depends on !BR2_STATIC_LIBS # sdl2
+	select BR2_PACKAGE_SDL2 # runtime
+	select BR2_PACKAGE_SDL2_IMAGE # runtime
+	select BR2_PACKAGE_SDL2_MIXER # runtime
+	select BR2_PACKAGE_SDL2_TTF # runtime
+	select BR2_PACKAGE_FREETYPE # runtime
+	help
+	  Community Edition of pygame, a python library for multimedia
+	  and game development. SeedSigner's x86_64 desktop profile uses
+	  it for the on-screen display driver and for keyboard/mouse
+	  input when no GPIO hardware is present.
+
+	  https://pyga.me
