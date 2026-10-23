@@ -20,3 +20,10 @@ case "$1" in
         echo "unknown udhcpc action: $1" >&2
         ;;
  esac
+
+# Run the hooks in default.script.d/ (e.g. 50-mdnsd, which re-announces
+# seedsigner.local once a lease arrives), as busybox's stock script does.
+for hook in "${0}.d/"*; do
+    [ -f "${hook}" ] && [ -x "${hook}" ] || continue
+    "${hook}" "${1}"
+done

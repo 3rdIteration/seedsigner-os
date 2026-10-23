@@ -1,8 +1,25 @@
 #!/bin/sh
 
-# Wait for the external MicroSD to mount before checking for a dev build.
+# Dev-image start.sh (overrides rootfs-overlay/start.sh via overlay order).
+#
+# Picks the code to run, in order of preference:
+#   1. a checkout on the external MicroSD at /mnt/microsd/seedsigner/src
+#      (SeedSigner fork: the MicroSD override, #19);
+#   2. a developer checkout on the persistent data partition:
+#        git clone https://github.com/SeedSigner/seedsigner.git /mnt/data/seedsigner
+#      run with its virtualenv when it has one;
+#   3. the code baked into the image at /opt/src.
+#
+# Networking (wired, usb relay, and wifi from wifi.txt / wpa_supplicant.conf on
+# the MicroSD) is brought up by /etc/init.d/S35network, not here.
+
 MICROSD_MOUNTPOINT="/mnt/microsd"
 MICROSD_DEV_DIR="$MICROSD_MOUNTPOINT/seedsigner/src"
+DEV_DIR="/mnt/data/seedsigner"
+DEV_SRC="${DEV_DIR}/src"
+
+# Wait for the external MicroSD to mount before checking for a dev build. It is
+# also where time.txt (below) lives.
 MAX_WAIT=10
 COUNT=0
 WAIT_MSG="Waiting for external MicroSD to mount..."
@@ -18,52 +35,35 @@ done
 
 kill "$NOTICE_PID" 2>/dev/null
 
-WIFI_CONF="$MICROSD_MOUNTPOINT/wifi.txt"
-
-# Bring up any wired interfaces with a persistent DHCP client
-for i in $(seq 1 5); do
-    ETH_IFACES=$(ls /sys/class/net 2>/dev/null | grep '^eth' || true)
-    if [ -n "$ETH_IFACES" ]; then
-        for IFACE in $ETH_IFACES; do
-            ifconfig "$IFACE" up 2>/dev/null || true
-            # Run udhcpc in the background so it keeps trying even if no link yet
-            udhcpc -i "$IFACE" -b -t 0 -s /usr/share/udhcpc/default.script >/dev/null 2>&1 &
-        done
-        break
-    fi
-    sleep 1
-done
-
-# Configure Wi-Fi from MicroSD credentials if present
-if [ -f "$WIFI_CONF" ]; then
-    WIFI_SSID=$(sed -n '1p' "$WIFI_CONF" | tr -d '\r\n')
-    WIFI_PSK=$(sed -n '2p' "$WIFI_CONF" | tr -d '\r\n')
-    cat > /etc/wpa_supplicant.conf <<EOF2
-country=CA
-network={
-    ssid="$WIFI_SSID"
-    psk="$WIFI_PSK"
-}
-EOF2
-    modprobe brcmfmac 2>/dev/null || true
-    for i in $(seq 1 5); do
-        if ip link show wlan0 >/dev/null 2>&1; then
-            ifconfig wlan0 up 2>/dev/null || true
-            wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
-            # Launch udhcpc in persistent background mode for Wi-Fi
-            udhcpc -i wlan0 -b -t 0 -s /usr/share/udhcpc/default.script >/dev/null 2>&1 &
-            break
-        fi
+# S02seedsigner launches this before S30devdata has mounted /mnt/data, so wait
+# briefly for that mount too (skipped instantly when the data partition is
+# missing or holds no checkout).
+if [ -b /dev/mmcblk0p2 ] || [ -e /sys/class/block/mmcblk0p2 ]; then
+    WAITED=0
+    while [ $WAITED -lt 15 ] && ! grep -q ' /mnt/data ' /proc/mounts; do
         sleep 1
+        WAITED=$((WAITED + 1))
     done
 fi
 
+PYTHON="/usr/bin/python3"
+
 if mountpoint -q "$MICROSD_MOUNTPOINT" && [ -d "$MICROSD_DEV_DIR" ]; then
-    echo "Running SeedSigner from external MicroSD source"
+    echo "seedsigner: running from external MicroSD ${MICROSD_DEV_DIR}" > /dev/kmsg
     cd "$MICROSD_DEV_DIR" || exit 1
     /usr/bin/python3 /usr/bin/microsd_notice.py || true
+elif [ -f "${DEV_SRC}/main.py" ]; then
+    echo "seedsigner: running from ${DEV_SRC}" > /dev/kmsg
+    # Use the checkout's virtualenv when one exists (either .venv or venv)
+    for _venv in "${DEV_DIR}/.venv" "${DEV_DIR}/venv"; do
+        if [ -x "${_venv}/bin/python3" ]; then
+            PYTHON="${_venv}/bin/python3"
+            break
+        fi
+    done
+    cd "${DEV_SRC}" || exit 1
 else
-    echo "Running SeedSigner from embedded source"
+    echo "seedsigner: running from /opt/src" > /dev/kmsg
     cd /opt/src/ || exit 1
 fi
 
@@ -74,7 +74,7 @@ fi
 # MicroSD mount wait above, or $TIME_FILE below is invisible.
 #
 # TIME_DEFAULT_FILE deliberately keeps pointing at the EMBEDDED build even when
-# this image is running from the card's src/ — the card checkout has no such file.
+# this image is running from another checkout -- those have no such file.
 TIME_DEFAULT_FILE="/opt/src/.build_commit_time"
 TIME_FALLBACK="2025-02-28 12:00"
 TIME_FILE="$MICROSD_MOUNTPOINT/time.txt"
@@ -96,5 +96,7 @@ fi
 
 /bin/date -s "$TIME_VALUE" || /bin/date -s "$TIME_FALLBACK"
 
-#/usr/bin/python3 main.py >> /dev/kmsg 2>&1 &  # version that writes output to dmesg
-/usr/bin/python3 main.py &
+# exec (not background) so the pid tracked by S02seedsigner / `seedsigner` is
+# the python process itself -- that's what makes stop/restart/status reliable.
+#exec ${PYTHON} main.py >> /dev/kmsg 2>&1  # version that writes output to dmesg
+exec ${PYTHON} main.py

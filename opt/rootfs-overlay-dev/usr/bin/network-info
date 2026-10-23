@@ -1,18 +1,17 @@
 #!/bin/sh
-HOSTNAME=$(hostname 2>/dev/null)
-IP_INFO=$(ip -o -4 addr show scope global 2>/dev/null | awk '{print "  "$2": "$4}' | sed 's#/.*##')
-GATEWAY=$(ip route show default 2>/dev/null | awk '{print $3}' | head -n 1)
-DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd ' ' -)
+# Print a quick summary of the device's network state.
 
-[ -n "$HOSTNAME" ] || HOSTNAME="N/A"
-[ -n "$IP_INFO" ] || IP_INFO="  N/A"
-[ -n "$GATEWAY" ] || GATEWAY="N/A"
-[ -n "$DNS" ] || DNS="N/A"
+echo "hostname: $(hostname)"
+echo
 
-cat <<INFO
-Hostname: $HOSTNAME
-IP Address(es):
-$IP_INFO
-Gateway: $GATEWAY
-DNS: $DNS
-INFO
+for IFACE in $(ls /sys/class/net 2>/dev/null); do
+	[ "$IFACE" = "lo" ] && continue
+	STATE=$(cat /sys/class/net/$IFACE/operstate 2>/dev/null)
+	MAC=$(cat /sys/class/net/$IFACE/address 2>/dev/null)
+	ADDR=$(ip -4 addr show "$IFACE" 2>/dev/null | sed -n 's/.*inet \([0-9.]*\).*/\1/p')
+	echo "$IFACE: state=$STATE mac=$MAC ip=${ADDR:-none}"
+done
+
+echo
+echo "default route: $(ip route 2>/dev/null | sed -n 's/^default //p')"
+echo "dns: $(sed -n 's/^nameserver //p' /etc/resolv.conf 2>/dev/null | tr '\n' ' ')"
