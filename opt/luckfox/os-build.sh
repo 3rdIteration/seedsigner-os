@@ -212,6 +212,11 @@ export MINI_CMA_SIZE="${MINI_CMA_SIZE:-1M}"
 # console is not the only way in; explicit false/0 remains the bench override
 # for boards with no card reader attached. This restores the flat-1 default
 # build-local.sh has always had, reuniting the three build implementations.
+#
+# A console-on image also shows the secure-boot screen and then never reaches
+# the app on the Pico; seedsigner-os dev/release images built that way reached
+# users and looked like a bad flash (2026-10). Such images are tagged -dev-uart
+# in their file name (artifact-tag.sh).
 export DISABLE_UART2_CONSOLE_DEBUG="${DISABLE_UART2_CONSOLE_DEBUG:-auto}"
 export DEFAULT_PYTHON_VERSION="${DEFAULT_PYTHON_VERSION:-3.12}"
 # Host Rust toolchain cache (see rust-toolchain-cache.sh). Unset = no caching,
@@ -408,7 +413,7 @@ show_usage() {
     echo "  - Mini CMA override via MINI_CMA_SIZE (default: 1M)"
     echo "  - 'both' builds mini+max; use 'pi' to build the Pico Pi (eMMC only)"
     echo "  - UART2 console toggle via DISABLE_UART2_CONSOLE_DEBUG=auto|true|false (default: auto)"
-    echo "    auto/true strip the console on every variant; only false keeps it"
+    echo "    auto/true strip the console on every variant; only false keeps it (artifacts tagged -dev-uart)"
     echo "  - SDK revision pinned by opt/luckfox/SDK_COMMIT"
     echo "    (override with LUCKFOX_COMMIT=<sha> or LUCKFOX_BRANCH=<branch>)"
     echo ""
@@ -3152,27 +3157,33 @@ s/^endef\nendif/endef\nendif\nendif/
     # production -- NOT dev/nondev -- precisely to avoid re-colliding with an
     # app ref of "dev". The secure-boot token is safety-relevant: "burnable"
     # images write the OTP fuses on first boot -- irreversibly.
-    #   <appref>-os<develop|production>-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>
-    # The key class mirrors provision_fit_build_keys: no SEEDSIGNER_FIT_KEY_DIR
-    # means the committed PUBLIC dev placeholder (no protection); one supplied
-    # means a real secret key.
+    #   <appref>-os<develop|production>[-dev-<lever>...]-<unsigned|signed[-devkey|-realkey]|burnable[-devkey|-realkey]>
+    # The -dev-<lever> tokens name every debug setting left on (the serial
+    # console on any variant, plus each lever away from its production default
+    # on a production build). The rules live in artifact-tag.sh, shared with
+    # build-local.sh. The key class mirrors provision_fit_build_keys: no
+    # SEEDSIGNER_FIT_KEY_DIR means the committed PUBLIC dev placeholder (no
+    # protection); one supplied means a real secret key.
     #
     # The four LAST_*_BUILD_TS exports that used to live here had no readers
     # anywhere in the repo and are gone.
-    local tag variant_tag sb_state
-    case "$SEEDSIGNER_BUILD_VARIANT" in
-        dev)     variant_tag="develop" ;;
-        non-dev) variant_tag="production" ;;
-        *) print_error "unknown build variant '$SEEDSIGNER_BUILD_VARIANT' (expected dev or non-dev)"; exit 1 ;;
-    esac
-    case "${SEEDSIGNER_FIT_SIGNATURE:-0}" in
-        1)
-            if [ "${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" = "1" ]; then sb_state="burnable"; else sb_state="signed"; fi
-            if [ -n "${SEEDSIGNER_FIT_KEY_DIR:-}" ]; then sb_state="${sb_state}-realkey"; else sb_state="${sb_state}-devkey"; fi
-            ;;
-        *) sb_state="unsigned" ;;
-    esac
-    tag="$(printf '%s' "$SEEDSIGNER_BRANCH" | tr -c 'A-Za-z0-9_.-' '_')-os${variant_tag}-${sb_state}"
+    local tag uart_console="off" real_key=0
+    [[ "$DISABLE_UART2_CONSOLE_DEBUG" == "1" ]] || uart_console="on"
+    [[ -z "${SEEDSIGNER_FIT_KEY_DIR:-}" ]] || real_key=1
+    tag="$(bash "$SEEDSIGNER_LUCKFOX_DIR/artifact-tag.sh" \
+        appref="$SEEDSIGNER_BRANCH" \
+        variant="$SEEDSIGNER_BUILD_VARIANT" \
+        uart_console="$uart_console" \
+        testing="${SEEDSIGNER_TESTING_BUILD:-0}" \
+        usb_mode="$SEEDSIGNER_USB_MODE" \
+        debug_network="$SEEDSIGNER_DEBUG_NETWORK" \
+        readonly_rootfs="${SS_RO_ROOTFS:-auto}" \
+        boot_log="$SEEDSIGNER_BOOT_LOG" \
+        harden_adb="$SEEDSIGNER_HARDEN_ADB" \
+        fit_signature="${SEEDSIGNER_FIT_SIGNATURE:-0}" \
+        burn_key_hash="${SEEDSIGNER_FIT_BURN_KEY_HASH:-0}" \
+        real_key="$real_key")" || { print_error "artifact-tag.sh failed"; exit 1; }
+    print_info "Artifact tag: $tag"
 
     if [[ "$boot_medium" == "sd" ]]; then
         print_step "Creating Final SD Image (${board_profile})"
@@ -3390,7 +3401,7 @@ assert_shared_build_files() {
                 patch-mtd-part-parse.sh retry-network.sh \
                 patch-otp-size.sh assert-otp-size.sh \
                harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
-               strip-whitespace-filenames.sh \
+               strip-whitespace-filenames.sh artifact-tag.sh \
              patch-s50usbdevice.sh patch-oem-pre-hook.sh prune-oem-iqfiles.sh \
                prepare-oem-for-rootfs.sh \
              install-gnupg-home.sh install-build-time.sh \
