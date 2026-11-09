@@ -1,0 +1,26 @@
+name: ForgeBox offline signing
+on:
+  push:
+    paths: ['opt/luckfox/secure-boot/forgebox_sign.py', 'tools/forgebox-*', 'tests/test_forgebox*', '.github/workflows/forgebox-signing-tests.yml']
+  pull_request:
+    paths: ['opt/luckfox/secure-boot/forgebox_sign.py', 'tools/forgebox-*', 'tests/test_forgebox*', 'opt/build.sh', 'opt/luckfox/*build*.sh', 'tests/test_install_secure_boot_tools.sh', '.github/workflows/forgebox-signing-tests.yml']
+permissions:
+  contents: read
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: python -m pip install ecdsa==0.19.1 embit==0.8.0 cryptography==45.0.5
+      - run: npm install --prefix /tmp/forgebox-cli forgebox-cli@1.2.0
+      - run: python tests/test_forgebox_sign.py -v
+        env:
+          FORGEBOX_CLI_DIR: /tmp/forgebox-cli/node_modules/forgebox-cli
+      - run: node tests/test_forgebox_bridge.cjs
+      - run: bash tests/test_install_secure_boot_tools.sh

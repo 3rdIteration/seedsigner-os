@@ -16,7 +16,7 @@ set -o errexit -o pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 src_dir="${repo_dir}/opt/luckfox/secure-boot"
 rel="usr/lib/seedsigner/secure-boot"
-signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
+signers="rkloader.py fitsign.py minisign.py luckfox_release.py forgebox_sign.py"
 fails=0
 
 work="$(mktemp -d)"
