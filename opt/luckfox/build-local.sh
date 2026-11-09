@@ -2665,7 +2665,7 @@ package_firmware() {
 install_secure_boot_tools() {
     local src="$SEEDSIGNER_LUCKFOX_DIR/secure-boot"
     local dst="$ROOTFS_DIR/usr/lib/seedsigner/secure-boot"
-    local signers="rkloader.py fitsign.py minisign.py luckfox_release.py"
+    local signers="rkloader.py fitsign.py minisign.py luckfox_release.py forgebox_sign.py"
     local f
 
     # Clear first, so a rebuild that newly opts out leaves no stale copy.
