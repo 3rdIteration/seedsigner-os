@@ -363,14 +363,95 @@ def verify_buf(buf, n):
     return pss_verify(signed_digest(buf), em, n.bit_length() - 1)
 
 
+def binding_problems(buf):
+    """What stops the signature from covering what would actually BOOT.
+
+    verify_buf() answers "is the signature over the listed nodes valid"; this
+    answers "do the listed nodes include everything the image boots". The two
+    are different questions, and a release is only good when both hold:
+
+      * the configuration that owns the signature must itself be listed in
+        `hashed-nodes` (the list lives in the signature node, outside the
+        signed region);
+      * no node may carry a unit address ('@'): libfdt resolves a lookup for
+        "kernel" to a node named "kernel@1";
+      * every image and configuration must be listed - a signed FIT carries no
+        unsigned one.
+
+    These are the rules patch-fit-config-binding.sh adds to the device's own
+    fit_config_check_sig() (upstream U-Boot's fixes for CVE-2020-10648 and
+    CVE-2021-27097/27138), so an image this rejects is one a patched board
+    refuses to boot.
+    """
+    sig = signature_node(buf)
+    raw = sig.get("hashed-nodes", (b"", 0))[0]
+    if not raw or not raw.endswith(b"\x00"):
+        return ["hashed-nodes is missing or not NUL-terminated"]
+    hashed = set(x.decode("latin1") for x in raw.split(b"\x00") if x)
+    problems = []
+    conf = SIG_NODE.rsplit("/", 1)[0]
+    if conf not in hashed:
+        problems.append("the configuration %s is not covered by its own signature" % conf)
+    for kind, path, name, _s, _e in fdt_tokens(buf):
+        if kind != "begin":
+            continue
+        if "@" in name:
+            problems.append("node %s has a unit address ('@')" % path)
+        for top in ("/images/", "/configurations/"):
+            if path.startswith(top) and "/" not in path[len(top):] and path not in hashed:
+                problems.append("%s is not covered by the signature" % path)
+    return problems
+
+
+def payload_problems(buf):
+    """Payloads whose bytes do not match their signed sha256 `hash` node.
+
+    The RSA signature covers the hash nodes, not the payload bytes, so a FIT
+    whose kernel or ramdisk was altered still "verifies" until this is checked
+    too. The device checks each one as it loads it.
+    """
+    problems = []
+    payloads = _image_payloads(buf)
+    if not payloads:
+        return ["no external payloads found"]
+    for name, (pos, size, hashes) in sorted(payloads.items()):
+        if pos + size > len(buf):
+            problems.append("%s: payload runs past the end of the file" % name)
+            continue
+        if not hashes:
+            problems.append("%s: no hash node binds this payload" % name)
+            continue
+        actual = hashlib.sha256(bytes(buf[pos:pos + size])).digest()
+        for hn, (algo, off, ln) in hashes.items():
+            if algo != "sha256" or ln != 32:
+                problems.append("%s: unsupported hash (algo=%r, %d bytes)" % (name, algo, ln))
+            elif bytes(buf[off:off + ln]) != actual:
+                problems.append("%s: payload does not match its signed sha256" % name)
+    return problems
+
+
+def verify_full(buf, n):
+    """(ok, problems): the signature, what it binds, and every payload hash."""
+    problems = []
+    if not verify_buf(buf, n):
+        problems.append("RSA-PSS signature does not verify")
+    problems += binding_problems(buf)
+    problems += payload_problems(buf)
+    return not problems, problems
+
+
 def cmd_verify(a):
     buf = read(a.image)
     _algo_check(signature_node(buf), a.image)
     n, _ = load_pubkey(a.pubkey)
-    if verify_buf(buf, n):
-        print("OK: %s carries a valid RSA-PSS signature over its FIT metadata" % a.image)
+    ok, problems = verify_full(buf, n)
+    if ok:
+        print("OK: %s carries a valid RSA-PSS signature that covers its configuration, "
+              "every image node and every payload" % a.image)
         return 0
     print("FAIL: %s does not verify against %s" % (a.image, a.pubkey))
+    for p in problems:
+        print("   - %s" % p)
     return 2
 
 

@@ -400,6 +400,79 @@ class Rehash(unittest.TestCase):
                          bytes(range(32)))
 
 
+class Binding(unittest.TestCase):
+    """A valid signature is not enough: it must cover what boots, and the
+    payload bytes must match the hash nodes it covers."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="fitsign-bind-")
+        cls.n, _e, cls.d = fs.load_privkey(DEV_KEY)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def signed(self):
+        buf = build_fit()
+        fs.sign_buf(buf, self.n, self.d)
+        return buf
+
+    def test_a_good_fit_passes_every_check(self):
+        ok, problems = fs.verify_full(self.signed(), self.n)
+        self.assertTrue(ok, problems)
+
+    def test_a_tampered_payload_fails_although_the_signature_holds(self):
+        buf = self.signed()
+        pos, size, _ = fs._image_payloads(buf)["kernel"]
+        buf[pos + size // 2] ^= 0x01
+        self.assertTrue(fs.verify_buf(buf, self.n))       # the RSA check alone is blind to it
+        ok, problems = fs.verify_full(buf, self.n)
+        self.assertFalse(ok)
+        self.assertTrue(any("kernel" in p and "sha256" in p for p in problems), problems)
+        p = os.path.join(self.tmp, "payload.img")
+        fs.write_out(buf, p, None)
+        self.assertEqual(fs.main(["verify", p, "--pubkey", DEV_PUB]), 2)
+
+    def test_a_truncated_payload_is_reported(self):
+        buf = self.signed()
+        del buf[-8:]
+        self.assertTrue(any("past the end" in p for p in fs.payload_problems(buf)))
+
+    def test_the_config_must_be_in_hashed_nodes(self):
+        buf = self.signed()
+        raw, off = fs.signature_node(buf)["hashed-nodes"]
+        at = raw.index(b"/configurations/conf\x00")
+        buf[off + at + len(b"/configurations/con")] = ord("X")   # ...conf -> ...conX
+        problems = fs.binding_problems(buf)
+        self.assertTrue(any("configuration" in p and "not covered" in p for p in problems), problems)
+        self.assertFalse(fs.verify_full(buf, self.n)[0])
+
+    def test_an_unlisted_image_is_rejected(self):
+        buf = self.signed()
+        raw, off = fs.signature_node(buf)["hashed-nodes"]
+        at = raw.index(b"/images/kernel\x00")
+        buf[off + at + len(b"/images/kerne")] = ord("X")         # /images/kernel -> /images/kerneX
+        self.assertTrue(any(p.startswith("/images/kernel is not covered")
+                            for p in fs.binding_problems(buf)))
+
+    def test_unit_addresses_are_rejected(self):
+        buf = self.signed()
+        for kind, path, name, s, _e in fs.fdt_tokens(buf):
+            if kind == "begin" and name == "digest":
+                buf[s + 4 + 3] = ord("@")                          # digest -> dig@st
+                break
+        else:
+            self.fail("fixture has no digest node")
+        self.assertTrue(any("unit address" in p for p in fs.binding_problems(buf)))
+
+    def test_hashed_nodes_must_be_nul_terminated(self):
+        buf = self.signed()
+        raw, off = fs.signature_node(buf)["hashed-nodes"]
+        buf[off + len(raw) - 1] = ord("x")
+        self.assertEqual(fs.binding_problems(buf), ["hashed-nodes is missing or not NUL-terminated"])
+
+
 class Artifacts(unittest.TestCase):
     def test_signed_fits_verify(self):
         images = []

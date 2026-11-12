@@ -223,6 +223,14 @@ construction and the tools inside may need to exec.
 create the device-tree overlays that enable SPI0, so **the display dies**. ADB is blocked by `dr_mode=host`
 instead. `strip-kernel-network.sh` refuses to run if any of them is off.
 
+**Signed builds patch the U-Boot signature verifier.** The SDK's `fit_config_check_sig()` predates
+CVE-2020-10648 (it never checks that the configuration being booted is the one that was signed);
+`patch-fit-config-binding.sh` adds upstream's checks to the SPL and U-Boot, next to
+`lock-kernel-cmdline.sh` / `patch-mtd-part-parse.sh` in both build scripts. When bumping `SDK_COMMIT`,
+re-check its anchors in `common/image-sig.c` — it fails loudly rather than no-op, and
+`assert-uboot-fit-signature.sh` now fails the build (not warns) when it cannot verify enforcement
+(override: `SEEDSIGNER_ALLOW_UNVERIFIED_UBOOT=1`).
+
 **Verify against the generated `.config`, never the defconfig.** Kconfig silently drops defconfig lines whose
 symbol doesn't exist or whose dependencies are unmet — this is exactly how the first U-Boot bootcount attempt
 shipped green with zero bootcount code. `assert-kernel-network.sh` re-checks the built kernel config (plus a

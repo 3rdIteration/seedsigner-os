@@ -844,8 +844,16 @@ def check_release(folder, profile=None):
             rep.add(name, False, "missing")
             continue
         buf = rk.read(path)
-        ok = bool(n) and fs.verify_buf(buf, n)
-        rep.add(name, ok, "FIT signature %s under the loader's key" % ("ok" if ok else "BAD"))
+        # The signature alone is not enough: it covers the hash NODES, so the
+        # payload bytes and what the signature binds are checked as well (a
+        # tampered ramdisk would otherwise pass here, and it is the ramdisk
+        # that supplies the rootfs key the next check trusts).
+        if n:
+            ok, problems = fs.verify_full(buf, n)
+        else:
+            ok, problems = False, ["no loader key to verify against"]
+        rep.add(name, ok, "FIT signature ok under the loader's key, payloads match" if ok
+                else "FIT BAD: " + "; ".join(problems))
     uboot = os.path.join(folder, "uboot.img")
     if n and os.path.isfile(uboot):
         embeds = rk.read(uboot).find(n.to_bytes(256, "big")) >= 0
