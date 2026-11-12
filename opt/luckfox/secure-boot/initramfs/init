@@ -108,8 +108,14 @@ case "$ROOT_DEV" in
         ;;
     ubi0:*)
         # UBI auto-attach (ubi.mtd=5) exposes the volume's logical contents.
+        # Mount by volume NUMBER (ubi0_0), never by the name on the command
+        # line: the bytes hashed below come from volume 0, and `ubi0:rootfs`
+        # resolves by NAME — a crafted UBI image could carry the genuine
+        # image as volume 0 under another name and a second volume called
+        # "rootfs", so the verifier would check one volume and mount the
+        # other. Same volume in, same volume mounted.
         SRC_DEV="/dev/ubi0_0"
-        MNT_CMD="mount -t ubifs $ROOT_DEV /mnt"
+        MNT_CMD="mount -t ubifs ubi0_0 /mnt"
         ;;
     /dev/mmcblk*)
         # MicroSD/eMMC: the signed squashfs file starts at partition offset 0;
@@ -151,48 +157,49 @@ ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null || true
 ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null || true
 
 # --- secure-boot fuse check ---------------------------------------------------
-# Two independent signals, either of which forces verification:
+# VERIFY BY DEFAULT. The only thing that skips verification is an explicit
+# `fuse.programmed=0` on the kernel command line with no `fuse.programmed=1`
+# anywhere — the rule docs/luckfox/secure-boot.md §5.2 states.
 #
-# 1. The kernel command line's fuse.programmed=1 — the preloader (BootROM) reads
-#    the SoC's secure-boot OTP fuses and passes its verdict to U-Boot via
-#    ATAG_PUB_KEY; full U-Boot — itself signature-verified on fused boards before
-#    any of this runs — records it as fuse.programmed=1/0 (param_parse_pubkey_
-#    fuse_programmed(), arch/arm/mach-rockchip/param.c). U-Boot emits =1 only
-#    from the ROM atag, never from env, so an attacker who can write the env
-#    partition cannot forge fusion. NOTE: this flag is only present on boot
-#    media whose preloader path passes ATAG_PUB_KEY — NAND does (verified: a
-#    fused board boots with fuse.programmed=1), MicroSD does NOT (no atag, no
-#    flag at all), so it cannot be the sole source of truth.
+# The flag is the preloader's verdict: the BootROM reads the SoC's secure-boot
+# OTP fuses and passes the result to U-Boot via ATAG_PUB_KEY; full U-Boot —
+# itself signature-verified on fused boards before any of this runs — appends
+# fuse.programmed=1/0 (param_parse_pubkey_fuse_programmed(),
+# arch/arm/mach-rockchip/param.c). It is emitted only from the ROM atag, never
+# from env, and since the env partition contributes nothing to a signed build's
+# command line (lock-kernel-cmdline.sh), an attacker who can write the env
+# cannot forge either value. Bench rows G5/G8 show it on MicroSD as well as NAND.
 #
-# 2. The secure-boot enable fuse byte itself, OTP offset 0x80 — the exact byte
-#    U-Boot SPL checks (OTP_SECURE_BOOT_ENABLE_ADDR, include/configs/
-#    rv1106_common.h): a fully blown word reads 0xff, blank reads 0x00. Read via
-#    /sys/bus/nvmem/devices/rockchip-otp0/nvmem (the rockchip-otp nvmem driver;
-#    patch-otp-size.sh extends rv1106_data.size past this byte — without it the
-#    read is empty and we fail closed). This works on every boot medium, which
-#    is what makes "SECURE BOOT not enabled" detectable on SD.
+# NO FLAG AT ALL (no atag — a different preloader/U-Boot) is UNKNOWN, and
+# unknown verifies. It must never fall through to "unfused": checking when
+# unneeded costs a few seconds, skipping on a locked board defeats the feature.
 #
-# The nvmem blob is raw binary — ash cannot capture it into a variable without
-# mangling it — so hash just that one byte with dd + sha256sum and compare
-# against two known constants (sha256 of 0xff, and of the empty input).
-# FAIL-CLOSED everywhere: an empty read verifies anyway; checking when unneeded
-# is safe, skipping on a locked device is not. The rootfs is signed in every
-# build, so the only thing an unfused verdict buys is skipping the check plus a
-# panel warning (the same signed image must also boot unlocked devices).
+# The nvmem OTP byte is NOT a fuse detector and must never be able to turn
+# verification OFF. /sys/bus/nvmem/devices/rockchip-otp0/nvmem is the
+# NON-secure OTP view: offset 0x80 reads the chip ID on fused and unfused boards
+# alike (secure-boot.md §4.5, bench row E4 — where trusting it made a FUSED
+# board skip verification). It is kept only as a one-way signal: if it ever
+# does read 0xff it can force verification on, nothing more. The blob is raw
+# binary — ash cannot hold it in a variable — so hash the one byte and compare.
 SECURE_BOOT_FUSED=1
+FUSE_VERDICT=unknown
 cmdline=$(cat /proc/cmdline 2>/dev/null)
-case "$cmdline" in
-    *fuse.programmed=1*) SECURE_BOOT_FUSED=1 ;;   # ROM verdict: fused -> verify (also covers an OTP read failure on a locked board)
-    *)
-        otp_byte_hash=$(dd if=/sys/bus/nvmem/devices/rockchip-otp0/nvmem bs=1 skip=128 count=1 2>/dev/null | sha256sum)
-        otp_byte_hash=${otp_byte_hash%% *}
-        case "$otp_byte_hash" in
-            a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89) SECURE_BOOT_FUSED=1 ;;  # byte == 0xff: fused
-            e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) SECURE_BOOT_FUSED=1 ;;  # empty read: fail-closed
-            *) SECURE_BOOT_FUSED=0 ;;             # blank (or not fully blown): unfused
-        esac
-        ;;
-esac
+for w in $cmdline; do
+    case "$w" in
+        fuse.programmed=1) FUSE_VERDICT=fused ;;
+        fuse.programmed=0) [ "$FUSE_VERDICT" = fused ] || FUSE_VERDICT=unfused ;;
+    esac
+done
+if [ "$FUSE_VERDICT" = unfused ]; then
+    SECURE_BOOT_FUSED=0
+    otp_byte_hash=$(dd if=/sys/bus/nvmem/devices/rockchip-otp0/nvmem bs=1 skip=128 count=1 2>/dev/null | sha256sum)
+    otp_byte_hash=${otp_byte_hash%% *}
+    if [ "$otp_byte_hash" = a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89 ]; then
+        SECURE_BOOT_FUSED=1      # byte == 0xff: force verification on
+        FUSE_VERDICT=fused
+    fi
+fi
+[ "$FUSE_VERDICT" = unknown ] && log "no fuse.programmed flag on the command line — fuse state unknown, verifying"
 
 # --- forced verification on unfused boards -----------------------------------
 # A /force-rootfs-verify file in this initramfs makes an UNFUSED board verify
@@ -213,7 +220,7 @@ fi
 
 # --- verify the signature ----------------------------------------------------
 if [ "$SECURE_BOOT_FUSED" = 0 ] && [ "$FORCED_VERIFY" = 0 ]; then
-    log "secure boot NOT fused (no fuse.programmed=1 on cmdline and OTP byte not 0xff) — skipping rootfs verification"
+    log "secure boot NOT fused (fuse.programmed=0 on cmdline) — skipping rootfs verification"
     lcd orange SHIELDSIGNER SECURE BOOT not enabled "" BOOTING
     # Hold so a human can actually read it: without this, mount + switch_root
     # take over the panel in ~2 s and the warning is invisible.
@@ -270,6 +277,12 @@ if [ "$FORCED_VERIFY" = 1 ] && [ "${UNVERIFIED:-0}" = 0 ]; then
     # plain "not enabled" screen does - so it is never mistaken for green.
     log "signature OK on an UNFUSED board (forced) — secure boot is not enabled"
     lcd orange PASSED "rootfs valid" "SECURE BOOT" "not enabled" "" BOOTING
+    sleep 5
+elif [ "$FUSE_VERDICT" = unknown ] && [ "${UNVERIFIED:-0}" = 0 ]; then
+    # Verified, but nothing told us whether this board is fused: integrity is
+    # proven, enforcement is not. Never the green screen.
+    log "signature OK, but the fuse state is unknown (no fuse.programmed flag)"
+    lcd orange PASSED "rootfs valid" "fuse state" "unknown" "" BOOTING
     sleep 5
 elif [ "$SECURE_BOOT_FUSED" = 1 ] && [ "${UNVERIFIED:-0}" = 0 ]; then
     if [ "$FIT_KEY_CLASS" = "dev" ] || [ "$ROOTFS_KEY_CLASS" = "dev" ]; then

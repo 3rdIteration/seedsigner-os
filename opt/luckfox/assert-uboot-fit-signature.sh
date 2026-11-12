@@ -48,7 +48,16 @@ if [ -z "$UBOOT_CFG" ] || [ ! -f "$UBOOT_CFG" ]; then
     warn "could not locate the built U-Boot .config under $LUCKFOX_DIR/sysdrv — CANNOT verify FIT"
     warn "signature enforcement. If secure boot is expected, confirm CONFIG_FIT_SIGNATURE=y in the"
     warn "generated U-Boot .config by hand, and update this script's path."
-    exit 0
+    # FAIL CLOSED. This assert exists because a build can sign and verify in-tool
+    # while the board enforces nothing; "could not check" must not read as "ok"
+    # on the one build flavour that claims to be protected. The escape hatch is
+    # explicit and named, like SEEDSIGNER_ALLOW_NO_WATCHDOG_SIGNAL.
+    if [ "${SEEDSIGNER_ALLOW_UNVERIFIED_UBOOT:-0}" = "1" ]; then
+        warn "SEEDSIGNER_ALLOW_UNVERIFIED_UBOOT=1 — continuing WITHOUT verifying enforcement."
+        exit 0
+    fi
+    fail "refusing to ship a signed build whose U-Boot enforcement could not be verified
+    (set SEEDSIGNER_ALLOW_UNVERIFIED_UBOOT=1 to override after checking by hand)."
 fi
 
 log "checking $(echo "$UBOOT_CFG" | sed "s|^$LUCKFOX_DIR/||")"
@@ -89,6 +98,8 @@ log "✅ env import whitelist locked ($envf_line)"
 UBOOT_SRC="$(dirname "$UBOOT_CFG")"
 for f in drivers/mtd/mtd_blk.c arch/arm/mach-rockchip/board.c; do
     if [ ! -f "$UBOOT_SRC/$f" ]; then
+        [ "${SEEDSIGNER_ALLOW_UNVERIFIED_UBOOT:-0}" = "1" ]             || fail "source $f not found under $UBOOT_SRC — cannot verify the cmdline sanitisation patch
+        (set SEEDSIGNER_ALLOW_UNVERIFIED_UBOOT=1 to override after checking by hand)."
         warn "source $f not found under $UBOOT_SRC — cannot verify the cmdline sanitisation patch"
         continue
     fi
@@ -99,3 +110,22 @@ for f in drivers/mtd/mtd_blk.c arch/arm/mach-rockchip/board.c; do
     fi
 done
 log "✅ partition-name sanitisation present in the built U-Boot source"
+
+# Config binding. The vendor fit_config_check_sig() verifies the signature over
+# whatever nodes the (unsigned) `hashed-nodes` property lists and never checks
+# that the configuration being booted is one of them, so a valid signature only
+# proved the genuine configuration was still PRESENT in the image.
+# patch-fit-config-binding.sh adds upstream's checks; verify the built SOURCE
+# carries them, in the function both the SPL and U-Boot call.
+IMAGE_SIG="$UBOOT_SRC/common/image-sig.c"
+if [ ! -f "$IMAGE_SIG" ]; then
+    [ "${SEEDSIGNER_ALLOW_UNVERIFIED_UBOOT:-0}" = "1" ]         || fail "common/image-sig.c not found under $UBOOT_SRC — cannot verify the FIT config-binding patch
+    (set SEEDSIGNER_ALLOW_UNVERIFIED_UBOOT=1 to override after checking by hand)."
+    warn "common/image-sig.c not found under $UBOOT_SRC — cannot verify the FIT config-binding patch"
+elif ! grep -q 'SEEDSIGNER-FIT-CONF-BINDING' "$IMAGE_SIG"      || ! grep -q 'ss_fit_conf_bound(fit, noffset, prop, end, err_msgp)' "$IMAGE_SIG"; then
+    fail "common/image-sig.c lacks the SEEDSIGNER-FIT-CONF-BINDING patch — the SPL and U-Boot would
+    accept a FIT whose booted configuration is not the signed one (CVE-2020-10648 class).
+    patch-fit-config-binding.sh did not run or was reverted; do not ship this."
+else
+    log "✅ FIT configuration binding present in the built U-Boot source"
+fi

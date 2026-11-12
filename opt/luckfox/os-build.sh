@@ -1726,8 +1726,21 @@ arm_fit_burn_key_hash() {
 provision_fit_build_keys() {
     local keydir="$1" k
     mkdir -p "$keydir"
-    if [ -f "$keydir/dev.key" ] && [ -f "$keydir/dev.pubkey" ] && [ -f "$keydir/dev.crt" ]; then
-        print_success "reusing existing FIT signing key already in $keydir"
+    # An explicitly supplied key ALWAYS wins. The SDK checkout outlives the
+    # build (seedsigner-repos volume), so a triple left behind by an earlier
+    # run -- typically the PUBLIC dev key -- used to be reused here before
+    # SEEDSIGNER_FIT_KEY_DIR was even looked at: a "production" build then
+    # signed, and embedded, the dev key while every step reported success.
+    if [ -z "${SEEDSIGNER_FIT_KEY_DIR:-}" ]        && [ -f "$keydir/dev.key" ] && [ -f "$keydir/dev.pubkey" ] && [ -f "$keydir/dev.crt" ]; then
+        # No key requested: keep what is there, but say WHICH key it is. A
+        # leftover that is not the committed dev key is somebody's real key
+        # sitting in a kept tree, about to sign a build labelled "devkey".
+        if cmp -s "$keydir/dev.pubkey" "$SEEDSIGNER_LUCKFOX_DIR/secure-boot/dev-keys/dev.pubkey"; then
+            print_success "reusing existing FIT signing key already in $keydir (the committed PUBLIC dev key)"
+        else
+            print_error "WARNING: $keydir holds a FIT key that is NOT the committed dev key (left by an earlier build?)"
+            print_error "WARNING: this build will be signed with it. Remove $keydir to fall back to the dev key."
+        fi
         return 0
     fi
     if [ -n "${SEEDSIGNER_FIT_KEY_DIR:-}" ]; then
@@ -1735,7 +1748,7 @@ provision_fit_build_keys() {
         for k in dev.key dev.pubkey dev.crt; do
             [ -f "$s/$k" ] || { print_error "SEEDSIGNER_FIT_KEY_DIR=$s is missing $k (need dev.key + dev.pubkey + dev.crt; generate with secure-boot/make-dev-keys.sh)"; exit 1; }
         done
-        cp "$s/dev.key" "$s/dev.pubkey" "$s/dev.crt" "$keydir/"
+        cp -f "$s/dev.key" "$s/dev.pubkey" "$s/dev.crt" "$keydir/"
         print_success "using supplied FIT signing key from SEEDSIGNER_FIT_KEY_DIR (its pubkey is embedded in the loader; no host resign needed)"
         return 0
     fi
@@ -2552,6 +2565,10 @@ build_profile_artifacts() {
     # directly and serialises partition NAMES into the cmdline; sanitise them so
     # SPI-NAND cannot inject tokens (e.g. rdinit=) either.
     bash "$SEEDSIGNER_LUCKFOX_DIR/patch-mtd-part-parse.sh" "$LUCKFOX_SDK_DIR"
+    # Signed builds only: the SDK's U-Boot verifier never checks that the FIT
+    # configuration it BOOTS is the one that was SIGNED (pre-CVE-2020-10648
+    # fit_config_check_sig). Bind them, in the SPL and U-Boot alike.
+    bash "$SEEDSIGNER_LUCKFOX_DIR/patch-fit-config-binding.sh" "$LUCKFOX_SDK_DIR"
     apply_signed_nand_bootargs "$board_profile" "$boot_medium"   # signed NAND: bake root=ubi0 into the DTB (no-op otherwise)
 
     # Rootfs verification setup, all no-ops unless SEEDSIGNER_FIT_SIGNATURE=1.
@@ -3388,7 +3405,7 @@ assert_shared_build_files() {
               pin-spidev-bufsiz.sh readonly-rootfs.sh \
                 assert-readonly-rootfs.sh strip-kernel-network.sh assert-kernel-network.sh \
                 assert-uboot-fit-signature.sh lock-kernel-cmdline.sh \
-                patch-mtd-part-parse.sh retry-network.sh \
+                patch-mtd-part-parse.sh patch-fit-config-binding.sh retry-network.sh \
                 patch-otp-size.sh assert-otp-size.sh \
                harden-nondev.sh optimize-nondev.sh configure-usb-mode.sh \
                strip-whitespace-filenames.sh \

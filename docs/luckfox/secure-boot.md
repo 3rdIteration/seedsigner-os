@@ -778,6 +778,20 @@ python3 -c 'import re,struct,sys; d=open(sys.argv[1],"rb").read(); [print(m.star
 struct block from there yields the `/images/*` and `/configurations/conf/signature` properties above.
 `verify-fit-payloads.py` and `fitsign.py info` do this properly.
 
+**What the signature binds — and what the vendor verifier did not check.** `hashed-nodes` lives in
+the signature node, whose own properties are outside the signed region, and so is `/configurations`'
+`default`. The SDK's `fit_config_check_sig()` (U-Boot 2017.09, used by both the SPL and U-Boot)
+hashed whatever that list named and never checked that the configuration it was asked to verify was
+on it; nodes that are neither listed nor the child of a listed node are left out of the hash
+entirely. That is CVE-2020-10648 (with CVE-2021-27097/27138 for `@` unit addresses), fixed upstream
+in 2020.04/2021.04 and absent from this fork. [`patch-fit-config-binding.sh`](../../opt/luckfox/patch-fit-config-binding.sh)
+adds the same rules before the RSA check on signed builds: the selected configuration must be in
+`hashed-nodes`, no node name may contain `@`, and every node directly under `/images` and
+`/configurations` must be listed. `assert-uboot-fit-signature.sh` fails the build if the built source
+lacks it, and `fitsign.py verify` / `luckfox_release.py check` apply the same rules on the PC, plus a
+sha256 check of every payload against its signed `hash` node. **Not yet bench-run** — the first
+signed build with it needs a boot test on an unfused board before any fused board is updated.
+
 ### 4.3 `rk_sign_tool` field notes
 
 Rockchip's closed-source signer (`sysdrv/source/uboot/rkbin/tools/rk_sign_tool`, v1.49; upstream
@@ -1286,6 +1300,14 @@ different U-Boot build) verifies too: checking when unneeded costs ~15 s of boot
 device defeats the feature. On an unfused board `/init` shows an orange
 `SHIELDSIGNER / SECURE BOOT not enabled` screen held for 5 s, then boots without verifying.
 
+A board with **no flag at all** is treated as *unknown*: it verifies, and a pass shows an orange
+`PASSED / rootfs valid / fuse state / unknown` panel rather than the green one. The nvmem OTP byte
+([§4.5](#45-otp-what-linux-can-and-cannot-see)) is never allowed to turn verification *off* — it is
+the chip ID on every board — and survives only as a one-way signal (a `0xff` read forces the check
+on). `tests/test_initramfs_fuse_verdict.sh` runs the real decision block against each case. On the
+NAND dev variant the rootfs is mounted by volume number (`ubi0_0`), the same volume that was
+hashed, never by the name on the command line.
+
 **Forced verification on unfused boards (opt-in).** If the initramfs contains `/force-rootfs-verify`,
 an unfused board verifies the rootfs anyway. The build adds it with
 `SEEDSIGNER_ROOTFS_VERIFY_UNFUSED=1` (workflow input `rootfs_verify_unfused`, default off); the app's
@@ -1665,7 +1687,11 @@ dropped, which the verifier's OTP-byte fallback covers). History in
 
 ### 6.5 Locking the U-Boot console
 
-**Status: appears already closed on fused boards, though not deliberately configured.** The build sets
+**Status: closed by construction on every signed build.** `config FIT_SIGNATURE` in the SDK's U-Boot
+`Kconfig` does `select CONSOLE_DISABLE_CLI`, so enabling signature enforcement compiles `cli_loop()` to
+an empty function and removes the CTRL+C abort (`common/autoboot.c`, `common/cli.c`); the bootcmd is
+reduced to `boot_fit;` as well (`include/configs/rv1106_common.h`), so there is no Android/`bootrkp`
+fallback. What follows is the bench history that first suggested it. The build sets
 `CONFIG_BOOTDELAY=0` (`opt/luckfox/uboot-recovery-config.sh`), which by the Kconfig docs is still
 interruptible. But on the fused SD-only Mini, **spamming CTRL+C on the UART at power-on reached no
 prompt** — the board booted straight through (2026-09-23,
@@ -2009,6 +2035,11 @@ instructive.
 | CTRL+C reaches a U-Boot prompt even on a fused board (row B1) | No prompt on the fused Mini — it booted straight through (§6.5) | 2026-09-23 bench |
 | The public-dev-key burn warning fires when arming with the dev key | Its pin was hashed from Windows/CRLF `openssl` output, so it never matched — and never fired — on Linux/macOS; now hashed over the modulus hex only, with a load-time self-test (`sign-secure-boot.sh`) | 2026-09-23 |
 | Anti-rollback is unimplemented future work | Considered and **deliberately declined** — it contradicts the DIY/sovereign-key model (§6.2) | 2026-09-23 |
+| A valid FIT signature means the signed configuration is the one that boots | The SDK's `fit_config_check_sig()` predates CVE-2020-10648: it never checked that the booted configuration is in `hashed-nodes`, `default` is unsigned, and unlisted nodes are not hashed. Closed by [`patch-fit-config-binding.sh`](../../opt/luckfox/patch-fit-config-binding.sh) in the SPL and U-Boot ([§4.2](#42-fit-image-anatomy)) | 2026-11-11 source review |
+| `/init` verifies by default; only an explicit `fuse.programmed=0` skips | The code fell back to the nvmem OTP byte row E4 had already shown to be the chip ID, so a **missing** flag skipped verification. Now a missing flag is *unknown* and verifies (§5.2) | 2026-11-11 source review |
+| The U-Boot console is closed on fused boards only incidentally (§6.5) | It is closed by construction on every signed build: `config FIT_SIGNATURE` does `select CONSOLE_DISABLE_CLI`, which compiles `cli_loop()` out | 2026-11-11 source review |
+| `sd_update.txt` is refused only on a *fused* board | `do_script()` returns under `#ifdef CONFIG_FIT_SIGNATURE` — compile-time, so every **signed build** refuses it, fused or not | 2026-11-11 source review |
+| `luckfox_release.py check` / `fitsign.py verify` prove a FIT is intact | They checked the RSA signature over the hash *nodes* only; payload bytes were never compared, so an altered kernel or ramdisk still read `VALID`. Both now check every payload and what the signature binds | 2026-11-11 source review |
 
 ### 7.4 Bench: unsigned baseline (stock image)
 
